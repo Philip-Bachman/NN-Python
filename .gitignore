@@ -1,0 +1,14 @@
+*.py~
+*.swp
+*.npy
+*.csv
+*.dat
+*.data
+*.npz
+*.pkl
+*.pkl.gz
+*.png
+*.pyc
+/general/data/*
+/general/test_results/*
+/nlp/trees/*
