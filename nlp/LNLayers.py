@@ -658,9 +658,7 @@ class C1DLayer:
         Sp = np.concatenate([self.conv_pad, S, self.conv_pad], axis=0)
         Sc = np.zeros((conv_len, self.filt_size))
         for i in range(conv_len):
-            s_idx = i
-            e_idx = i + self.filt_len
-            Sc[i,:] = Sp[s_idx:e_idx,:].reshape((1, self.filt_size))
+            Sc[i,:] = Sp[i:(i+self.filt_len),:].reshape((1, self.filt_size))
         return Sc
 
     def _conv_1d(self, Sc):
@@ -683,9 +681,7 @@ class C1DLayer:
         # Unroll and accumulate gradients over the padded version of S
         dLdSp = np.zeros(((seq_len + 2*(self.filt_len-1)), self.filt_dim))
         for i in range(conv_len):
-            s_idx = i
-            e_idx = i + self.filt_len
-            dLdSp[s_idx:e_idx,:] += dLdSc[i,:].reshape((self.filt_len, self.filt_dim))
+            dLdSp[i:(i+self.filt_len),:] += dLdSc[i,:].reshape((self.filt_len, self.filt_dim))
         # Extract portion of sequence gradient derived from unpadded S
         dLdS = dLdSp[(self.filt_len - 1):((self.filt_len - 1) + seq_len),:]
         return dLdS

@@ -418,7 +418,7 @@ def train_ss_mlp(
 
     # use a "smoothed" learning rate, to ease into optimization
     gentle_rate = ifelse(epoch < 5,
-            ((epoch / 5.)**2.) * learning_rate,
+            ((epoch / 5.)**1.) * learning_rate,
             learning_rate)
 
     # update the step direction using a momentus update
@@ -502,7 +502,7 @@ def train_ss_mlp(
         # process some number of minibatches for this epoch. #
         ######################################################
         # Set to training mode
-        NET.set_bias_noise(0.1)
+        NET.set_bias_noise(0.2)
         epoch_counter = epoch_counter + 1
         epoch_metrics = [0. for v in epoch_metrics]
         for b_idx in xrange(tr_batches):

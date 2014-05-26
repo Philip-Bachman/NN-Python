@@ -19,7 +19,8 @@ def train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count=1000):
     datasets = load_udm_ss(dataset, su_count, rng)
 
     # Tell the net that it's semisupervised, which will force it to use only
-    # unlabeled examples for computing the DEV regularizer.
+    # unlabeled examples for computing the DEV regularizer, and it will compute
+    # classification loss only for one of the droppy child networks.
     NET.is_semisupervised = 1
 
     # Run training on the given NET
@@ -39,7 +40,8 @@ def train_mlp(NET, mlp_params, sgd_params):
     datasets = load_mnist(dataset)
 
     # Tell the net that it's not semisupervised, which will force it to use
-    # _all_ examples for computing the DEV regularizer.
+    # _all_ examples for computing the DEV regularizer, and it will compute
+    # classification loss only for the drop-free network.
     NET.is_semisupervised = 0
 
     # Train the net
@@ -81,10 +83,8 @@ def test_dae(dae_layer=0, mlp_params=False, sgd_params=False):
         # Set some reasonable mlp parameters
         mlp_params = {}
         mlp_params['layer_sizes'] = [28*28, 500, 11]
-        mlp_params['dev_clones'] = 1
         mlp_params['dev_types'] = [1, 2]
         mlp_params['dev_lams'] = [0.1, 2.0]
-        mlp_params['dev_mix_rate'] = 0.0
         mlp_params['lam_l2a'] = 1e-3
         mlp_params['use_bias'] = 1
 
@@ -119,10 +119,8 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     # Set some reasonable mlp parameters
     mlp_params = {}
     mlp_params['layer_sizes'] = [28*28, 500, 500, 11]
-    mlp_params['dev_clones'] = 1
     mlp_params['dev_types'] = [1, 1, 2]
     mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
-    mlp_params['dev_mix_rate'] = 0.
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 
@@ -155,10 +153,8 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         # Run test with DEV regularization on unsupervised examples
         sgd_params['result_tag'] = "ss_dev_500x500_{0:d}".format(test_num)
         sgd_params['mlp_type'] = 'dev'
-        #mlp_params['dev_types'] = [1, 1, 2]
-        #mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
-        mlp_params['dev_types'] = [1, 1, 6]
-        mlp_params['dev_lams'] = [0.1, 0.1, 1.0]
+        mlp_params['dev_types'] = [1, 1, 2]
+        mlp_params['dev_lams'] = [0.1, 0.1, 1.5]
         # Initialize a random number generator for this test
         rng = np.random.RandomState(test_num)
         # Construct the SS_DEV_NET object that we will be training
@@ -180,10 +176,8 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     # Set some reasonable mlp parameters
     mlp_params = {}
     mlp_params['layer_sizes'] = [28*28, 500, 500, 11]
-    mlp_params['dev_clones'] = 1
     mlp_params['dev_types'] = [1, 1, 5]
     mlp_params['dev_lams'] = [0.1, 0.1, 0.2]
-    mlp_params['dev_mix_rate'] = 0.
     mlp_params['lam_l2a'] = 1e-2
     mlp_params['use_bias'] = 1
 
@@ -196,7 +190,6 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         # Initialize a random number generator for this test
         rng = np.random.RandomState(rng_seed)
         # Construct the SS_DEV_NET object that we will be training
-        mlp_params['dev_types'] = [1, 1, 5]
         NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
         # Run test with DEV regularization on unsupervised examples
         sgd_params['result_tag'] = "ss_dev_500x500_s{0:d}_{1:d}".format(su_count,test_num)
@@ -239,10 +232,8 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     # Set some reasonable mlp parameters
     mlp_params = {}
     mlp_params['layer_sizes'] = [28*28, 500, 500, 11]
-    mlp_params['dev_clones'] = 1
     mlp_params['dev_types'] = [1, 1, 5]
     mlp_params['dev_lams'] = [0.1, 0.1, 0.1]
-    mlp_params['dev_mix_rate'] = 0.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 
@@ -327,10 +318,8 @@ def test_dropout_ala_original():
     # Set parameters for the network to be trained
     mlp_params = {}
     mlp_params['layer_sizes'] = [28*28, 800, 800, 11]
-    mlp_params['dev_clones'] = 1
     mlp_params['dev_types'] = [1, 1, 2]
     mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
-    mlp_params['dev_mix_rate'] = 1.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 
@@ -365,9 +354,9 @@ if __name__ == '__main__':
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
     #batch_test_ss_mlp(test_count=10, su_count=100)
-    #batch_test_ss_mlp(test_count=10, su_count=600)
+    batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
-    batch_test_ss_mlp(test_count=10, su_count=3000)
+    #batch_test_ss_mlp(test_count=10, su_count=3000)
     #batch_test_ss_mlp_gentle(test_count=20, su_count=100)
 
 
