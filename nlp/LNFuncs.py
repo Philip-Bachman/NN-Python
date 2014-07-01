@@ -1,6 +1,5 @@
 import numpy as np
 import numpy.random as npr
-import gnumpy as gp
 
 ##############################################################################
 # The functions below (i.e. ----_trans(X, mode)) provide a collection of     #
@@ -23,7 +22,7 @@ def line_trans(X, mode='ff'):
         F = X
     if (mode == 'bp'):
         F = X['dLdA']
-    return gp.garray(F)
+    return F
 
 def relu_trans(X, mode='ff'):
     """Compute feedforward and backprop for ReLu nonlinearity."""
@@ -43,14 +42,14 @@ def rehu_trans(X, mode='ff'):
     if (mode == 'bp'):
         M_quad = (X['A'] < 0.25)
         M_line = 1.0 - M_quad
-        F = (2.0 * M_quad * gp.sqrt(X['A'])) + M_line
+        F = (2.0 * M_quad * np.sqrt(X['A'])) + M_line
         F = F * X['dLdA']
     return F
 
 def tanh_trans(X, mode='ff'):
     """Compute feedforward and backprop for tanh nonlinearity."""
     if (mode == 'ff'):
-        F = gp.tanh(X)
+        F = np.tanh(X)
     if (mode == 'bp'):
         F = (1.0 - X['A']**2.0) * X['dLdA']
     return F
@@ -59,15 +58,12 @@ def norm_trans(X, mode='ff'):
     """Compute feedforward and backprop for unit-normalization."""
     EPS = 0.00000001
     if (mode == 'ff'):
-        N = gp.sqrt(gp.sum(X**2.0, axis=1) + EPS)
-        N = N[:,gp.newaxis]
+        N = np.sqrt(np.sum(X**2.0, axis=1, keepdims=1) + EPS)
         F = X / N
     if (mode == 'bp'):
-        N = gp.sqrt(gp.sum(X['X']**2.0, axis=1) + EPS)
-        N = N[:,gp.newaxis]
+        N = np.sqrt(np.sum(X['X']**2.0, axis=1, keepdims=1) + EPS)
         V = X['dLdA'] * X['X']
-        V = gp.sum(V, axis=1)
-        V = V[:,gp.newaxis]
+        V = np.sum(V, axis=1, keepdims=1)
         F = (X['dLdA'] / N) - (X['A'] * (V / (N**2.0)))
     return F
 
@@ -110,7 +106,7 @@ def dev_loss(A, dev_type=1, use_shepherd=0):
     N = float(A[0].shape[1])
     n = float(b_reps)
     m = float(b_obs * b_reps * N)
-    Am = gp.zeros(At[0].shape)
+    Am = np.zeros(At[0].shape)
     if (use_shepherd != 1):
         for i in range(b_reps):
             Am = Am + At[i]
@@ -119,10 +115,10 @@ def dev_loss(A, dev_type=1, use_shepherd=0):
         Am = At[0]
     # Compute difference from mean of each set of droppy activations
     Ad = [(At[i] - Am) for i in range(b_reps)]
-    L = sum([gp.sum(ad**2.0) for ad in Ad]) / m
+    L = sum([np.sum(ad**2.0) for ad in Ad]) / m
     dLdA = []
     if (use_shepherd != 1):
-        Add = gp.zeros(At[0].shape)
+        Add = np.zeros(At[0].shape)
         for i in range(b_reps):
             Add = Add + Ad[i]
         for i in range(b_reps):
@@ -131,7 +127,7 @@ def dev_loss(A, dev_type=1, use_shepherd=0):
     else:
         for i in range(b_reps):
             if (i == 0):
-                dLdA.append(gp.zeros(Ad[0].shape))
+                dLdA.append(np.zeros(Ad[0].shape))
             else:
                 dLdA.append((2.0 / m) * Ad[i])
         for i in range(1,b_reps):
@@ -166,11 +162,11 @@ def loss_mclr(Yh, Y):
     # Get boolean mask for each observation's target class
     cl_mask = (Y > 0.0)
     # Compute softmax distribution tranform of Yh
-    sm_sum = gp.sum(gp.exp(Yh), axis=1)
-    P = gp.exp(Yh) / sm_sum[:,gp.newaxis]
+    sm_sum = np.sum(np.exp(Yh), axis=1, keepdims=1)
+    P = np.exp(Yh) / sm_sum
     dL = (P - cl_mask) / obs_count
-    logP = gp.log(P) * cl_mask
-    L = -gp.sum(logP) / obs_count
+    logP = np.log(P) * cl_mask
+    L = -np.sum(logP) / obs_count
     return {'L': L, 'dL': dL}
 
 def loss_mcl2h(Yh, Y):
@@ -184,7 +180,7 @@ def loss_mcl2h(Yh, Y):
     # note: margin_lapse is strictly non-negative
     margin_lapse = 1.0 - (Y * Yh)
     margin_lapse = (margin_lapse * (margin_lapse > 0.0))
-    L = gp.sum(margin_lapse**2.0) / obs_count
+    L = np.sum(margin_lapse**2.0) / obs_count
     dL = ((-2.0 / obs_count) * (Y * margin_lapse))
     return {'L': L, 'dL': dL}
 
@@ -197,7 +193,7 @@ def loss_lsq(Yh, Y):
     """
     obs_count = float(Y.shape[0])
     R = Yh - Y
-    L = gp.sum(R**2.0) / obs_count
+    L = np.sum(R**2.0) / obs_count
     dL = (2.0 / obs_count) * R
     return {'L': L, 'dL': dL}
 
@@ -210,10 +206,10 @@ def loss_hsq(Yh, Y, delta=0.5):
     """
     obs_count = float(Y.shape[0])
     R = Yh - Y
-    mask =(gp.abs(R) < delta)
+    mask =(np.abs(R) < delta)
     L = (mask * R**2.0) + ((1 - mask) * ((mask * R) - delta**2.0))
-    L = gp.sum(L) / obs_count
-    dL = ((2.0*delta) / obs_count) * ((mask * R) + ((1 - mask) * gp.sign(R)))
+    L = np.sum(L) / obs_count
+    dL = ((2.0*delta) / obs_count) * ((mask * R) + ((1 - mask) * np.sign(R)))
     return {'L': L, 'dL': dL}
 
 ######################################################################
@@ -222,7 +218,7 @@ def loss_hsq(Yh, Y, delta=0.5):
 
 def bias(X, bias_val=1.0):
     """Append a bias columns of magnitude bias_val to X."""
-    Xb = gp.concatenate((X, gp.ones((X.shape[0],1))), axis=1)
+    Xb = np.concatenate((X, np.ones((X.shape[0],1))), axis=1)
     return Xb
 
 def unbias(X):
@@ -245,8 +241,6 @@ def unbias(X):
 
 def class_cats(Yi):
     """Change +1/-1 class indicator matrix to categorical vector."""
-    if not gp.is_garray(Yi):
-        Yi = gp.garray(Yi)
     Yc = Yi.argmax(axis=1)
     return Yc
 
@@ -263,7 +257,7 @@ def class_inds(Yc, class_idx=np.array([0])):
         for c in range(Yi.shape[1]):
             if (Yc[o] == class_idx[c]):
                 Yi[o,c] = 1
-    return gp.garray(Yi)
+    return Yi
 
 ##########################################################
 # The functions below are basic convenience functions... #
@@ -276,14 +270,8 @@ def class_inds(Yc, class_idx=np.array([0])):
 
 def trte_split(X, Y, tr_frac):
     """Split the data in X/Y into training and testing portions."""
-    if gp.is_garray(X):
-        X = X.as_numpy_array()
-    else:
-        X = np.array(X)
-    if gp.is_garray(Y):
-        Y = Y.as_numpy_array()
-    else:
-        Y = np.array(Y)
+    X = np.array(X)
+    Y = np.array(Y)
     obs_count = X.shape[0]
     obs_dim = X.shape[1]
     tr_count = round(tr_frac * obs_count)
@@ -301,7 +289,7 @@ def trte_split(X, Y, tr_frac):
         else:
             Xte[(i - tr_count),:] = X[idx[i],:]
             Yte[(i - tr_count),:] = Y[idx[i],:]
-    return [gp.garray(Xtr), gp.garray(Ytr), gp.garray(Xte), gp.garray(Yte)]
+    return [Xtr, Ytr, Xte, Yte]
 
 def sample_obs(X, Y, Xs, Ys):
     """Sample a random subset of the observations in X/Y.
@@ -359,8 +347,8 @@ if __name__ == '__main__':
     from time import clock
     obs_count = 1000
     class_count = 100
-    Y = gp.sign(gp.randn((obs_count, class_count)))
-    Yh = gp.randn((obs_count, class_count))
+    Y = np.sign(npr.randn(obs_count, class_count))
+    Yh = npr.randn(obs_count, class_count)
     # Check that loss functions won't crash
     t1 = clock()
     print "Computing all losses 10 times:",
