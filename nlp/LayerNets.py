@@ -146,7 +146,7 @@ class KMaxNet:
         kml_1['filt_dim'] = 0
         kml_1['max_norm'] = 2.0
         kml_2 = {}
-        kml_2['num_filt'] = 25
+        kml_2['num_filt'] = 20
         kml_2['filt_len'] = 5
         kml_2['filt_dim'] = kml_1['num_filt']
         kml_2['max_norm'] = 2.0
@@ -201,15 +201,22 @@ class KMaxNet:
     def reset_moms(self, ada_init=0.0, clear_moms=False):
         """Reset all of the adagrad sum-of-squared-gradients accumulators."""
         # Reset adagrad sum-of-squared-gradient accumulators (only for LUT)
-        self.lut_moms['W'] = np.zeros(self.lut_moms['W'].shape)
+        self.lut_moms['W'] = np.zeros(self.lut_moms['W'].shape) + ada_init
         # Reset momentum accumulators for conv and full layers, if desired
         if clear_moms:
             for moms in self.conv_moms:
-                moms['W'] = np.zeros(moms['W'].shape)
-                moms['b'] = np.zeros(moms['b'].shape)
+                moms['W'] = np.zeros(moms['W'].shape) + ada_init
+                moms['b'] = np.zeros(moms['b'].shape) + ada_init
             for moms in self.full_moms:
-                moms['W'] = np.zeros(moms['W'].shape)
-                moms['b'] = np.zeros(moms['b'].shape)
+                moms['W'] = np.zeros(moms['W'].shape) + ada_init
+                moms['b'] = np.zeros(moms['b'].shape) + ada_init
+        return
+
+    def set_drop_rate(self, drop_rate=0.0):
+        """Set the drop rate in all droppy layers."""
+        # Set dropout rate
+        for drop_layer in self.drop_layers:
+            drop_layer.set_drop_rate(drop_rate)
         return
 
     def feedforward(self, X, use_dropout=False):
@@ -225,12 +232,11 @@ class KMaxNet:
                 k = int(((1.0 - a) * len(x)) + (a * self.k_max))
                 k = max(k, self.k_max)
                 km_layer.kmax.append(k)
-        # Set dropout rate
-        for drop_layer in self.drop_layers:
-            if use_dropout:
-                drop_layer.set_drop_rate(0.0)
-            else:
-                drop_layer.set_drop_rate(0.5)
+        # Setup dropout parameters
+        if use_dropout:
+            self.set_drop_rate(0.5)
+        else:
+            self.set_drop_rate(0.0)
         # Feedforward
         self.all_layers[0].feedforward(X, True)
         return self.all_layers[-1].Y
@@ -259,9 +265,13 @@ class KMaxNet:
             L = L - np.log(Yh_sm[i,y])
         dLdYh = Yh_sm - Y_i
         # Add a bit of loss and gradient for squared outputs
-        L = L + (1e-2 * 0.5 * np.sum(Yh**2.0))
-        dLdYh = dLdYh + (1e-2 * Yh)
-        return [L, dLdYh]
+        L = L + (1e-3 * 0.5 * np.sum(Yh**2.0))
+        dLdYh = dLdYh + (1e-3 * Yh)
+        # Compute accuracy of the predictions
+        yc = np.argmax(Y_i,axis=1)
+        yhc = np.argmax(Yh,axis=1)
+        acc = np.mean(yc == yhc)
+        return [L, dLdYh, acc]
 
     def mc_l2_hinge(self, Yh, Y):
         """Multi-class L2 hinge loss (as 1-vs-all)."""
@@ -278,6 +288,13 @@ class KMaxNet:
         dLdYh = dLdYh + (1e-2 * Yh)
         return [L, dLdYh]
 
+    def check_acc(self, X, Y):
+        """Check the classification accuracy on the input/outputs in X/Y."""
+        Yh = self.feedforward(X, use_dropout=0)
+        loss_info = self.cross_entropy(Yh, Y)
+        acc = loss_info[2]
+        return acc
+
     def process_training_batch(self, X, Y, learn_rate, use_dropout=False):
         """Process a batch of phrases Xb with labels Yb."""
         # Run feedforward for the batch
@@ -285,6 +302,7 @@ class KMaxNet:
         Yh = self.feedforward(X, use_dropout)
         # Compute loss and gradient for the network predictions
         loss_info = self.cross_entropy(Yh, Y)
+        acc = loss_info[2]
         L = loss_info[0] / batch_size
         dLdYh = loss_info[1] / batch_size
         # Run backprop for the given loss gradients
@@ -294,25 +312,29 @@ class KMaxNet:
         p_grad = self.lut_layer.param_grads['W']
         p_mom = p_mom + p_grad**2.0
         self.lut_layer.params['W'] -= \
-                (learn_rate * (p_grad / (np.sqrt(p_mom) + 1e-2)))
-        # Conv layers use standard momentum
+                (learn_rate * (p_grad / (np.sqrt(p_mom) + 1e-3)))
+        # Conv layers use adagrad updates
         for (layer, layer_moms) in zip(self.conv_layers, self.conv_moms):
-            layer_moms['W'] = (0.9 * layer_moms['W']) + layer.param_grads['W']
-            layer_moms['b'] = (0.9 * layer_moms['b']) + layer.param_grads['b']
-            layer.params['W'] -= learn_rate * layer_moms['W']
-            layer.params['b'] -= learn_rate * layer_moms['b']
-        # Full layers use standard momentum
+            layer_moms['W'] += layer.param_grads['W']**2.0
+            layer_moms['b'] += layer.param_grads['b']**2.0
+            layer.params['W'] -= learn_rate * \
+                    (layer.param_grads['W'] / np.sqrt(layer_moms['W'] + 1e-3))
+            layer.params['b'] -= learn_rate * \
+                    (layer.param_grads['b'] / np.sqrt(layer_moms['b'] + 1e-3))
+        # Full layers use adagrad updates
         for (layer, layer_moms) in zip(self.full_layers, self.full_moms):
-            layer_moms['W'] = (0.9 * layer_moms['W']) + layer.param_grads['W']
-            layer_moms['b'] = (0.9 * layer_moms['b']) + layer.param_grads['b']
-            layer.params['W'] -= learn_rate * layer_moms['W']
-            layer.params['b'] -= learn_rate * layer_moms['b']
+            layer_moms['W'] += layer.param_grads['W']**2.0
+            layer_moms['b'] += layer.param_grads['b']**2.0
+            layer.params['W'] -= learn_rate * \
+                    (layer.param_grads['W'] / np.sqrt(layer_moms['W'] + 1e-3))
+            layer.params['b'] -= learn_rate * \
+                    (layer.param_grads['b'] / np.sqrt(layer_moms['b'] + 1e-3))
         # Reset gradient accumulators and apply norm bounds (via clipping)
         for layer in self.all_layers:
             if layer.has_params:
                 layer.clip_params()
                 layer.reset_grads(shrink=0.0)
-        return L
+        return [L, acc]
 
     def dev_loss(self, X, Y, M, Ws=[]):
         """Compute DEV-regularized loss for inputs X with target outputs Y.

@@ -19,7 +19,7 @@ if __name__ == '__main__':
     basic_opts['class_count'] = 5
     lut_opts = {}
     lut_opts['max_key'] = max_lut_idx
-    lut_opts['embed_dim'] = 25
+    lut_opts['embed_dim'] = 30
     lut_opts['max_norm'] = 2.0
     basic_opts['lut_layer'] = lut_opts
 
@@ -34,8 +34,8 @@ if __name__ == '__main__':
         train_phrases.extend(phrases)
         train_labels.extend(labels)
 
-    batch_size = 128
-    epoch_batches = 2000
+    batch_size = 50
+    epoch_batches = 2500
     learn_rate = 0.01
     train_pairs = [(phrase, label) for (phrase, label) in zip(train_phrases, train_labels)]
     train_phrases = []
@@ -49,6 +49,7 @@ if __name__ == '__main__':
         completed_batches = 0
         # Perform batch updates for the current epoch
         L = 0.0
+        acc = 0.0
         t1 = clock()
         random.shuffle(train_pairs)
         if ((e % 5) == 0):
@@ -59,16 +60,19 @@ if __name__ == '__main__':
             # Train on this batch, and count its completion
             Xb = [pair[0] for pair in batch_pairs]
             Yb = [pair[1] for pair in batch_pairs]
-            L += KMN.process_training_batch(Xb, Yb, learn_rate, use_dropout=False)
+            res = KMN.process_training_batch(Xb, Yb, learn_rate, use_dropout=True)
+            L += res[0]
+            acc += res[1]
             completed_batches += 1
             # Advance batch extraction indices
             batch_start = batch_start + batch_size
             batch_end = batch_start + batch_size
             # Print diagnostic info from time-to-time
             if ((completed_batches % 50) == 0):
-                print("completed {0:d} updates, with average loss {1:.4f}".format( \
-                        completed_batches, (L / 50.0)))
+                print("completed {0:d} updates, with loss {1:.4f} and acc {2:.4f}".format( \
+                        completed_batches, (L / 50.0), (acc / 50.0)))
                 L = 0.0
+                acc = 0.0
                 t2 = clock()
                 print("-- time: {0:.2f}".format(t2-t1))
                 t1 = clock()
