@@ -185,8 +185,12 @@ def SimpleLoad(tree_dir, keep_trees_grouped=True):
     # Get the training set phrases and labels
     dataset['train_phrases'] = []
     dataset['train_labels'] = []
+    dataset['train_full_phrases'] = []
+    dataset['train_full_labels'] = []
     for tree in stbp.train_trees:
         lutis_and_labels = tree.get_lutis_and_labels()
+        dataset['train_full_phrases'].append(lutis_and_labels[0][-1])
+        dataset['train_full_labels'].append(lutis_and_labels[1][-1])
         if keep_trees_grouped:
             dataset['train_phrases'].append(lutis_and_labels[0])
             dataset['train_labels'].append(lutis_and_labels[1])
@@ -196,8 +200,12 @@ def SimpleLoad(tree_dir, keep_trees_grouped=True):
     # Get the development set phrases and labels
     dataset['dev_phrases'] = []
     dataset['dev_labels'] = []
+    dataset['dev_full_phrases'] = []
+    dataset['dev_full_labels'] = []
     for tree in stbp.dev_trees:
         lutis_and_labels = tree.get_lutis_and_labels()
+        dataset['dev_full_phrases'].append(lutis_and_labels[0][-1])
+        dataset['dev_full_labels'].append(lutis_and_labels[1][-1])
         if keep_trees_grouped:
             dataset['dev_phrases'].append(lutis_and_labels[0])
             dataset['dev_labels'].append(lutis_and_labels[1])
@@ -207,8 +215,12 @@ def SimpleLoad(tree_dir, keep_trees_grouped=True):
     # Get the testing set phrases and labels
     dataset['test_phrases'] = []
     dataset['test_labels'] = []
+    dataset['test_full_phrases'] = []
+    dataset['test_full_labels'] = []
     for tree in stbp.train_trees:
         lutis_and_labels = tree.get_lutis_and_labels()
+        dataset['test_full_phrases'].append(lutis_and_labels[0][-1])
+        dataset['test_full_labels'].append(lutis_and_labels[1][-1])
         if keep_trees_grouped:
             dataset['test_phrases'].append(lutis_and_labels[0])
             dataset['test_labels'].append(lutis_and_labels[1])
