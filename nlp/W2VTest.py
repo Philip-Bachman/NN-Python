@@ -11,31 +11,6 @@ def simple_stb_test(tree_dir='./trees'):
     stb_data = st.SimpleLoad(tree_dir)
     return
 
-def rand_word_pairs(phrase_list, pair_count, context_size):
-    """Sample random anchor/context pairs for skip-gram training.
-
-    Given a list of phrases, where each phrase is described by a list of
-    indices into a look-up-table, sample random pairs of anchor word and
-    context word for training a skip-gram model. The skip-gram objective is
-    to predict the context word given the anchor word. The "context_size"
-    determines the max separation between sampled context words and their
-    corresponding anchor.
-    """
-    phrase_count = len(phrase_list)
-    anchor_idx = np.zeros((pair_count,), dtype=np.int32)
-    context_idx = np.zeros((pair_count,), dtype=np.int32)
-    for i in range(pair_count):
-        phrase_idx = random.randint(0, phrase_count-1)
-        phrase = phrase_list[phrase_idx]
-        phrase_len = len(phrase)
-        a_idx = random.randint(0, phrase_len-1)
-        c_max = min((a_idx+context_size), phrase_len-1)
-        c_min = max((a_idx-context_size), 0)
-        c_idx = random.randint(c_min, c_max)
-        anchor_idx[i] = a_idx
-        context_idx[i] = c_idx
-    return [anchor_idx, context_idx]
-
 if __name__ == '__main__':
     # Load tree data
     tree_dir = './trees'
@@ -44,19 +19,22 @@ if __name__ == '__main__':
 
     all_phrases = stb_data['train_full_phrases']
 
-    batch_count = 1000
-    batch_size = 500
+    batch_count = 5000
+    batch_size = 256
     context_size = 5
     word_count = max_lut_idx + 1
     embed_dim = 100
+    bias_dim = 100
+    lam_l2 = 1e-5
 
     # Create a lookup table for word representations
     word_lut = w2v.LUTLayer(word_count, embed_dim)
     tanh_layer = w2v.TanhLayer(in_layer=word_lut)
     noise_layer = w2v.NoiseLayer(in_layer=tanh_layer, drop_rate=0.0, fuzz_scale=0.0)
+    phrase_layer = w2v.CMLayer(key_count=len(all_phrases), source_dim=embed_dim, bias_dim=bias_dim)
 
     # Create a full/softmax layer for classification
-    class_layer = w2v.GPUFullLayer(in_layer=False, in_dim=embed_dim, out_dim=word_count)
+    class_layer = w2v.FullLayer(in_layer=False, in_dim=(bias_dim+embed_dim), out_dim=word_count)
 
     # Initialize params for the LUT and softmax classifier
     word_lut.init_params(0.05)
@@ -68,36 +46,39 @@ if __name__ == '__main__':
     for b in range(batch_count):
         # Sample a batch of random anchor/context prediction pairs for
         # training a skip-gram model.
-        [a_idx, c_idx] = rand_word_pairs(all_phrases, batch_size, context_size)
+        [a_idx, c_idx, p_idx] = w2v.rand_word_pairs(all_phrases, batch_size, context_size)
 
         tt = clock()
-        # Feedforward through word look-up, tanh, and noise
-        word_lut.feedforward(a_idx, auto_prop=True)
-        Xb = noise_layer.Y
+        # Feedforward through word look-up and phrase biasing/reweighting
+        Xb = word_lut.feedforward(a_idx)
+        Xp = phrase_layer.feedforward(Xb, p_idx)
         table_time += clock() - tt
 
-        # Feedforward through classification/prediction layer
-        Yb = class_layer.feedforward(Xb)
-        Y_ind = np.zeros(Yb.shape)
-        Y_ind[np.arange(Y_ind.shape[0]), c_idx] = 1.0
+        # Feedforward and backprop through prediction layer
+        Yb = class_layer.feedforward(Xp)
 
-        # Get get gradients on output of classification/prediction layer
-        dLdYb = class_layer.cross_entropy(Yb, Y_ind)
-        if ((b % 10) == 0):
-            L = class_layer.check_loss(Yb, Y_ind)
+        # Compute and display loss from time-to-time (for diagnostics)
+        if ((b % 5) == 0):
+            L = class_layer.check_loss(Yb, c_idx)
             print("Batch {0:d}, loss {1:.4f}".format(b, L))
 
-        # Backprop through classification/prediction layer
-        dLdXb = class_layer.backprop(dLdYb)
-        # Update softmax/prediction params based on batch gradients
-        class_layer.apply_grads(learn_rate=2e-3, ada_smooth=1e-3)
+        # Backprop through prediction layer
+        dLdXp = class_layer.backprop_sm(c_idx)
 
         tt = clock()
-        # Backprop through word look-up-table, tanh, and noise
-        noise_layer.backprop(gp.as_numpy_array(dLdXb), auto_prop=True)
-        # Update look-up-table based on gradients for this batch
-        word_lut.apply_grads(learn_rate=2e-3, ada_smooth=1e-3)
+        # Backprop through phrase biasing and reweighting
+        dLdXb = phrase_layer.backprop(dLdXp)
+        # Backprop through word look-up-table
+        word_lut.backprop(dLdXb)
         table_time += clock() - tt
+
+        # Update parameters based on the gradients for this batch
+        word_lut.l2_regularize(lam_l2)
+        class_layer.l2_regularize(lam_l2)
+        phrase_layer.l2_regularize(lam_l2)
+        word_lut.apply_grads(learn_rate=2e-3, ada_smooth=1e-3)
+        class_layer.apply_grads(learn_rate=2e-3, ada_smooth=1e-3)
+        phrase_layer.apply_grads(learn_rate=2e-3, ada_smooth=1e-3)
 
     t2 = clock()
     e_time = t2 - t1
