@@ -19,11 +19,11 @@ if __name__ == '__main__':
 
     all_phrases = stb_data['train_full_phrases']
 
-    batch_count = 5000
+    batch_count = 50000
     batch_size = 256
     context_size = 5
     word_count = max_lut_idx + 1
-    embed_dim = 100
+    embed_dim = 300
     bias_dim = 100
     lam_l2 = 1e-5
 
@@ -34,7 +34,7 @@ if __name__ == '__main__':
     phrase_layer = w2v.CMLayer(key_count=len(all_phrases), source_dim=embed_dim, bias_dim=bias_dim)
 
     # Create a full/softmax layer for classification
-    class_layer = w2v.FullLayer(in_layer=False, in_dim=(bias_dim+embed_dim), out_dim=word_count)
+    class_layer = w2v.GPUFullLayer(in_layer=False, in_dim=(bias_dim+embed_dim), out_dim=word_count)
 
     # Initialize params for the LUT and softmax classifier
     word_lut.init_params(0.05)
@@ -67,7 +67,7 @@ if __name__ == '__main__':
 
         tt = clock()
         # Backprop through phrase biasing and reweighting
-        dLdXb = phrase_layer.backprop(dLdXp)
+        dLdXb = phrase_layer.backprop(gp.as_numpy_array(dLdXp))
         # Backprop through word look-up-table
         word_lut.backprop(dLdXb)
         table_time += clock() - tt
@@ -76,9 +76,9 @@ if __name__ == '__main__':
         word_lut.l2_regularize(lam_l2)
         class_layer.l2_regularize(lam_l2)
         phrase_layer.l2_regularize(lam_l2)
-        word_lut.apply_grads(learn_rate=2e-3, ada_smooth=1e-3)
-        class_layer.apply_grads(learn_rate=2e-3, ada_smooth=1e-3)
-        phrase_layer.apply_grads(learn_rate=2e-3, ada_smooth=1e-3)
+        word_lut.apply_grads(learn_rate=1e-3, ada_smooth=1e-3)
+        class_layer.apply_grads(learn_rate=1e-3, ada_smooth=1e-3)
+        phrase_layer.apply_grads(learn_rate=1e-3, ada_smooth=1e-3)
 
     t2 = clock()
     e_time = t2 - t1
