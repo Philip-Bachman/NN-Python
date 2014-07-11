@@ -17,6 +17,8 @@ if __name__ == '__main__':
     stb_data = st.SimpleLoad(tree_dir)
     max_lut_idx = max(stb_data['lut_keys'].values())
 
+    # negligible change
+
     all_phrases = stb_data['train_full_phrases']
 
     batch_count = 50000
