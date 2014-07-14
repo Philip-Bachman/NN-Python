@@ -60,9 +60,13 @@ if __name__ == '__main__':
         Yb = class_layer.feedforward(Xp)
 
         # Compute and display loss from time-to-time (for diagnostics)
-        if ((b % 5) == 0):
+        if ((b % 20) == 0):
             L = class_layer.check_loss(Yb, c_idx)
             print("Batch {0:d}, loss {1:.4f}".format(b, L))
+        if ((b % 1000) == 0):
+            word_lut.reset_moms()
+            class_layer.reset_moms()
+            phrase_layer.reset_moms()
 
         # Backprop through prediction layer
         dLdXp = class_layer.backprop_sm(c_idx)
