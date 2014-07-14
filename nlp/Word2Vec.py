@@ -14,14 +14,14 @@ class NSLayer:
         self.dim_input = in_dim
         self.key_count = key_count
         self.params = {}
-        self.params['W'] = npr.randn(in_dim, key_count)
-        self.params['b'] = np.zeros((1, key_count))
+        self.params['W'] = npr.randn(key_count, in_dim)
+        self.params['b'] = np.zeros((key_count,))
         self.param_grads = {}
-        self.param_grads['W'] = np.zeros((in_dim, key_count))
-        self.param_grads['b'] = np.zeros((1, key_count))
+        self.param_grads['W'] = np.zeros((key_count, in_dim))
+        self.param_grads['b'] = np.zeros((key_count,))
         self.param_moms = {}
-        self.param_moms['W'] = np.zeros((in_dim, key_count))
-        self.param_moms['b'] = np.zeros((1, key_count))
+        self.param_moms['W'] = np.zeros((key_count, in_dim))
+        self.param_moms['b'] = np.zeros((key_count,))
         self.max_norm = 10.0
         self.comp_time = 0.0
         # Set common stuff for all types layers
@@ -37,10 +37,10 @@ class NSLayer:
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
         """Randomly initialize the weights in this layer."""
-        self.params['W'] = w_scale * npr.randn(self.dim_input, self.key_count)
-        self.param_grads['W'] = np.zeros((self.dim_input, self.key_count))
-        self.params['b'] = np.zeros((1, self.key_count))
-        self.param_grads['b'] = np.zeros((1, self.key_count))
+        self.params['W'] = w_scale * npr.randn(self.key_count, self.dim_input)
+        self.param_grads['W'] = np.zeros((self.key_count, self.dim_input))
+        self.params['b'] = np.zeros((self.key_count,))
+        self.param_grads['b'] = np.zeros((self.key_count,))
         return
 
     def clip_params(self):
@@ -48,12 +48,12 @@ class NSLayer:
         EPS = 1e-5
         W = self.params['W']
         # Compute L2 norm of weights inbound to each node in this layer
-        w_norms = np.sqrt(np.sum(W**2.0,axis=0) + EPS)
+        w_norms = np.sqrt(np.sum(W**2.0,axis=1) + EPS)
         # Compute scales based on norms and the upperbound set by wt_bnd
         w_scales = self.max_norm / w_norms
         mask = (w_scales < 1.0)
         w_scales = (w_scales * mask) + (1.0 - mask)
-        w_scales = w_scales[np.newaxis,:]
+        w_scales = w_scales[:,np.newaxis]
         # Rescale weights to meet the bound set by wt_bnd
         W = W * w_scales
         return
@@ -65,28 +65,36 @@ class NSLayer:
         indices into this look-up-table, and neg_samples should be a matrix
         whose columns are lut indices for some negative samples.
         """
-        assert(X.shape[1] == self.params['W'].shape[0])
+        assert(X.shape[1] == self.params['W'].shape[1])
         assert(pos_samples.shape[0] == X.shape[0])
         assert(neg_samples.shape[0] == X.shape[0])
-        assert(pos_samples.shape[1] == 1)
         t1 = clock()
         # Cleanup detritus from any previous feedforward
         self._cleanup()
         # Do new feedforward...
+        pos_samples = pos_samples[:,np.newaxis]
         pos_samples = np.maximum(pos_samples, self.key_count-1)
         neg_samples = np.maximum(neg_samples, self.key_count-1)
         self.X = X
-        self.samp_keys = np.hcat([pos_samples, neg_samples]).astype(np.int32)
+        self.samp_keys = np.hstack((pos_samples, neg_samples))
         W = self.params['W']
         b = self.params['b']
         Y = np.zeros((X.shape[0], self.samp_keys.shape[1]))
         for i in range(self.samp_keys.shape[1]):
             keys = self.samp_keys[:,i]
-            Y[:,i] = np.sum(X.T * W[:,keys], axis=0) + b[keys]
+            Y[:,i] = np.sum(X * W[keys,:], axis=1) + b[keys]
+        # Using the outputs for these positive and negative samples, compute
+        # loss and gradients for pseudo noise-contrastive training.
+        samp_sign = np.ones(self.samp_keys.shape)
+        samp_sign[:,0] = -1.0
+        exp_ss_y = np.exp(samp_sign * Y)
+        L = np.sum(np.log(1.0 + exp_ss_y))
+        dLdY = samp_sign * (exp_ss_y / (1.0 + exp_ss_y))
+        self.dLdY = dLdY
         self.Y = Y
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
-        return self.Y
+        return L
 
     def backprop(self):
         """Backprop through this layer, based on most recent feedforward.
@@ -98,18 +106,18 @@ class NSLayer:
         db = self.param_grads['b']
         samp_keys = self.samp_keys
         samp_sign = np.ones(samp_keys.shape)
+        samp_sign = np.ones(self.samp_keys.shape)
         samp_sign[:,0] = -1.0
-        dLdY = np.log(1.0 + np.exp(samp_sign * self.Y))
+        dLdY = self.dLdY
         dLdX = np.zeros(self.X.shape)
         self.grad_idx.update(samp_keys.ravel())
         for i in range(dLdY.shape[0]):
             for j in range(dLdY.shape[1]):
                 dldy = dLdY[i,j]
                 s_key = samp_keys[i,j]
-                db[0,s_key] += dldy
-                dW[:,s_key] += dldy * X[i,:]
-                dLdX[i,:] += dldy * W[:,s_key]
-        self.dLdY = dLdY
+                db[s_key] += dldy
+                dW[s_key,:] += dldy * X[i,:]
+                dLdX[i,:] += dldy * W[s_key,:]
         self.dLdX = dLdX
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
@@ -117,29 +125,21 @@ class NSLayer:
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
-        t1 = clock()
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        self.param_grads['b'] += lam_l2 * self.params['b']
-        L = 0.5 * lam_l2 * (np.sum(self.params['W']**2.0) + \
-                np.sum(self.params['b']**2.0))
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
-        return L
+        self.params['W'] -= lam_l2 * self.params['W']
+        self.params['b'] -= lam_l2 * self.params['b']
+        return 1
 
     def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
-        t1 = clock()
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx])
         self.param_moms['W'][nz_idx,:] += self.param_grads['W'][nz_idx,:]**2.0
         self.params['W'][nz_idx,:] -= learn_rate * (self.param_grads['W'][nz_idx,:] / \
                 (np.sqrt(self.param_moms['W'][nz_idx,:]) + ada_smooth))
-        self.param_moms['b'][nz_idx,:] += self.param_grads['b'][nz_idx,:]**2.0
-        self.params['b'][nz_idx,:] -= learn_rate * (self.param_grads['b'][nz_idx,:] / \
-                (np.sqrt(self.param_moms['b'][nz_idx,:]) + ada_smooth))
+        self.param_moms['b'][nz_idx] += self.param_grads['b'][nz_idx]**2.0
+        self.params['b'][nz_idx] -= learn_rate * (self.param_grads['b'][nz_idx] / \
+                (np.sqrt(self.param_moms['b'][nz_idx]) + ada_smooth))
         self.reset_grads()
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return
 
     def reset_grads(self):
@@ -263,23 +263,18 @@ class HSMLayer:
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        self.param_grads['b'] += lam_l2 * self.params['b']
-        L = 0.5 * lam_l2 * (np.sum(self.params['W']**2.0) + \
-                np.sum(self.params['b']**2.0))
-        return L
+        self.params['W'] -= lam_l2 * self.params['W']
+        self.params['b'] -= lam_l2 * self.params['b']
+        return 1
 
     def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
-        t1 = clock()
         self.param_moms['W'] += self.param_grads['W']**2.0
         self.param_moms['b'] += self.param_grads['b']**2.0
         self.params['W'] -= learn_rate * (self.param_grads['W'] / \
                 (np.sqrt(self.param_moms['W']) + ada_smooth))
         self.params['b'] -= learn_rate * (self.param_grads['b'] / \
                 (np.sqrt(self.param_moms['b']) + ada_smooth))
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         self.reset_grads()
         return
 
@@ -436,11 +431,9 @@ class GPUFullLayer:
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        self.param_grads['b'] += lam_l2 * self.params['b']
-        L = 0.5 * lam_l2 * (gp.sum(self.params['W']**2.0) + \
-                gp.sum(self.params['b']**2.0))
-        return L
+        self.params['W'] -= lam_l2 * self.params['W']
+        self.params['b'] -= lam_l2 * self.params['b']
+        return 1
 
     def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
@@ -594,11 +587,9 @@ class FullLayer:
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        self.param_grads['b'] += lam_l2 * self.params['b']
-        L = 0.5 * lam_l2 * (np.sum(self.params['W']**2.0) + \
-                np.sum(self.params['b']**2.0))
-        return L
+        self.params['W'] -= lam_l2 * self.params['W']
+        self.params['b'] -= lam_l2 * self.params['b']
+        return 1
 
     def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
@@ -692,52 +683,42 @@ class LUTLayer:
         The input passed to feedforward here should be either a single list
         of integer indices into the look-up table or a list of lut index lists.
         """
-        t1 = clock()
         # Cleanup detritus from any previous feedforward
         self._cleanup()
         # Record the incoming list of row indices to extract
         self.X = X.astype(np.int32)
         # Use look-up table to generate the desired sequences
         self.Y = self.params['W'][self.X,:]
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         if auto_prop and self.output_layer:
             self.output_layer.feedforward(self.Y, True)
         return self.Y
 
-    def backprop(self, dLdY_bp, auto_prop=False):
+    def backprop(self, dLdY, auto_prop=False):
         """Backprop through this layer.
         """
-        t1 = clock()
-        self.dLdY = dLdY_bp
+        self.dLdY = dLdY
+        self.grad_idx.update(self.X.ravel())
+        X = self.X
+        dW = self.param_grads['W']
         # Add the gradients to the gradient accumulator
-        for i in range(self.dLdY.shape[0]):
-            self.grad_idx.add(int(self.X[i]))
-            self.param_grads['W'][self.X[i],:] += self.dLdY[i,:]
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
-        return self.param_grads['W']
+        for i in range(dLdY.shape[0]):
+            dW[X[i],:] += dLdY[i,:]
+        self.param_grads['W'] = dW
+        return 1
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
-        t1 = clock()
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        L = 0.5 * lam_l2 * np.sum(self.params['W']**2.0)
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
-        return L
+        self.params['W'] -= lam_l2 * self.params['W']
+        return 1
 
     def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
-        t1 = clock()
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx])
         self.param_moms['W'][nz_idx,:] += self.param_grads['W'][nz_idx,:]**2.0
         self.params['W'][nz_idx,:] -= learn_rate * (self.param_grads['W'][nz_idx,:] / \
                 (np.sqrt(self.param_moms['W'][nz_idx,:]) + ada_smooth))
         self.reset_grads()
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return
 
     def reset_grads(self):
@@ -807,18 +788,12 @@ class CMLayer:
     def clip_params(self):
         """Bound L2 (row-wise) norm of W and b by wt_bnd."""
         EPS = 1e-5
+        # Rescale some parameters to unit norm
         M = self.params['W']
-        # Compute L2 norm of weights inbound to each node in this layer
-        m_norms = np.sqrt(np.sum(M**2.0,axis=1) + EPS)
-        # Compute scales based on norms and the upperbound set by wt_bnd
-        m_scales = self.max_norm / m_norms
+        m_scales = self.max_norm / np.sqrt(np.sum(M**2.0,axis=1) + EPS)
         mask = (m_scales < 1.0)
         m_scales = (m_scales * mask) + (1.0 - mask)
-        m_scales = m_scales[:,np.newaxis]
-        # Rescale weights to meet the bound set by wt_bnd
-        M = M * m_scales
-        # Store clipped parameters
-        self.params['W'] = M
+        self.params['W'] = M * m_scales[:,np.newaxis]
         # Do it again
         M = self.params['b']
         m_scales = self.max_norm / np.sqrt(np.sum(M**2.0,axis=1) + EPS)
@@ -840,9 +815,7 @@ class CMLayer:
         W_exp = np.exp(self.params['W'][C,:])
         W_sig = W_exp / (1.0 + W_exp)
         # Modify X by scaling and augmenting
-        self.Y = np.zeros((X.shape[0], (self.bias_dim + self.source_dim)))
-        self.Y[:,0:self.bias_dim] = self.params['b'][C,:]
-        self.Y[:,self.bias_dim:] = X * W_sig
+        self.Y = np.hstack((self.params['b'][C,:], (X * W_sig)))
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
         if auto_prop and self.output_layer:
@@ -875,16 +848,11 @@ class CMLayer:
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
-        t1 = clock()
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        L = 0.5 * lam_l2 * np.sum(self.params['W']**2.0)
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
-        return L
+        self.params['W'] -= lam_l2 * self.params['W']
+        return 1
 
     def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
-        t1 = clock()
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx])
         self.param_moms['W'][nz_idx,:] += self.param_grads['W'][nz_idx,:]**2.0
@@ -893,8 +861,6 @@ class CMLayer:
         self.param_moms['b'][nz_idx,:] += self.param_grads['b'][nz_idx,:]**2.0
         self.params['b'][nz_idx,:] -= learn_rate * (self.param_grads['b'][nz_idx,:] / \
                 (np.sqrt(self.param_moms['b'][nz_idx,:]) + ada_smooth))
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         self.reset_grads()
         return
 
@@ -1083,6 +1049,36 @@ def rand_word_pairs(phrase_list, pair_count, context_size):
         anchor_idx[i] = a_idx
         context_idx[i] = c_idx
     return [anchor_idx, context_idx, phrase_idx]
+
+def rand_pos_neg(phrase_list, all_words, pair_count, context_size, neg_count):
+    """Sample random anchor/positive/negatvie pairs for training a skip-gram
+    model using "negative sampling" (i.e. "fake" noise-contrastive...).
+
+    """
+    phrase_count = len(phrase_list)
+    word_count = len(all_words)
+    # Give some things dimensions, but keep other things on-oriented, to
+    # compensate for numpy's horrible, nauseating dimension handling.
+    anchor_idx = np.zeros((pair_count,), dtype=np.int32)
+    pos_idx = np.zeros((pair_count,), dtype=np.int32)
+    neg_idx = np.zeros((pair_count,neg_count), dtype=np.int32)
+    phrase_idx = np.zeros((pair_count,), dtype=np.int32)
+    for i in range(pair_count):
+        phrase_idx[i] = random.randint(0, phrase_count-1)
+        phrase = phrase_list[phrase_idx[i]]
+        phrase_len = len(phrase)
+        a_idx = random.randint(0, phrase_len-1)
+        c_max = min((a_idx+context_size), phrase_len-1)
+        c_min = max((a_idx-context_size), 0)
+        c_idx = random.randint(c_min, c_max)
+        # Record the anchor word and its positive context word
+        anchor_idx[i] = a_idx
+        pos_idx[i] = c_idx
+        # Sample a random negative example from the full word list
+        for j in range(neg_count):
+            n_idx = random.randint(0, word_count-1)
+            neg_idx[i,j] = all_words[n_idx]
+    return [anchor_idx, pos_idx, neg_idx, phrase_idx]
 
 if __name__ == '__main__':
     batch_count = 10
