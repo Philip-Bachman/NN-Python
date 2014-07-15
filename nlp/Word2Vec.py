@@ -38,8 +38,8 @@ def nsl_fp_loop(table_idx, X, W, b, Y):
                 Y[i,j] += X[i,k] * W[idx,k]
     return
 
-@numba.jit("void(i4[:], f8[:,:], f8[:,:], f8[:,:], f8, f8)")
-def ag_update_2d(row_idx, W, dW, mW, learn_rate, ada_smooth):
+@numba.jit("void(i4[:], f8[:,:], f8[:,:], f8[:,:], f8, f8, f8)")
+def ag_update_2d(row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
     """Row-wise partial update ala adagrad.
 
     This updates params and adagrad "momentums", and then zeros the grads.
@@ -49,13 +49,14 @@ def ag_update_2d(row_idx, W, dW, mW, learn_rate, ada_smooth):
     for i in range(row_count):
         idx = row_idx[i]
         for j in range(vec_dim):
+            dW[idx,j] += lam_l2 * W[idx,j]
             mW[idx,j] += math.pow(dW[idx,j], 2)
             W[idx,j] -= learn_rate * (dW[idx,j] / (math.sqrt(mW[idx,j]) + ada_smooth))
             dW[idx,j] = 0.0
     return
 
-@numba.jit("void(i4[:], f8[:], f8[:], f8[:], f8, f8)")
-def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth):
+@numba.jit("void(i4[:], f8[:], f8[:], f8[:], f8, f8, f8)")
+def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
     """Element-wise partial update ala adagrad.
 
     This updates params and adagrad "momentums", and then zeros the grads.
@@ -63,6 +64,7 @@ def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth):
     row_count = row_idx.shape[0]
     for i in range(row_count):
         idx = row_idx[i]
+        dW[idx] += lam_l2 * W[idx]
         mW[idx] += math.pow(dW[idx], 2)
         W[idx] -= learn_rate * (dW[idx] / (math.sqrt(mW[idx]) + ada_smooth))
         dW[idx] = 0.0
@@ -70,10 +72,10 @@ def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth):
 
 @numba.jit("void(i4[:], f8[:,:], f8[:,:])")
 def lut_bp(row_idx, dLdY, dW):
-    """Row-wise partial update ala adagrad.
+    """Simple row-wise updates for adjusting dW with dLdY.
 
-    This updates params and adagrad "momentums", and then zeros the grads.
-    """
+    This adds each row of dLdY to some row of dW. The row of dW to adjust
+    is given by the corresponding item in row_idx."""
     row_count = row_idx.shape[0]
     vec_dim = dW.shape[1]
     for i in range(row_count):
@@ -188,14 +190,14 @@ class NSLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return 1
 
-    def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
+    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
-                         self.param_moms['W'], learn_rate, ada_smooth)
+                     self.param_moms['W'], learn_rate, ada_smooth, lam_l2)
         ag_update_1d(nz_idx, self.params['b'], self.param_grads['b'], \
-                         self.param_moms['b'], learn_rate, ada_smooth)
+                     self.param_moms['b'], learn_rate, ada_smooth, lam_l2)
         self.grad_idx = set()
         return
 
@@ -205,7 +207,7 @@ class NSLayer:
         self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
         return
 
-    def _cleanup(self, auto_prop=False):
+    def _cleanup(self):
         """Cleanup temporary feedforward/backprop stuff."""
         self.X = []
         self.Y = []
@@ -243,6 +245,7 @@ class HSMLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
+        self.trained_idx = set()
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -276,8 +279,9 @@ class HSMLayer:
         self._cleanup()
         # Do new feedforward...
         self.X = X
-        self.code_idx = code_idx
+        self.code_idx = code_idx.astype(np.int32)
         self.code_sign = code_sign
+        self.trained_idx.update(self.code_idx.ravel())
         W = self.params['W']
         b = self.params['b']
         Y = np.zeros((X.shape[0], code_idx.shape[1]))
@@ -317,8 +321,10 @@ class HSMLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return 1
 
-    def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
+    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
+        self.param_grads['W'] += lam_l2 * self.params['W']
+        self.param_grads['b'] += lam_l2 * self.params['b']
         self.param_moms['W'] += self.param_grads['W']**2.0
         self.param_moms['b'] += self.param_grads['b']**2.0
         self.params['W'] -= learn_rate * (self.param_grads['W'] / \
@@ -340,7 +346,7 @@ class HSMLayer:
         self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
         return
 
-    def _cleanup(self, auto_prop=False):
+    def _cleanup(self):
         """Cleanup temporary feedforward/backprop stuff."""
         self.X = []
         self.code_idx = []
@@ -376,14 +382,7 @@ class GPUFullLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        # Set the input source for this layer, and inform the input source of
-        # its output destination
-        self.input_layer = in_layer
-        if self.input_layer:
-            self.input_layer.output_layer = self
-        # Don't set self.output_layer, as it will be set by the layer that
-        # receives this layer's output as input (see above).
-        self.output_layer = False
+        self.trained_idx = set()
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -409,7 +408,7 @@ class GPUFullLayer:
         W = W * w_scales
         return
 
-    def feedforward(self, X, auto_prop=False):
+    def feedforward(self, X):
         """Run feedforward for this layer.
         """
         t1 = clock()
@@ -420,11 +419,9 @@ class GPUFullLayer:
         self.Y = gp.dot(self.X, self.params['W']) + self.params['b']
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
-        if auto_prop and self.output_layer:
-            self.output_layer.feedforward(self.Y, True)
         return self.Y
 
-    def backprop(self, dLdY, auto_prop=False):
+    def _backprop_(self, dLdY):
         """Backprop through this layer.
         """
         self.dLdY = gp.garray(dLdY)
@@ -436,11 +433,9 @@ class GPUFullLayer:
         self.param_grads['b'] += dLdb
         # Compute gradient with respect to layer input
         self.dLdX = gp.dot(self.dLdY, self.params['W'].T)
-        if auto_prop and self.input_layer:
-            self.input_layer.backprop(self.dLdX, True)
         return self.dLdX
 
-    def backprop_sm(self, Y_cat, auto_prop=False):
+    def backprop(self, Y_cat):
         """Backprop through this layer.
         """
         t1 = clock()
@@ -448,7 +443,7 @@ class GPUFullLayer:
         Y_ind = np.zeros(self.Y.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         dLdY_bp = self.cross_entropy(self.Y, Y_ind)
-        self.backprop(dLdY_bp, auto_prop)
+        self._backprop_(dLdY_bp)
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
         return self.dLdX
@@ -485,8 +480,10 @@ class GPUFullLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return 1
 
-    def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
+    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
+        self.param_grads['W'] += lam_l2 * self.params['W']
+        self.param_grads['b'] += lam_l2 * self.params['b']
         self.param_moms['W'] += self.param_grads['W']**2.0
         self.param_moms['b'] += self.param_grads['b']**2.0
         self.params['W'] -= learn_rate * (self.param_grads['W'] / \
@@ -508,7 +505,7 @@ class GPUFullLayer:
         self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
         return
 
-    def _cleanup(self, auto_prop=False):
+    def _cleanup(self):
         """Cleanup temporary feedforward/backprop stuff."""
         self.X = []
         self.Y = []
@@ -538,14 +535,6 @@ class FullLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        # Set the input source for this layer, and inform the input source of
-        # its output destination
-        self.input_layer = in_layer
-        if self.input_layer:
-            self.input_layer.output_layer = self
-        # Don't set self.output_layer, as it will be set by the layer that
-        # receives this layer's output as input (see above).
-        self.output_layer = False
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -571,7 +560,7 @@ class FullLayer:
         W = W * w_scales
         return
 
-    def feedforward(self, X, auto_prop=False):
+    def feedforward(self, X):
         """Run feedforward for this layer.
         """
         t1 = clock()
@@ -583,11 +572,9 @@ class FullLayer:
         self.dLdY = np.zeros(self.Y.shape)
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
-        if auto_prop and self.output_layer:
-            self.output_layer.feedforward(self.Y, True)
         return self.Y
 
-    def backprop(self, dLdY_bp, auto_prop=False):
+    def _backprop_(self, dLdY_bp):
         """Backprop through this layer.
         """
         self.dLdY = self.dLdY + dLdY_bp
@@ -598,11 +585,9 @@ class FullLayer:
         self.param_grads['b'] = self.param_grads['b'] + dLdb
         # Compute gradient with respect to layer input
         self.dLdX = np.dot(self.dLdY, self.params['W'].T)
-        if auto_prop and self.input_layer:
-            self.input_layer.backprop(self.dLdX, True)
         return self.dLdX
 
-    def backprop_sm(self, Y_cat, auto_prop=False):
+    def backprop_sm(self, Y_cat):
         """Backprop through this layer.
         """
         t1 = clock()
@@ -610,7 +595,7 @@ class FullLayer:
         Y_ind = np.zeros(self.Y.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         dLdY_bp = self.cross_entropy(self.Y, Y_ind)
-        self.backprop(dLdY_bp, auto_prop)
+        self._backprop_(dLdY_bp)
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
         return self.dLdX
@@ -641,8 +626,10 @@ class FullLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return 1
 
-    def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
+    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
+        self.param_grads['W'] += lam_l2 * self.params['W']
+        self.param_grads['b'] += lam_l2 * self.params['b']
         self.param_moms['W'] += self.param_grads['W']**2.0
         self.param_moms['b'] += self.param_grads['b']**2.0
         self.params['W'] -= learn_rate * (self.param_grads['W'] / \
@@ -664,7 +651,7 @@ class FullLayer:
         self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
         return
 
-    def _cleanup(self, auto_prop=False):
+    def _cleanup(self):
         """Cleanup temporary feedforward/backprop stuff."""
         self.X = []
         self.Y = []
@@ -697,11 +684,6 @@ class LUTLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        # Set the input source for this layer to False
-        self.input_layer = False
-        # Don't set self.output_layer, as it will be set by the layer that
-        # receives this layer's output as input (see above).
-        self.output_layer = False
         return
 
     def init_params(self, w_scale=0.01):
@@ -727,7 +709,7 @@ class LUTLayer:
         self.params['W'] = W
         return
 
-    def feedforward(self, X, auto_prop=False):
+    def feedforward(self, X):
         """Run feedforward for this layer.
 
         The input passed to feedforward here should be either a single list
@@ -739,11 +721,9 @@ class LUTLayer:
         self.X = X.astype(np.int32)
         # Use look-up table to generate the desired sequences
         self.Y = self.params['W'][self.X,:]
-        if auto_prop and self.output_layer:
-            self.output_layer.feedforward(self.Y, True)
         return self.Y
 
-    def backprop(self, dLdY, auto_prop=False):
+    def backprop(self, dLdY):
         """Backprop through this layer.
         """
         self.dLdY = dLdY
@@ -757,12 +737,12 @@ class LUTLayer:
         self.params['W'] -= lam_l2 * self.params['W']
         return 1
 
-    def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
+    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
-                     self.param_moms['W'], learn_rate, ada_smooth)
+                     self.param_moms['W'], learn_rate, ada_smooth, lam_l2)
         self.grad_idx = set()
         return
 
@@ -810,11 +790,6 @@ class CMLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        # Set the input source for this layer to False
-        self.input_layer = False
-        # Don't set self.output_layer, as it will be set by the layer that
-        # receives this layer's output as input (see above).
-        self.output_layer = False
         return
 
     def init_params(self, w_scale=0.01):
@@ -842,7 +817,18 @@ class CMLayer:
         self.params['b'] = M * m_scales[:,np.newaxis]
         return
 
-    def feedforward(self, X, C, auto_prop=False):
+    def norm_info(self, param_name='W'):
+        """Diagnostic info about norms of W's rows."""
+        M = self.params[param_name]
+        row_norms = np.sqrt(np.sum(M**2.0, axis=1))
+        men_n = np.mean(row_norms)
+        min_n = np.min(row_norms)
+        med_n = np.median(row_norms)
+        max_n = np.max(row_norms)
+        info = {'mean': men_n, 'min': min_n, 'median': med_n, 'max': max_n}
+        return info
+
+    def feedforward(self, X, C):
         """Run feedforward for this layer.
         """
         t1 = clock()
@@ -858,22 +844,20 @@ class CMLayer:
         self.Y = np.hstack((self.params['b'][C,:], (X * W_sig)))
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
-        if auto_prop and self.output_layer:
-            self.output_layer.feedforward(self.Y, True)
         return self.Y
 
-    def backprop(self, dLdY, auto_prop=False):
+    def backprop(self, dLdY):
         """Backprop through this layer.
         """
         t1 = clock()
         # Add the gradients to the gradient accumulators
+        self.grad_idx.update(self.C.ravel())
         self.dLdY = dLdY
         dLdYb = dLdY[:,0:self.bias_dim]
         dLdYw = dLdY[:,self.bias_dim:]
         W_exp = np.exp(self.params['W'][self.C,:])
         W_sig = W_exp / (1.0 + W_exp)
         dLdW = (W_sig / W_exp) * self.X * dLdYw
-        self.grad_idx.update(self.C.ravel())
         lut_bp(self.C, dLdW, self.param_grads['W'])
         lut_bp(self.C, dLdYb, self.param_grads['b'])
         dLdX = W_sig * dLdYw
@@ -887,15 +871,15 @@ class CMLayer:
         self.params['W'] -= lam_l2 * self.params['W']
         return 1
 
-    def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
+    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx])
         nz_idx = nz_idx.astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
-                         self.param_moms['W'], learn_rate, ada_smooth)
+                     self.param_moms['W'], learn_rate, ada_smooth, lam_l2)
         ag_update_2d(nz_idx, self.params['b'], self.param_grads['b'], \
-                         self.param_moms['b'], learn_rate, ada_smooth)
+                     self.param_moms['b'], learn_rate, ada_smooth, lam_l2)
         self.grad_idx = set()
         return
 
@@ -930,14 +914,6 @@ class NoiseLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        # Set the input source for this layer, and inform the input source of
-        # its output destination
-        self.input_layer = in_layer
-        if self.input_layer:
-            self.input_layer.output_layer = self
-        # Don't set self.output_layer, as it will by the layer that receives
-        # this layer's output as input (see above).
-        self.output_layer = []
         return
 
     def set_noise_params(self, drop_rate=0.0, fuzz_scale=0.0):
@@ -947,7 +923,7 @@ class NoiseLayer:
         self.fuzz_scale = fuzz_scale
         return
 
-    def feedforward(self, X, auto_prop=False):
+    def feedforward(self, X):
         """Perform feedforward through this layer.
         """
         # Cleanup detritus from any previous feedforward
@@ -967,17 +943,13 @@ class NoiseLayer:
             self.Y = drop_mask * (self.X + fuzz_bump)
         else:
             self.Y = drop_mask * self.X
-        if auto_prop and self.output_layer:
-            self.output_layer.feedforward(self.Y, True)
         return self.Y
 
-    def backprop(self, dLdY, auto_prop=False):
+    def backprop(self, dLdY):
         """Perform backprop through this layer.
         """
         # Backprop is just multiplication by the mask from feedforward
         self.dLdX = dLdY * self.dYdX
-        if auto_prop and self.input_layer:
-            self.input_layer.backprop(self.dLdX, True)
         return self.dLdX
 
     def _cleanup(self):
@@ -1002,17 +974,9 @@ class TanhLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        # Set the input source for this layer, and inform the input source of
-        # its output destination
-        self.input_layer = in_layer
-        if self.input_layer:
-            self.input_layer.output_layer = self
-        # Don't set self.output_layer, as it will by the layer that receives
-        # this layer's output as input (see above).
-        self.output_layer = []
         return
 
-    def feedforward(self, X, auto_prop=False):
+    def feedforward(self, X):
         """Perform feedforward through this layer.
         """
         # Cleanup detritus from any previous feedforward
@@ -1021,18 +985,14 @@ class TanhLayer:
         self.X = X
         # Apply tanh to the input
         self.Y = np.tanh(self.X)
-        if auto_prop and self.output_layer:
-            self.output_layer.feedforward(self.Y, True)
         return self.Y
 
-    def backprop(self, dLdY, auto_prop=False):
+    def backprop(self, dLdY):
         """Perform backprop through this layer.
         """
         # Backprop is just multiplication by tanh grads, and we have tanh
         # of self.X already stored in self.Y...
         self.dLdX = dLdY * (1.0 - self.Y**2.0)
-        if auto_prop and self.input_layer:
-            self.input_layer.backprop(self.dLdX, True)
         return self.dLdX
 
     def _cleanup(self):
@@ -1092,20 +1052,19 @@ def rand_pos_neg(phrase_list, all_words, pair_count, context_size, neg_count):
     neg_idx = np.zeros((pair_count,neg_count), dtype=np.int32)
     phrase_idx = np.zeros((pair_count,), dtype=np.int32)
     for i in range(pair_count):
-        phrase_idx[i] = random.randint(0, phrase_count-1)
+        phrase_idx[i] = npr.randint(0, high=phrase_count)
         phrase = phrase_list[phrase_idx[i]]
         phrase_len = len(phrase)
-        a_idx = random.randint(0, phrase_len-1)
-        c_max = min((a_idx+context_size), phrase_len-1)
+        a_idx = npr.randint(0, high=phrase_len)
+        c_max = min((a_idx+context_size), phrase_len)
         c_min = max((a_idx-context_size), 0)
-        c_idx = random.randint(c_min, c_max)
+        c_idx = npr.randint(c_min, high=c_max)
         # Record the anchor word and its positive context word
         anchor_idx[i] = a_idx
         pos_idx[i] = c_idx
         # Sample a random negative example from the full word list
-        for j in range(neg_count):
-            n_idx = random.randint(0, word_count-1)
-            neg_idx[i,j] = all_words[n_idx]
+        n_idx = npr.randint(0, high=word_count, size=(1,neg_count))
+        neg_idx[i,:] = all_words[n_idx]
     return [anchor_idx, pos_idx, neg_idx, phrase_idx]
 
 if __name__ == '__main__':
@@ -1143,8 +1102,8 @@ if __name__ == '__main__':
 
         tt = clock()
         # Feedforward through word look-up, tanh, and noise
-        word_lut.feedforward(a_idx, auto_prop=True)
-        Xb = noise_layer.Y
+        Xw = word_lut.feedforward(a_idx)
+        Xb = noise_layer.feedforward(Xw)
         table_time += clock() - tt
 
         # Feedforward through classification/prediction layer
@@ -1152,17 +1111,17 @@ if __name__ == '__main__':
         class_layer.feedforward(Xb, code_idx, code_sign)
 
         # Backprop through classification/prediction layer
-        #dLdXb = class_layer.backprop_sm(c_idx)
+        #dLdXb = class_layer.backprop(c_idx)
         dLdXb = class_layer.backprop()
 
         # Update softmax/prediction params based on batch gradients
-        class_layer.apply_grads(learn_rate=1e-2, ada_smooth=1e-3)
+        class_layer.apply_grad_reg(learn_rate=1e-2, ada_smooth=1e-3)
 
         tt = clock()
         # Backprop through word look-up-table, tanh, and noise
-        noise_layer.backprop(gp.as_numpy_array(dLdXb), auto_prop=True)
+        dLdXw = noise_layer.backprop(gp.as_numpy_array(dLdXb))
         # Update look-up-table based on gradients for this batch
-        word_lut.apply_grads(learn_rate=1e-2, ada_smooth=1e-3)
+        word_lut.apply_grad_reg(learn_rate=1e-2, ada_smooth=1e-3)
         table_time += clock() - tt
         print(".")
 
