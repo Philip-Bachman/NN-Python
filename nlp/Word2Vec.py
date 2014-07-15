@@ -3,6 +3,84 @@ import numpy as np
 import numpy.random as npr
 import gnumpy as gp
 import random
+import numba
+import math
+
+##############################
+# NUMBA FUNCTION DEFINITIONS #
+##############################
+
+@numba.jit("void(i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:])")
+def nsl_bp_loop(table_idx, X, W, dLdY, dLdX, dW, db):
+    """Backprop for NSLayer: main loop in Numba-friendly form."""
+    rows, cols = dLdY.shape
+    vec_dim = X.shape[1]
+    for i in range(rows):
+        for j in range(cols):
+            dldy = dLdY[i,j]
+            idx = table_idx[i,j]
+            db[idx] += dldy
+            for k in range(vec_dim):
+                dW[idx,k] += dldy * X[i,k]
+                dLdX[i,k] += dldy * W[idx,k]
+    return
+
+@numba.jit("void(i4[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:])")
+def nsl_fp_loop(table_idx, X, W, b, Y):
+    """Feedforward for NSLayer: main loop in Numba-friendly form."""
+    rows, cols = table_idx.shape
+    vec_dim = X.shape[1]
+    for i in range(rows):
+        for j in range(cols):
+            idx = table_idx[i,j]
+            Y[i,j] = b[idx]
+            for k in range(vec_dim):
+                Y[i,j] += X[i,k] * W[idx,k]
+    return
+
+@numba.jit("void(i4[:], f8[:,:], f8[:,:], f8[:,:], f8, f8)")
+def ag_update_2d(row_idx, W, dW, mW, learn_rate, ada_smooth):
+    """Row-wise partial update ala adagrad.
+
+    This updates params and adagrad "momentums", and then zeros the grads.
+    """
+    row_count = row_idx.shape[0]
+    vec_dim = W.shape[1]
+    for i in range(row_count):
+        idx = row_idx[i]
+        for j in range(vec_dim):
+            mW[idx,j] += math.pow(dW[idx,j], 2)
+            W[idx,j] -= learn_rate * (dW[idx,j] / (math.sqrt(mW[idx,j]) + ada_smooth))
+            dW[idx,j] = 0.0
+    return
+
+@numba.jit("void(i4[:], f8[:], f8[:], f8[:], f8, f8)")
+def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth):
+    """Element-wise partial update ala adagrad.
+
+    This updates params and adagrad "momentums", and then zeros the grads.
+    """
+    row_count = row_idx.shape[0]
+    for i in range(row_count):
+        idx = row_idx[i]
+        mW[idx] += math.pow(dW[idx], 2)
+        W[idx] -= learn_rate * (dW[idx] / (math.sqrt(mW[idx]) + ada_smooth))
+        dW[idx] = 0.0
+    return
+
+@numba.jit("void(i4[:], f8[:,:], f8[:,:])")
+def lut_bp(row_idx, dLdY, dW):
+    """Row-wise partial update ala adagrad.
+
+    This updates params and adagrad "momentums", and then zeros the grads.
+    """
+    row_count = row_idx.shape[0]
+    vec_dim = dW.shape[1]
+    for i in range(row_count):
+        idx = row_idx[i]
+        for j in range(vec_dim):
+            dW[idx,j] += dLdY[i,j]
+    return
 
 ###########################
 # NEGATIVE SAMPLING LAYER #
@@ -73,25 +151,21 @@ class NSLayer:
         self._cleanup()
         # Do new feedforward...
         pos_samples = pos_samples[:,np.newaxis]
-        pos_samples = np.maximum(pos_samples, self.key_count-1)
-        neg_samples = np.maximum(neg_samples, self.key_count-1)
+        pos_samples = np.minimum(pos_samples, self.key_count-1)
+        neg_samples = np.minimum(neg_samples, self.key_count-1)
         self.X = X
         self.samp_keys = np.hstack((pos_samples, neg_samples))
-        W = self.params['W']
-        b = self.params['b']
-        Y = np.zeros((X.shape[0], self.samp_keys.shape[1]))
-        for i in range(self.samp_keys.shape[1]):
-            keys = self.samp_keys[:,i]
-            Y[:,i] = np.sum(X * W[keys,:], axis=1) + b[keys]
+        self.samp_keys = self.samp_keys.astype(np.int32)
+        self.Y = np.zeros((X.shape[0], self.samp_keys.shape[1]))
+        nsl_fp_loop(self.samp_keys, self.X, self.params['W'], \
+                    self.params['b'], self.Y)
         # Using the outputs for these positive and negative samples, compute
         # loss and gradients for pseudo noise-contrastive training.
         samp_sign = np.ones(self.samp_keys.shape)
         samp_sign[:,0] = -1.0
-        exp_ss_y = np.exp(samp_sign * Y)
+        exp_ss_y = np.exp(samp_sign * self.Y)
         L = np.sum(np.log(1.0 + exp_ss_y))
-        dLdY = samp_sign * (exp_ss_y / (1.0 + exp_ss_y))
-        self.dLdY = dLdY
-        self.Y = Y
+        self.dLdY = samp_sign * (exp_ss_y / (1.0 + exp_ss_y))
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
         return L
@@ -100,25 +174,10 @@ class NSLayer:
         """Backprop through this layer, based on most recent feedforward.
         """
         t1 = clock()
-        X = self.X
-        W = self.params['W']
-        dW = self.param_grads['W']
-        db = self.param_grads['b']
-        samp_keys = self.samp_keys
-        samp_sign = np.ones(samp_keys.shape)
-        samp_sign = np.ones(self.samp_keys.shape)
-        samp_sign[:,0] = -1.0
-        dLdY = self.dLdY
-        dLdX = np.zeros(self.X.shape)
-        self.grad_idx.update(samp_keys.ravel())
-        for i in range(dLdY.shape[0]):
-            for j in range(dLdY.shape[1]):
-                dldy = dLdY[i,j]
-                s_key = samp_keys[i,j]
-                db[s_key] += dldy
-                dW[s_key,:] += dldy * X[i,:]
-                dLdX[i,:] += dldy * W[s_key,:]
-        self.dLdX = dLdX
+        self.dLdX = np.zeros(self.X.shape)
+        self.grad_idx.update(self.samp_keys.ravel())
+        nsl_bp_loop(self.samp_keys, self.X, self.params['W'], self.dLdY, \
+                    self.dLdX, self.param_grads['W'], self.param_grads['b'])
         t2 = clock()
         self.comp_time = self.comp_time + (t2 - t1)
         return self.dLdX
@@ -132,20 +191,11 @@ class NSLayer:
     def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
         self.trained_idx.update(self.grad_idx)
-        nz_idx = np.asarray([i for i in self.grad_idx])
-        self.param_moms['W'][nz_idx,:] += self.param_grads['W'][nz_idx,:]**2.0
-        self.params['W'][nz_idx,:] -= learn_rate * (self.param_grads['W'][nz_idx,:] / \
-                (np.sqrt(self.param_moms['W'][nz_idx,:]) + ada_smooth))
-        self.param_moms['b'][nz_idx] += self.param_grads['b'][nz_idx]**2.0
-        self.params['b'][nz_idx] -= learn_rate * (self.param_grads['b'][nz_idx] / \
-                (np.sqrt(self.param_moms['b'][nz_idx]) + ada_smooth))
-        self.reset_grads()
-        return
-
-    def reset_grads(self):
-        """Reset the gradient accumulators for this layer."""
-        self.param_grads['W'] = 0.0 * self.param_grads['W']
-        self.param_grads['b'] = 0.0 * self.param_grads['b']
+        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
+        ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
+                         self.param_moms['W'], learn_rate, ada_smooth)
+        ag_update_1d(nz_idx, self.params['b'], self.param_grads['b'], \
+                         self.param_moms['b'], learn_rate, ada_smooth)
         self.grad_idx = set()
         return
 
@@ -698,12 +748,8 @@ class LUTLayer:
         """
         self.dLdY = dLdY
         self.grad_idx.update(self.X.ravel())
-        X = self.X
-        dW = self.param_grads['W']
         # Add the gradients to the gradient accumulator
-        for i in range(dLdY.shape[0]):
-            dW[X[i],:] += dLdY[i,:]
-        self.param_grads['W'] = dW
+        lut_bp(self.X, self.dLdY, self.param_grads['W'])
         return 1
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -714,18 +760,12 @@ class LUTLayer:
     def apply_grads(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
         self.trained_idx.update(self.grad_idx)
-        nz_idx = np.asarray([i for i in self.grad_idx])
-        self.param_moms['W'][nz_idx,:] += self.param_grads['W'][nz_idx,:]**2.0
-        self.params['W'][nz_idx,:] -= learn_rate * (self.param_grads['W'][nz_idx,:] / \
-                (np.sqrt(self.param_moms['W'][nz_idx,:]) + ada_smooth))
-        self.reset_grads()
-        return
-
-    def reset_grads(self):
-        """Reset the gradient accumulators for this layer."""
-        self.param_grads['W'] = 0.0 * self.param_grads['W']
+        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
+        ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
+                     self.param_moms['W'], learn_rate, ada_smooth)
         self.grad_idx = set()
         return
+
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
@@ -810,7 +850,7 @@ class CMLayer:
         self._cleanup()
         # Record the incoming list of row indices to extract
         self.X = X
-        self.C = C
+        self.C = C.astype(np.int32)
         # Get the feature re-weighting and bias adjustment parameters
         W_exp = np.exp(self.params['W'][C,:])
         W_sig = W_exp / (1.0 + W_exp)
@@ -830,16 +870,12 @@ class CMLayer:
         self.dLdY = dLdY
         dLdYb = dLdY[:,0:self.bias_dim]
         dLdYw = dLdY[:,self.bias_dim:]
-        C = self.C
-        W_exp = np.exp(self.params['W'][C,:])
+        W_exp = np.exp(self.params['W'][self.C,:])
         W_sig = W_exp / (1.0 + W_exp)
         dLdW = (W_sig / W_exp) * self.X * dLdYw
-        dW = self.param_grads['W']
-        db = self.param_grads['b']
-        self.grad_idx.update([int(i) for i in C])
-        for i in range(dLdY.shape[0]):
-            dW[C[i],:] += dLdW[i,:]
-            db[C[i],:] += dLdYb[i,:]
+        self.grad_idx.update(self.C.ravel())
+        lut_bp(self.C, dLdW, self.param_grads['W'])
+        lut_bp(self.C, dLdYb, self.param_grads['b'])
         dLdX = W_sig * dLdYw
         # timing stuff
         t2 = clock()
@@ -855,19 +891,11 @@ class CMLayer:
         """Apply the current accumulated gradients, with adagrad."""
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx])
-        self.param_moms['W'][nz_idx,:] += self.param_grads['W'][nz_idx,:]**2.0
-        self.params['W'][nz_idx,:] -= learn_rate * (self.param_grads['W'][nz_idx,:] / \
-                (np.sqrt(self.param_moms['W'][nz_idx,:]) + ada_smooth))
-        self.param_moms['b'][nz_idx,:] += self.param_grads['b'][nz_idx,:]**2.0
-        self.params['b'][nz_idx,:] -= learn_rate * (self.param_grads['b'][nz_idx,:] / \
-                (np.sqrt(self.param_moms['b'][nz_idx,:]) + ada_smooth))
-        self.reset_grads()
-        return
-
-    def reset_grads(self):
-        """Reset the gradient accumulators for this layer."""
-        self.param_grads['W'] = 0.0 * self.param_grads['W']
-        self.param_grads['b'] = 0.0 * self.param_grads['b']
+        nz_idx = nz_idx.astype(np.int32)
+        ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
+                         self.param_moms['W'], learn_rate, ada_smooth)
+        ag_update_2d(nz_idx, self.params['b'], self.param_grads['b'], \
+                         self.param_moms['b'], learn_rate, ada_smooth)
         self.grad_idx = set()
         return
 

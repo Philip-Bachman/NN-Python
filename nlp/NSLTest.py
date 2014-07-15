@@ -7,11 +7,7 @@ import random as random
 from time import clock
 from sys import stdout as stdout
 
-def simple_stb_test(tree_dir='./trees'):
-    stb_data = st.SimpleLoad(tree_dir)
-    return
-
-if __name__ == '__main__':
+def run_test():
     # Load tree data
     tree_dir = './trees'
     stb_data = st.SimpleLoad(tree_dir)
@@ -26,11 +22,11 @@ if __name__ == '__main__':
         tr_words.extend(phrase)
 
     batch_count = 100
-    batch_size = 256
+    batch_size = 250
     context_size = 5
     word_count = max_lut_idx + 1
-    embed_dim = 300
-    bias_dim = 150
+    embed_dim = 150
+    bias_dim = 75
     lam_l2 = 1e-6
 
     # Create a lookup table for word representations
@@ -108,6 +104,8 @@ if __name__ == '__main__':
     print("Words per second: {0:.4f}".format((1.0*batch_count*batch_size /
         e_time)))
 
+if __name__ == '__main__':
+    run_test()
 
 
 ##############

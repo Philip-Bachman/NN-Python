@@ -21,12 +21,12 @@ if __name__ == '__main__':
 
     all_phrases = stb_data['train_full_phrases']
 
-    batch_count = 50000
+    batch_count = 1000
     batch_size = 256
     context_size = 5
     word_count = max_lut_idx + 1
-    embed_dim = 300
-    bias_dim = 100
+    embed_dim = 150
+    bias_dim = 75
     lam_l2 = 1e-5
 
     # Create a lookup table for word representations
