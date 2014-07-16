@@ -787,6 +787,7 @@ class CMLayer:
         self.has_params = True
         self.X = []
         self.C = []
+        self.W = []
         self.Y = []
         self.dLdX = []
         self.dLdY = []
@@ -838,7 +839,8 @@ class CMLayer:
         self.X = X
         self.C = C.astype(np.int32)
         # Get the feature re-weighting and bias adjustment parameters
-        W_exp = np.exp(self.params['W'][C,:])
+        self.W = self.params['W'][C,:]
+        W_exp = np.exp(self.W)
         W_sig = W_exp / (1.0 + W_exp)
         # Modify X by scaling and augmenting
         self.Y = np.hstack((self.params['b'][C,:], (X * W_sig)))
@@ -853,9 +855,8 @@ class CMLayer:
         # Add the gradients to the gradient accumulators
         self.grad_idx.update(self.C.ravel())
         self.dLdY = dLdY
-        dLdYb = dLdY[:,0:self.bias_dim]
-        dLdYw = dLdY[:,self.bias_dim:]
-        W_exp = np.exp(self.params['W'][self.C,:])
+        dLdYb, dLdYw = np.hsplit(dLdY, [self.bias_dim])
+        W_exp = np.exp(self.W)
         W_sig = W_exp / (1.0 + W_exp)
         dLdW = (W_sig / W_exp) * self.X * dLdYw
         lut_bp(self.C, dLdW, self.param_grads['W'])

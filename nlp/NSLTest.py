@@ -23,7 +23,7 @@ def run_test():
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
 
-    batch_count = 250001
+    batch_count = 1001
     batch_size = 250
     context_size = 5
     word_count = max_lut_idx + 1
@@ -34,7 +34,7 @@ def run_test():
     # Create a lookup table for word representations
     word_lut = w2v.LUTLayer(word_count, embed_dim)
     tanh_layer = w2v.TanhLayer(in_layer=word_lut)
-    noise_layer = w2v.NoiseLayer(in_layer=tanh_layer, drop_rate=0.5, fuzz_scale=0.02)
+    noise_layer = w2v.NoiseLayer(in_layer=tanh_layer, drop_rate=0.0, fuzz_scale=0.0)
     phrase_layer = w2v.CMLayer(key_count=len(tr_phrases), source_dim=embed_dim, bias_dim=bias_dim)
 
     # Create a full/softmax layer for classification
