@@ -23,18 +23,22 @@ def run_test():
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
 
-    batch_count = 1001
+    batch_count = 501
     batch_size = 250
     context_size = 5
     word_count = max_lut_idx + 1
-    embed_dim = 200
+    embed_dim = 250
+    bias_dim = 50
     lam_l2 = 1e-3
 
     # Create a lookup table for word representations
     word_lut = w2v.LUTLayer(word_count, embed_dim)
+    tanh_layer = w2v.TanhLayer(in_layer=word_lut)
+    noise_layer = w2v.NoiseLayer(in_layer=tanh_layer, drop_rate=0.0, fuzz_scale=0.0)
+    phrase_layer = w2v.CMLayer(key_count=len(tr_phrases), source_dim=embed_dim, bias_dim=bias_dim)
 
     # Create a full/softmax layer for classification
-    class_layer = w2v.NSLayer(key_count=max_lut_idx, in_dim=embed_dim)
+    class_layer = w2v.NSLayer(key_count=max_lut_idx, in_dim=(embed_dim+bias_dim))
 
     # Initialize params for the LUT and softmax classifier
     word_lut.init_params(0.05)
@@ -50,6 +54,7 @@ def run_test():
         # Reset adagrad smoothing factors from time-to-time
         if ((b % 5000) == 0):
             word_lut.reset_moms()
+            phrase_layer.reset_moms()
             class_layer.reset_moms()
 
         # Sample a batch of random anchor/context prediction pairs for
@@ -62,20 +67,32 @@ def run_test():
         tt = clock()
         # Feedforward through word look-up and phrase biasing/reweighting
         Xb = word_lut.feedforward(a_idx)
+        Xp = phrase_layer.feedforward(Xb, phrase_idx)
+        Xn = noise_layer.feedforward(Xp)
         table_time += clock() - tt
 
         # Feedforward and backprop through prediction layer
-        L += class_layer.feedforward(Xb, p_idx, n_idx)
+        L += class_layer.feedforward(Xn, p_idx, n_idx)
 
         # Compute and display loss from time-to-time (for diagnostics)
         if ((b % 50) == 0):
             print("Batch {0:d}, loss {1:.4f}".format(b, (L / 10.0)))
             L = 0.0
+        if ((b % 500) == 0):
+            info = phrase_layer.norm_info('W')
+            print("    ||W|| -- mean: {0:.4f}, min: {1:.4f}, median: {2:.4f}, max: {3:.4f}".format( \
+                    info['mean'], info['min'], info['median'], info['max']))
+            info = phrase_layer.norm_info('b')
+            print("    ||b|| -- mean: {0:.4f}, min: {1:.4f}, median: {2:.4f}, max: {3:.4f}".format( \
+                    info['mean'], info['min'], info['median'], info['max']))
 
         # Backprop through prediction layer
-        dLdXb = class_layer.backprop()
+        dLdXn = class_layer.backprop()
 
         tt = clock()
+        # Backprop through phrase biasing and reweighting
+        dLdXp = noise_layer.backprop(dLdXn)
+        dLdXb = phrase_layer.backprop(dLdXp)
         # Backprop through word look-up-table
         word_lut.backprop(dLdXb)
         table_time += clock() - tt
@@ -84,6 +101,7 @@ def run_test():
         tt = clock()
         word_lut.apply_grad_reg(learn_rate=2e-4, ada_smooth=1e-3, lam_l2=lam_l2)
         class_layer.apply_grad_reg(learn_rate=2e-4, ada_smooth=1e-3, lam_l2=lam_l2)
+        phrase_layer.apply_grad_reg(learn_rate=2e-4, ada_smooth=1e-3, lam_l2=lam_l2)
         update_time += clock() - tt
 
     t2 = clock()

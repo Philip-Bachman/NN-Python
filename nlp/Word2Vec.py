@@ -10,6 +10,30 @@ import math
 # NUMBA FUNCTION DEFINITIONS #
 ##############################
 
+@numba.jit("void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:], f8[:,:], f8[:], f8[:])")
+def w2v_ff_bp(anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L):
+    """Feedforward and backprop for unified (neg-sample) word-2-vec layer."""
+    rows, cols = pn_idx.shape
+    vec_dim = Wa.shape[1]
+    for i in range(rows):
+        ai = anc_idx[i]
+        for j in range(cols):
+            ci = pn_idx[i,j]
+            # Compute the result of dot-product + bias
+            y = b[ci]
+            for k in range(vec_dim):
+                y += Wa[ai,k] * Wc[ci,k]
+            # Compute the loss and gradient of result
+            exp_pns_y = math.exp(pn_sign[i,j] * y)
+            L[0] += math.log(1.0 + exp_pns_y)
+            dLdy = pn_sign[i,j] * (exp_pns_y / (1.0 + exp_pns_y))
+            # Update gradient information...
+            db[ci] += dLdy
+            for k in range(vec_dim):
+                dWa[ai,k] += dLdy * Wc[ci,k]
+                dWc[ci,k] += dLdy * Wa[ai,k]
+    return
+
 @numba.jit("void(i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:])")
 def nsl_bp_loop(table_idx, X, W, dLdY, dLdX, dW, db):
     """Backprop for NSLayer: main loop in Numba-friendly form."""
@@ -160,7 +184,7 @@ class NSLayer:
         self.samp_keys = self.samp_keys.astype(np.int32)
         self.Y = np.zeros((X.shape[0], self.samp_keys.shape[1]))
         nsl_fp_loop(self.samp_keys, self.X, self.params['W'], \
-                    self.params['b'], self.Y)
+                self.params['b'], self.Y)
         # Using the outputs for these positive and negative samples, compute
         # loss and gradients for pseudo noise-contrastive training.
         samp_sign = np.ones(self.samp_keys.shape)
@@ -1004,6 +1028,81 @@ class TanhLayer:
         self.dLdX = []
         return
 
+################################
+# WORD-2-VEC IN A SINGLE LAYER #
+################################
+
+
+class W2VLayer:
+    def __init__(self, word_count=0, word_dim=0):
+        # Set stuff for managing this type of layer
+        self.word_dim = word_dim
+        self.word_count = word_count
+        self.params = {}
+        self.params['Wa'] = npr.randn(word_count, word_dim)
+        self.params['Wc'] = npr.randn(word_count, word_dim)
+        self.params['b'] = np.zeros((word_count,))
+        self.grads = {}
+        self.grads['Wa'] = np.zeros((word_count, word_dim))
+        self.grads['Wc'] = np.zeros((word_count, word_dim))
+        self.grads['b'] = np.zeros((word_count,))
+        self.moms = {}
+        self.moms['Wa'] = np.zeros((word_count, word_dim))
+        self.moms['Wc'] = np.zeros((word_count, word_dim))
+        self.moms['b'] = np.zeros((word_count,))
+        self.grad_idx = set()
+        self.trained_idx = set()
+        return
+
+    def init_params(self, w_scale=0.01, b_scale=0.0):
+        """Randomly initialize the weights in this layer."""
+        self.params['Wa'] = w_scale * npr.randn(self.word_count, self.word_dim)
+        self.grads['Wa'] = np.zeros((self.word_count, self.word_dim))
+        self.moms['Wa'] = np.zeros((self.word_count, self.word_dim))
+        self.params['Wc'] = w_scale * npr.randn(self.word_count, self.word_dim)
+        self.grads['Wc'] = np.zeros((self.word_count, self.word_dim))
+        self.moms['Wc'] = np.zeros((self.word_count, self.word_dim))
+        self.params['b'] = np.zeros((self.word_count,))
+        self.grads['b'] = np.zeros((self.word_count,))
+        return
+
+    def batch_update(self, anc_idx, pos_idx, neg_idx, learn_rate=1e-3):
+        """Perform a batch update of all parameters based on the given sets
+        of anchor/positive example/negative examples indices.
+        """
+        ada_smooth = 1e-3
+        lam_l2 = 1e-3
+        # Do new feedforward...
+        anc_idx = anc_idx.astype(np.int32)
+        #print("pos_idx.shape: {0:s}, neg_idx.shape: {1:s}".format(str(pos_idx.shape),str(neg_idx.shape)))
+        pos_idx = pos_idx[:,np.newaxis]
+        pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
+        pn_sign = np.ones(pn_idx.shape)
+        pn_sign[:,0] = -1.0
+        L = np.zeros((1,))
+        # Do feedforward and backprop through the predictor/predictee tables
+        w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], self.params['Wc'], \
+               self.params['b'], self.grads['Wa'], self.grads['Wc'], \
+               self.grads['b'], L)
+        L = L[0]
+        # Apply gradients to (touched only) look-up-table parameters
+        a_mod_idx = np.unique(anc_idx.ravel())
+        c_mod_idx = np.unique(pn_idx.ravel())
+        ag_update_2d(a_mod_idx, self.params['Wa'], self.grads['Wa'], \
+                self.moms['Wa'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(c_mod_idx, self.params['Wc'], self.grads['Wc'], \
+                self.moms['Wc'], learn_rate, ada_smooth, lam_l2)
+        ag_update_1d(c_mod_idx, self.params['b'], self.grads['b'], \
+                self.moms['b'], learn_rate, ada_smooth, lam_l2)
+        return L
+
+    def reset_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.moms['Wa'] = (0.0 * self.moms['Wa']) + ada_init
+        self.moms['Wc'] = (0.0 * self.moms['Wc']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+        return
+
 #######################
 # RANDOM KNICK-KNACKS #
 #######################
@@ -1028,13 +1127,15 @@ def rand_word_pairs(phrase_list, pair_count, context_size):
     context_idx = np.zeros((pair_count,), dtype=np.int32)
     phrase_idx = np.zeros((pair_count,), dtype=np.int32)
     for i in range(pair_count):
-        phrase_idx[i] = random.randint(0, phrase_count-1)
+        phrase_idx[i] = npr.randint(0, phrase_count)
         phrase = phrase_list[phrase_idx[i]]
         phrase_len = len(phrase)
-        a_idx = random.randint(0, phrase_len-1)
-        c_max = min((a_idx+context_size), phrase_len-1)
+        a_idx = npr.randint(0, phrase_len)
+        c_max = min((a_idx+context_size+1), phrase_len)
         c_min = max((a_idx-context_size), 0)
-        c_idx = random.randint(c_min, c_max)
+        c_idx = a_idx
+        while (c_idx == a_idx):
+            c_idx = npr.randint(c_min, c_max)
         anchor_idx[i] = a_idx
         context_idx[i] = c_idx
     return [anchor_idx, context_idx, phrase_idx]
@@ -1057,9 +1158,11 @@ def rand_pos_neg(phrase_list, all_words, pair_count, context_size, neg_count):
         phrase = phrase_list[phrase_idx[i]]
         phrase_len = len(phrase)
         a_idx = npr.randint(0, high=phrase_len)
-        c_max = min((a_idx+context_size), phrase_len)
+        c_max = min((a_idx+context_size+1), phrase_len)
         c_min = max((a_idx-context_size), 0)
-        c_idx = npr.randint(c_min, high=c_max)
+        c_idx = a_idx
+        while (c_idx == a_idx):
+            c_idx = npr.randint(c_min, high=c_max)
         # Record the anchor word and its positive context word
         anchor_idx[i] = a_idx
         pos_idx[i] = c_idx
