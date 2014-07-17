@@ -1,45 +1,89 @@
-from time import clock
+from __future__ import absolute_import
+
 import numpy as np
 import numpy.random as npr
 import gnumpy as gp
-import random
+import threading
 import numba
-import math
+from math import exp, log, pow as mpow, sqrt
+
+from time import clock
+from numba import jit, void, i4, f8
+from ctypes import pythonapi, c_void_p
+
+########################################
+# MULTITHREADING HELPER-FUNC AND DEFNS #
+########################################
+
+THREAD_NUM = 2
+
+savethread = pythonapi.PyEval_SaveThread
+savethread.argtypes = []
+savethread.restype = c_void_p
+
+restorethread = pythonapi.PyEval_RestoreThread
+restorethread.argtypes = [c_void_p]
+restorethread.restype = None
+
+def make_multithread(inner_func, numthreads):
+    def func_mt(*args):
+        length = len(args[0])
+        sp_idx = np.arange(0,length).astype(np.int32)
+        chunklen = (length + 1) // numthreads
+        chunkargs = [(sp_idx[i*chunklen:(i+1)*chunklen],)+args for i in range(numthreads)]
+        # Start a thread for all but the last chunk of work
+        threads = [threading.Thread(target=inner_func, args=cargs)
+                   for cargs in chunkargs[:-1]]
+        for thread in threads:
+            thread.start()
+        # Give the last chunk of work to the main thread
+        inner_func(*chunkargs[-1])
+        for thread in threads:
+            thread.join()
+        return 1
+    return func_mt
 
 ##############################
 # NUMBA FUNCTION DEFINITIONS #
 ##############################
 
-@numba.jit("void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:], f8[:,:], f8[:], f8[:])")
-def w2v_ff_bp(anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L):
+def w2v_ff_bp_sp(sp_idx, anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L):
     """Feedforward and backprop for unified (neg-sample) word-2-vec layer."""
-    rows, cols = pn_idx.shape
+    threadstate = savethread()
+    sp_size = sp_idx.shape[0]
+    cols = pn_idx.shape[1]
     vec_dim = Wa.shape[1]
-    for i in range(rows):
+    for sp_i in range(sp_size):
+        i = sp_idx[sp_i]
         ai = anc_idx[i]
         for j in range(cols):
             ci = pn_idx[i,j]
             # Compute the result of dot-product + bias
             y = b[ci]
             for k in range(vec_dim):
-                y += Wa[ai,k] * Wc[ci,k]
+                y += (Wa[ai,k] * Wc[ci,k])
             # Compute the loss and gradient of result
-            exp_pns_y = math.exp(pn_sign[i,j] * y)
-            L[0] += math.log(1.0 + exp_pns_y)
+            exp_pns_y = exp(pn_sign[i,j] * y)
+            L[0] += log(1.0 + exp_pns_y)
             dLdy = pn_sign[i,j] * (exp_pns_y / (1.0 + exp_pns_y))
             # Update gradient information...
-            db[ci] += dLdy
+            db[ci] = db[ci] + dLdy
             for k in range(vec_dim):
-                dWa[ai,k] += dLdy * Wc[ci,k]
-                dWc[ci,k] += dLdy * Wa[ai,k]
+                dWa[ai,k] += (dLdy * Wc[ci,k])
+                dWc[ci,k] += (dLdy * Wa[ai,k])
+    restorethread(threadstate)
     return
+fn_sig_1 = void(i4[:], i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:], f8[:,:], f8[:], f8[:])
+w2v_ff_bp_st = jit(fn_sig_1, nopython=True)(w2v_ff_bp_sp)
+w2v_ff_bp = make_multithread(w2v_ff_bp_st, THREAD_NUM)
 
-@numba.jit("void(i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:])")
-def nsl_bp_loop(table_idx, X, W, dLdY, dLdX, dW, db):
+def nsl_bp_sp(sp_idx, table_idx, X, W, dLdY, dLdX, dW, db):
     """Backprop for NSLayer: main loop in Numba-friendly form."""
-    rows, cols = dLdY.shape
+    rows = sp_idx.shape[0]
+    cols = dLdY.shape[1]
     vec_dim = X.shape[1]
-    for i in range(rows):
+    for spi in range(rows):
+        i = sp_idx[spi]
         for j in range(cols):
             dldy = dLdY[i,j]
             idx = table_idx[i,j]
@@ -48,36 +92,47 @@ def nsl_bp_loop(table_idx, X, W, dLdY, dLdX, dW, db):
                 dW[idx,k] += dldy * X[i,k]
                 dLdX[i,k] += dldy * W[idx,k]
     return
+fn_sig_2 = void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:])
+nsl_bp_st = jit(fn_sig_2, nopython=True)(nsl_bp_sp)
+nsl_bp_loop = make_multithread(nsl_bp_st, THREAD_NUM)
 
-@numba.jit("void(i4[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:])")
-def nsl_fp_loop(table_idx, X, W, b, Y):
+def nsl_fp_sp(sp_idx, table_idx, X, W, b, Y):
     """Feedforward for NSLayer: main loop in Numba-friendly form."""
-    rows, cols = table_idx.shape
+    rows = sp_idx.shape[0]
+    cols = table_idx.shape[1]
     vec_dim = X.shape[1]
-    for i in range(rows):
+    for spi in range(rows):
+        i = sp_idx[spi]
         for j in range(cols):
             idx = table_idx[i,j]
             Y[i,j] = b[idx]
             for k in range(vec_dim):
                 Y[i,j] += X[i,k] * W[idx,k]
     return
+fn_sig_3 = void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:])
+nsl_fp_st = jit(fn_sig_3, nopython=True)(nsl_fp_sp)
+nsl_fp_loop = make_multithread(nsl_fp_st, THREAD_NUM)
 
-@numba.jit("void(i4[:], f8[:,:], f8[:,:], f8[:,:], f8, f8, f8)")
-def ag_update_2d(row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
+def ag_update_2d_sp(sp_idx, row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
     """Row-wise partial update ala adagrad.
 
     This updates params and adagrad "momentums", and then zeros the grads.
     """
-    row_count = row_idx.shape[0]
+    threadstate = savethread()
+    row_count = sp_idx.shape[0]
     vec_dim = W.shape[1]
-    for i in range(row_count):
-        idx = row_idx[i]
+    for spi in range(row_count):
+        idx = row_idx[sp_idx[spi]]
         for j in range(vec_dim):
-            dW[idx,j] += lam_l2 * W[idx,j]
-            mW[idx,j] += math.pow(dW[idx,j], 2)
-            W[idx,j] -= learn_rate * (dW[idx,j] / (math.sqrt(mW[idx,j]) + ada_smooth))
+            dW[idx,j] += (lam_l2 * W[idx,j])
+            mW[idx,j] += mpow(dW[idx,j], 4)
+            W[idx,j] -= (learn_rate * (dW[idx,j] / (sqrt(mW[idx,j]) + ada_smooth)))
             dW[idx,j] = 0.0
+    restorethread(threadstate)
     return
+fn_sig_4 = void(i4[:], i4[:], f8[:,:], f8[:,:], f8[:,:], f8, f8, f8)
+ag_update_2d_st = jit(fn_sig_4, nopython=True)(ag_update_2d_sp)
+ag_update_2d = make_multithread(ag_update_2d_st, THREAD_NUM)
 
 @numba.jit("void(i4[:], f8[:], f8[:], f8[:], f8, f8, f8)")
 def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
@@ -89,24 +144,26 @@ def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
     for i in range(row_count):
         idx = row_idx[i]
         dW[idx] += lam_l2 * W[idx]
-        mW[idx] += math.pow(dW[idx], 2)
-        W[idx] -= learn_rate * (dW[idx] / (math.sqrt(mW[idx]) + ada_smooth))
+        mW[idx] += mpow(dW[idx], 2)
+        W[idx] -= learn_rate * (dW[idx] / (sqrt(mW[idx]) + ada_smooth))
         dW[idx] = 0.0
     return
 
-@numba.jit("void(i4[:], f8[:,:], f8[:,:])")
-def lut_bp(row_idx, dLdY, dW):
+def lut_sp(sp_idx, row_idx, dLdY, dW):
     """Simple row-wise updates for adjusting dW with dLdY.
 
     This adds each row of dLdY to some row of dW. The row of dW to adjust
     is given by the corresponding item in row_idx."""
-    row_count = row_idx.shape[0]
+    row_count = sp_idx.shape[0]
     vec_dim = dW.shape[1]
     for i in range(row_count):
-        idx = row_idx[i]
+        idx = row_idx[sp_idx[i]]
         for j in range(vec_dim):
             dW[idx,j] += dLdY[i,j]
     return
+fn_sig_5 = void(i4[:], i4[:], f8[:,:], f8[:,:])
+lut_st = jit(fn_sig_5, nopython=True)(lut_sp)
+lut_bp = make_multithread(lut_st, THREAD_NUM)
 
 ###########################
 # NEGATIVE SAMPLING LAYER #
@@ -172,7 +229,6 @@ class NSLayer:
         assert(X.shape[1] == self.params['W'].shape[1])
         assert(pos_samples.shape[0] == X.shape[0])
         assert(neg_samples.shape[0] == X.shape[0])
-        t1 = clock()
         # Cleanup detritus from any previous feedforward
         self._cleanup()
         # Do new feedforward...
@@ -192,20 +248,15 @@ class NSLayer:
         exp_ss_y = np.exp(samp_sign * self.Y)
         L = np.sum(np.log(1.0 + exp_ss_y))
         self.dLdY = samp_sign * (exp_ss_y / (1.0 + exp_ss_y))
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return L
 
     def backprop(self):
         """Backprop through this layer, based on most recent feedforward.
         """
-        t1 = clock()
         self.dLdX = np.zeros(self.X.shape)
         self.grad_idx.update(self.samp_keys.ravel())
         nsl_bp_loop(self.samp_keys, self.X, self.params['W'], self.dLdY, \
                     self.dLdX, self.param_grads['W'], self.param_grads['b'])
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return self.dLdX
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -298,7 +349,6 @@ class HSMLayer:
     def feedforward(self, X, code_idx, code_sign):
         """Run feedforward for this layer.
         """
-        t1 = clock()
         # Cleanup detritus from any previous feedforward
         self._cleanup()
         # Do new feedforward...
@@ -312,14 +362,11 @@ class HSMLayer:
         for i in range(code_idx.shape[1]):
             Y[:,i] = np.sum(X.T * W[:,code_idx[:,i]], axis=0) + b[0,code_idx[:,i]]
         self.Y = Y
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return self.Y
 
     def backprop(self):
         """Backprop through this layer, based on most recent feedforward.
         """
-        t1 = clock()
         X = self.X
         code_idx = self.code_idx
         W = self.params['W']
@@ -335,8 +382,6 @@ class HSMLayer:
             dLdX[i,:] = np.dot(dLdY[i,:], W[:,ci].T)
         self.dLdY = dLdY
         self.dLdX = dLdX
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return self.dLdX
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -435,14 +480,11 @@ class GPUFullLayer:
     def feedforward(self, X):
         """Run feedforward for this layer.
         """
-        t1 = clock()
         # Cleanup detritus from any previous feedforward
         self._cleanup()
         # Do new feedforward...
         self.X = gp.garray(X)
         self.Y = gp.dot(self.X, self.params['W']) + self.params['b']
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return self.Y
 
     def _backprop_(self, dLdY):
@@ -462,14 +504,11 @@ class GPUFullLayer:
     def backprop(self, Y_cat):
         """Backprop through this layer.
         """
-        t1 = clock()
         Y_cat = Y_cat.astype(np.int32)
         Y_ind = np.zeros(self.Y.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         dLdY_bp = self.cross_entropy(self.Y, Y_ind)
         self._backprop_(dLdY_bp)
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return self.dLdX
 
     def safe_softmax(self, Y):
@@ -587,15 +626,12 @@ class FullLayer:
     def feedforward(self, X):
         """Run feedforward for this layer.
         """
-        t1 = clock()
         # Cleanup detritus from any previous feedforward
         self._cleanup()
         # Do new feedforward...
         self.X = X
         self.Y = np.dot(self.X, self.params['W']) + self.params['b']
         self.dLdY = np.zeros(self.Y.shape)
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return self.Y
 
     def _backprop_(self, dLdY_bp):
@@ -614,14 +650,11 @@ class FullLayer:
     def backprop_sm(self, Y_cat):
         """Backprop through this layer.
         """
-        t1 = clock()
         Y_cat = Y_cat.astype(np.int32)
         Y_ind = np.zeros(self.Y.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         dLdY_bp = self.cross_entropy(self.Y, Y_ind)
         self._backprop_(dLdY_bp)
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return self.dLdX
 
     def safe_softmax(self, Y):
@@ -856,7 +889,6 @@ class CMLayer:
     def feedforward(self, X, C):
         """Run feedforward for this layer.
         """
-        t1 = clock()
         # Cleanup detritus from any previous feedforward
         self._cleanup()
         # Record the incoming list of row indices to extract
@@ -868,14 +900,11 @@ class CMLayer:
         W_sig = W_exp / (1.0 + W_exp)
         # Modify X by scaling and augmenting
         self.Y = np.hstack((self.params['b'][C,:], (X * W_sig)))
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return self.Y
 
     def backprop(self, dLdY):
         """Backprop through this layer.
         """
-        t1 = clock()
         # Add the gradients to the gradient accumulators
         self.grad_idx.update(self.C.ravel())
         self.dLdY = dLdY
@@ -886,9 +915,6 @@ class CMLayer:
         lut_bp(self.C, dLdW, self.param_grads['W'])
         lut_bp(self.C, dLdYb, self.param_grads['b'])
         dLdX = W_sig * dLdYw
-        # timing stuff
-        t2 = clock()
-        self.comp_time = self.comp_time + (t2 - t1)
         return dLdX
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -1081,19 +1107,16 @@ class W2VLayer:
         pn_sign[:,0] = -1.0
         L = np.zeros((1,))
         # Do feedforward and backprop through the predictor/predictee tables
-        w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], self.params['Wc'], \
-               self.params['b'], self.grads['Wa'], self.grads['Wc'], \
-               self.grads['b'], L)
+        w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
+               self.params['Wc'], self.params['b'], self.grads['Wa'], \
+               self.grads['Wc'], self.grads['b'], L)
         L = L[0]
         # Apply gradients to (touched only) look-up-table parameters
         a_mod_idx = np.unique(anc_idx.ravel())
         c_mod_idx = np.unique(pn_idx.ravel())
-        ag_update_2d(a_mod_idx, self.params['Wa'], self.grads['Wa'], \
-                self.moms['Wa'], learn_rate, ada_smooth, lam_l2)
-        ag_update_2d(c_mod_idx, self.params['Wc'], self.grads['Wc'], \
-                self.moms['Wc'], learn_rate, ada_smooth, lam_l2)
-        ag_update_1d(c_mod_idx, self.params['b'], self.grads['b'], \
-                self.moms['b'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(a_mod_idx, self.params['Wa'], self.grads['Wa'], self.moms['Wa'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(c_mod_idx, self.params['Wc'], self.grads['Wc'], self.moms['Wc'], learn_rate, ada_smooth, lam_l2)
+        ag_update_1d(c_mod_idx, self.params['b'], self.grads['b'], self.moms['b'], learn_rate, ada_smooth, lam_l2)
         return L
 
     def reset_moms(self, ada_init=1e-3):
@@ -1136,19 +1159,16 @@ def rand_word_pairs(phrase_list, pair_count, context_size):
         c_idx = a_idx
         while (c_idx == a_idx):
             c_idx = npr.randint(c_min, c_max)
-        anchor_idx[i] = a_idx
-        context_idx[i] = c_idx
+        anchor_idx[i] = phrase[a_idx]
+        context_idx[i] = phrase[c_idx]
     return [anchor_idx, context_idx, phrase_idx]
 
 def rand_pos_neg(phrase_list, all_words, pair_count, context_size, neg_count):
-    """Sample random anchor/positive/negatvie pairs for training a skip-gram
+    """Sample random anchor/positive/negative tuples for training a skip-gram
     model using "negative sampling" (i.e. "fake" noise-contrastive...).
-
     """
     phrase_count = len(phrase_list)
     word_count = len(all_words)
-    # Give some things dimensions, but keep other things on-oriented, to
-    # compensate for numpy's horrible, nauseating dimension handling.
     anchor_idx = np.zeros((pair_count,), dtype=np.int32)
     pos_idx = np.zeros((pair_count,), dtype=np.int32)
     neg_idx = np.zeros((pair_count,neg_count), dtype=np.int32)
@@ -1164,77 +1184,70 @@ def rand_pos_neg(phrase_list, all_words, pair_count, context_size, neg_count):
         while (c_idx == a_idx):
             c_idx = npr.randint(c_min, high=c_max)
         # Record the anchor word and its positive context word
-        anchor_idx[i] = a_idx
-        pos_idx[i] = c_idx
+        anchor_idx[i] = phrase[a_idx]
+        pos_idx[i] = phrase[c_idx]
         # Sample a random negative example from the full word list
         n_idx = npr.randint(0, high=word_count, size=(1,neg_count))
         neg_idx[i,:] = all_words[n_idx]
     return [anchor_idx, pos_idx, neg_idx, phrase_idx]
 
 if __name__ == '__main__':
-    batch_count = 10
-    batch_size = 500
+    import StanfordTrees as st
+     # Load tree data
+    tree_dir = './trees'
+    stb_data = st.SimpleLoad(tree_dir)
+    max_lut_idx = max(stb_data['lut_keys'].values())
+
+    # Get the lists of full train and test phrases
+    tr_phrases = stb_data['train_full_phrases']
+    te_phrases = stb_data['train_full_phrases']
+    # Get the list of all word occurrences in the training phrases
+    tr_words = []
+    for phrase in tr_phrases:
+        tr_words.extend(phrase)
+    tr_words = np.asarray(tr_words).astype(np.int32)
+    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
+    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
+
+    batch_count = 501
+    batch_size = 256
     context_size = 5
-    word_count = 20000
-    embed_dim = 100
-    hsm_vecs = 20000
-    hsm_depth = 20
+    word_count = max_lut_idx + 1
+    embed_dim = 200
+    lam_l2 = 1e-3
 
     # Create a lookup table for word representations
-    word_lut = LUTLayer(word_count, embed_dim)
-    tanh_layer = TanhLayer(in_layer=word_lut)
-    noise_layer = NoiseLayer(in_layer=tanh_layer, drop_rate=0.0, fuzz_scale=0.0)
-
-    # Create a full/softmax layer for classification
-    #class_layer = FullLayer(in_layer=False, in_dim=embed_dim, out_dim=word_count)
-    class_layer = HSMLayer(in_dim=embed_dim, code_vecs=hsm_vecs, max_code_len=hsm_depth)
+    w2v_layer = W2VLayer(word_count, embed_dim)
 
     # Initialize params for the LUT and softmax classifier
-    word_lut.init_params(0.05)
-    class_layer.init_params(0.05)
+    w2v_layer.init_params(0.05)
 
-    table_time = 0.0
+    sample_time = 0.0
+    update_time = 0.0
     print("Processing batches:")
     t1 = clock()
+    L = 0.0
     for b in range(batch_count):
         # Sample a batch of random anchor/context prediction pairs for
         # training a skip-gram model.
-        fake_phrases = [[random.randint(0,word_count) for i in range(50)] for i in range(10)]
-        a_idx, c_idx, xxx = rand_word_pairs(fake_phrases, batch_size, context_size)
-        code_idx = npr.randint(0, high=hsm_vecs, size=(batch_size,hsm_depth))
-        code_sign = np.sign(npr.randn(batch_size,hsm_depth))
+        [a_idx, p_idx, n_idx, phrase_idx] = \
+            rand_pos_neg(tr_phrases, tr_words, batch_size, context_size, 8)
 
-        tt = clock()
-        # Feedforward through word look-up, tanh, and noise
-        Xw = word_lut.feedforward(a_idx)
-        Xb = noise_layer.feedforward(Xw)
-        table_time += clock() - tt
+        # Compute and apply the updates for this batch
+        L += w2v_layer.batch_update(a_idx, p_idx, n_idx, learn_rate=2e-4)
 
-        # Feedforward through classification/prediction layer
-        #Yb = class_layer.feedforward(Xb)
-        class_layer.feedforward(Xb, code_idx, code_sign)
-
-        # Backprop through classification/prediction layer
-        #dLdXb = class_layer.backprop(c_idx)
-        dLdXb = class_layer.backprop()
-
-        # Update softmax/prediction params based on batch gradients
-        class_layer.apply_grad_reg(learn_rate=1e-2, ada_smooth=1e-3)
-
-        tt = clock()
-        # Backprop through word look-up-table, tanh, and noise
-        dLdXw = noise_layer.backprop(gp.as_numpy_array(dLdXb))
-        # Update look-up-table based on gradients for this batch
-        word_lut.apply_grad_reg(learn_rate=1e-2, ada_smooth=1e-3)
-        table_time += clock() - tt
-        print(".")
+        # Compute and display loss from time-to-time (for diagnostics)
+        if ((b % 100) == 0):
+            print("Batch {0:d}, loss {1:.4f}".format(b, (L / 10.0)))
+            L = 0.0
+        # Reset adagrad smoothing factors from time-to-time
+        #if ((b % 5000) == 0):
+        #    w2v_layer.reset_moms()
 
     t2 = clock()
     e_time = t2 - t1
     print("Word count: {0:d}, word dim: {1:d}".format(word_count, embed_dim))
     print("elapsed time: {0:.4f}".format(e_time))
-    print("look-up time: {0:.4f}".format(table_time))
-    print("softmax time: {0:.4f}".format(class_layer.comp_time))
     print("Words per second: {0:.4f}".format((1.0*batch_count*batch_size /
         e_time)))
 
