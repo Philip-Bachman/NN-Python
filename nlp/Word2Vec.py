@@ -58,15 +58,12 @@ def w2v_ff_bp_sp(sp_idx, anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L):
         ai = anc_idx[i]
         for j in range(cols):
             ci = pn_idx[i,j]
-            # Compute the result of dot-product + bias
             y = b[ci]
             for k in range(vec_dim):
                 y += (Wa[ai,k] * Wc[ci,k])
-            # Compute the loss and gradient of result
             exp_pns_y = exp(pn_sign[i,j] * y)
             L[0] += log(1.0 + exp_pns_y)
             dLdy = pn_sign[i,j] * (exp_pns_y / (1.0 + exp_pns_y))
-            # Update gradient information...
             db[ci] = db[ci] + dLdy
             for k in range(vec_dim):
                 dWa[ai,k] += (dLdy * Wc[ci,k])
@@ -165,6 +162,25 @@ fn_sig_5 = void(i4[:], i4[:], f8[:,:], f8[:,:])
 lut_st = jit(fn_sig_5, nopython=True)(lut_sp)
 lut_bp = make_multithread(lut_st, THREAD_NUM)
 
+###########################################
+# WORD VALIDATION, FOR MANAGING OOV WORDS #
+###########################################
+
+def catch_oov_words(w_idx, v_idx, oov_idx):
+    """w_idx is an ndarray, v_idx is a set, and oov_idx is an int32."""
+    assert((w_idx.ndim == 1) or (w_idx.ndim == 2))
+    # Brute-force convert untrained words to OOV word
+    if (w_idx.ndim == 1):
+        for i in range(w_idx.shape[0]):
+            if not (w_idx[i] in v_idx):
+                w_idx[i] = oov_idx
+    else:
+        for i in range(w_idx.shape[0]):
+            for j in range(w_idx.shape[1]):
+                if not (w_idx[i,j] in v_idx):
+                    w_idx[i,j] = oov_idx
+    return w_idx
+
 ###########################
 # NEGATIVE SAMPLING LAYER #
 ###########################
@@ -219,7 +235,7 @@ class NSLayer:
         W = W * w_scales
         return
 
-    def feedforward(self, X, pos_samples, neg_samples):
+    def feedforward(self, X, pos_samples, neg_samples, test=False):
         """Run feedforward for this layer.
 
         Parameter pos_samples should be a single column vector of integer
@@ -231,13 +247,18 @@ class NSLayer:
         assert(neg_samples.shape[0] == X.shape[0])
         # Cleanup detritus from any previous feedforward
         self._cleanup()
-        # Do new feedforward...
+        # Record input and keys for positive/negative sample examples
         pos_samples = pos_samples[:,np.newaxis]
         pos_samples = np.minimum(pos_samples, self.key_count-1)
         neg_samples = np.minimum(neg_samples, self.key_count-1)
         self.X = X
         self.samp_keys = np.hstack((pos_samples, neg_samples))
         self.samp_keys = self.samp_keys.astype(np.int32)
+        # Handle OOV if testing
+        if test:
+            oov_idx = (self.key_count-1) * np.ones((1,)).astype(np.int32)
+            self.samp_keys = catch_oov_words(self.samp_keys, self.trained_idx, oov_idx[0])
+        # Do the feedforward
         self.Y = np.zeros((X.shape[0], self.samp_keys.shape[1]))
         nsl_fp_loop(self.samp_keys, self.X, self.params['W'], \
                 self.params['b'], self.Y)
@@ -430,7 +451,7 @@ class HSMLayer:
 ##################################
 
 class GPUFullLayer:
-    def __init__(self, in_layer=False, in_dim=0, out_dim=0):
+    def __init__(self, in_dim=0, out_dim=0):
         # Set stuff for managing this type of layer
         self.dim_input = in_dim
         self.dim_output = out_dim
@@ -577,7 +598,7 @@ class GPUFullLayer:
         return
 
 class FullLayer:
-    def __init__(self, in_layer=False, in_dim=0, out_dim=0):
+    def __init__(self, in_dim=0, out_dim=0):
         # Set stuff for managing this type of layer
         self.dim_input = in_dim
         self.dim_output = out_dim
@@ -766,7 +787,7 @@ class LUTLayer:
         self.params['W'] = W
         return
 
-    def feedforward(self, X):
+    def feedforward(self, X, test=False):
         """Run feedforward for this layer.
 
         The input passed to feedforward here should be either a single list
@@ -776,6 +797,11 @@ class LUTLayer:
         self._cleanup()
         # Record the incoming list of row indices to extract
         self.X = X.astype(np.int32)
+        # Handle OOV if testing
+        if test:
+            oov_idx = (self.key_count-1) * np.ones((1,)).astype(np.int32)
+            self.X = catch_oov_words(self.X, self.trained_idx, oov_idx[0])
+
         # Use look-up table to generate the desired sequences
         self.Y = self.params['W'][self.X,:]
         return self.Y
@@ -800,6 +826,7 @@ class LUTLayer:
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
                      self.param_moms['W'], learn_rate, ada_smooth, lam_l2)
+        self.params['W'][-1,:] = 0.0
         self.grad_idx = set()
         return
 
@@ -886,7 +913,7 @@ class CMLayer:
         info = {'mean': men_n, 'min': min_n, 'median': med_n, 'max': max_n}
         return info
 
-    def feedforward(self, X, C):
+    def feedforward(self, X, C, test=False):
         """Run feedforward for this layer.
         """
         # Cleanup detritus from any previous feedforward
@@ -953,7 +980,7 @@ class CMLayer:
 #########################
 
 class NoiseLayer:
-    def __init__(self, drop_rate=0.0, fuzz_scale=0.0, in_layer=False):
+    def __init__(self, drop_rate=0.0, fuzz_scale=0.0):
         # Set stuff required for managing this type of layer
         self.dYdX = []
         self.drop_rate = drop_rate
@@ -974,7 +1001,7 @@ class NoiseLayer:
         self.fuzz_scale = fuzz_scale
         return
 
-    def feedforward(self, X):
+    def feedforward(self, X, test=False):
         """Perform feedforward through this layer.
         """
         # Cleanup detritus from any previous feedforward
@@ -1016,7 +1043,7 @@ class NoiseLayer:
 #########################
 
 class TanhLayer:
-    def __init__(self, in_layer=False):
+    def __init__(self):
         # Set stufff required for managing this type of layer
         self.dYdX = []
         # Set stuff common to all layer types
@@ -1027,7 +1054,7 @@ class TanhLayer:
         self.dLdY = []
         return
 
-    def feedforward(self, X):
+    def feedforward(self, X, test=False):
         """Perform feedforward through this layer.
         """
         # Cleanup detritus from any previous feedforward
@@ -1060,10 +1087,13 @@ class TanhLayer:
 
 
 class W2VLayer:
-    def __init__(self, word_count=0, word_dim=0):
-        # Set stuff for managing this type of layer
+    def __init__(self, word_count=0, word_dim=0, lam_l2=1e-3):
+        # Set basic layer parameters. The word_count passed as an argument
+        # is incremented by one to accomodate an OOV token (out-of-vocab).
         self.word_dim = word_dim
-        self.word_count = word_count
+        self.word_count = word_count+1
+        # Initialize arrays for tracking parameters, gradients, and
+        # adagrad "momentums" (i.e. sums of squared gradients).
         self.params = {}
         self.params['Wa'] = npr.randn(word_count, word_dim)
         self.params['Wc'] = npr.randn(word_count, word_dim)
@@ -1076,8 +1106,11 @@ class W2VLayer:
         self.moms['Wa'] = np.zeros((word_count, word_dim))
         self.moms['Wc'] = np.zeros((word_count, word_dim))
         self.moms['b'] = np.zeros((word_count,))
-        self.grad_idx = set()
-        self.trained_idx = set()
+        # Set l2 regularization parameter
+        self.lam_l2 = lam_l2
+        # Initialize sets for tracking which words we have trained
+        self.trained_Wa = set()
+        self.trained_Wc = set()
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -1090,19 +1123,26 @@ class W2VLayer:
         self.moms['Wc'] = np.zeros((self.word_count, self.word_dim))
         self.params['b'] = np.zeros((self.word_count,))
         self.grads['b'] = np.zeros((self.word_count,))
+        self.moms['Wa'] = np.zeros((self.word_count, self.word_dim)) + 1e-3
+        self.moms['Wc'] = np.zeros((self.word_count, self.word_dim)) + 1e-3
+        self.moms['b'] = np.zeros((self.word_count,)) + 1e-3
+        # Set the OOV word vectors to 0
+        self.params['Wa'][-1,:] = 0.0
+        self.params['Wc'][-1,:] = 0.0
         return
 
-    def batch_update(self, anc_idx, pos_idx, neg_idx, learn_rate=1e-3):
+    def batch_train(self, anc_idx, pos_idx, neg_idx, learn_rate=1e-3):
         """Perform a batch update of all parameters based on the given sets
         of anchor/positive example/negative examples indices.
         """
         ada_smooth = 1e-3
-        lam_l2 = 1e-3
-        # Do new feedforward...
+        # Force incoming LUT indices to the right type (i.e. int32)
         anc_idx = anc_idx.astype(np.int32)
-        #print("pos_idx.shape: {0:s}, neg_idx.shape: {1:s}".format(str(pos_idx.shape),str(neg_idx.shape)))
         pos_idx = pos_idx[:,np.newaxis]
         pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
+        # Record the set of trained anchor and context indices
+        self.trained_Wa.update(anc_idx.ravel())
+        self.trained_Wc.update(pn_idx.ravel())
         pn_sign = np.ones(pn_idx.shape)
         pn_sign[:,0] = -1.0
         L = np.zeros((1,))
@@ -1114,9 +1154,36 @@ class W2VLayer:
         # Apply gradients to (touched only) look-up-table parameters
         a_mod_idx = np.unique(anc_idx.ravel())
         c_mod_idx = np.unique(pn_idx.ravel())
-        ag_update_2d(a_mod_idx, self.params['Wa'], self.grads['Wa'], self.moms['Wa'], learn_rate, ada_smooth, lam_l2)
-        ag_update_2d(c_mod_idx, self.params['Wc'], self.grads['Wc'], self.moms['Wc'], learn_rate, ada_smooth, lam_l2)
-        ag_update_1d(c_mod_idx, self.params['b'], self.grads['b'], self.moms['b'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(a_mod_idx, self.params['Wa'], self.grads['Wa'], \
+                self.moms['Wa'], learn_rate, ada_smooth, self.lam_l2)
+        ag_update_2d(c_mod_idx, self.params['Wc'], self.grads['Wc'], \
+                self.moms['Wc'], learn_rate, ada_smooth, self.lam_l2)
+        ag_update_1d(c_mod_idx, self.params['b'], self.grads['b'], \
+                self.moms['b'], learn_rate, ada_smooth, self.lam_l2)
+        # Force the OOV word vectors to 0
+        self.params['Wa'][-1,:] = 0.0
+        self.params['Wc'][-1,:] = 0.0
+        return L
+
+    def batch_test(self, anc_idx, pos_idx, neg_idx):
+        """Perform a batch update of all parameters based on the given sets
+        of anchor/positive example/negative examples indices.
+        """
+        oov_idx = (self.word_count-1) * np.ones((1,)).astype(np.int32)
+        anc_idx = anc_idx.astype(np.int32)
+        pos_idx = pos_idx[:,np.newaxis]
+        pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
+        pn_sign = np.ones(pn_idx.shape)
+        pn_sign[:,0] = -1.0
+        L = np.zeros((1,))
+        # Brute-force convert untrained words to OOV word
+        anc_idx = catch_oov_words(anc_idx, self.trained_idx, oov_idx[0])
+        pn_idx = catch_oov_words(pn_idx, self.trained_idx, oov_idx[0])
+        # Do feedforward and backprop through the predictor/predictee tables
+        w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
+               self.params['Wc'], self.params['b'], self.grads['Wa'], \
+               self.grads['Wc'], self.grads['b'], L)
+        L = L[0]
         return L
 
     def reset_moms(self, ada_init=1e-3):
@@ -1200,7 +1267,7 @@ if __name__ == '__main__':
 
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['train_full_phrases']
+    te_phrases = stb_data['test_full_phrases']
     # Get the list of all word occurrences in the training phrases
     tr_words = []
     for phrase in tr_phrases:
@@ -1234,15 +1301,15 @@ if __name__ == '__main__':
             rand_pos_neg(tr_phrases, tr_words, batch_size, context_size, 8)
 
         # Compute and apply the updates for this batch
-        L += w2v_layer.batch_update(a_idx, p_idx, n_idx, learn_rate=2e-4)
+        L += w2v_layer.batch_train(a_idx, p_idx, n_idx, learn_rate=2e-4)
 
         # Compute and display loss from time-to-time (for diagnostics)
         if ((b % 100) == 0):
             print("Batch {0:d}, loss {1:.4f}".format(b, (L / 10.0)))
             L = 0.0
         # Reset adagrad smoothing factors from time-to-time
-        #if ((b % 5000) == 0):
-        #    w2v_layer.reset_moms()
+        if ((b > 1) and ((b % 5000) == 0)):
+            w2v_layer.reset_moms()
 
     t2 = clock()
     e_time = t2 - t1

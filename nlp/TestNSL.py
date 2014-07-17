@@ -11,19 +11,18 @@ def load_data():
     stb_data = st.SimpleLoad(tree_dir)
     return stb_data
 
-@profile
 def run_test(stb_data=None):
-    
+
     # Load tree data
     if not stb_data:
         tree_dir = './trees'
         stb_data = st.SimpleLoad(tree_dir)
-    
+
     max_lut_idx = max(stb_data['lut_keys'].values())
 
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['train_full_phrases']
+    te_phrases = stb_data['test_full_phrases']
     # Get the list of all word occurrences in the training phrases
     tr_words = []
     for phrase in tr_phrases:
@@ -43,8 +42,8 @@ def run_test(stb_data=None):
     # Create a lookup table for word representations
     print("Word count: {0:d}, word dim: {1:d}".format(word_count, embed_dim))
     word_lut = w2v.LUTLayer(word_count, embed_dim)
-    tanh_layer = w2v.TanhLayer(in_layer=word_lut)
-    noise_layer = w2v.NoiseLayer(in_layer=tanh_layer, drop_rate=0.0, fuzz_scale=0.0)
+    tanh_layer = w2v.TanhLayer()
+    noise_layer = w2v.NoiseLayer(drop_rate=0.0, fuzz_scale=0.0)
     phrase_layer = w2v.CMLayer(key_count=len(tr_phrases), source_dim=embed_dim, bias_dim=bias_dim)
 
     # Create a negative-sampling layer for classification
@@ -58,7 +57,7 @@ def run_test(stb_data=None):
     L = 0.0
     for b in range(batch_count):
         # Reset adagrad smoothing factors from time-to-time
-        if ((b % 5000) == 0):
+        if ((b > 1) and ((b % 5000) == 0)):
             word_lut.reset_moms()
             phrase_layer.reset_moms()
             class_layer.reset_moms()
