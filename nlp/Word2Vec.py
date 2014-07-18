@@ -15,7 +15,7 @@ from ctypes import pythonapi, c_void_p
 # MULTITHREADING HELPER-FUNC AND DEFNS #
 ########################################
 
-THREAD_NUM = 2
+THREAD_NUM = 4
 
 savethread = pythonapi.PyEval_SaveThread
 savethread.argtypes = []
@@ -76,6 +76,7 @@ w2v_ff_bp = make_multithread(w2v_ff_bp_st, THREAD_NUM)
 
 def nsl_bp_sp(sp_idx, table_idx, X, W, dLdY, dLdX, dW, db):
     """Backprop for NSLayer: main loop in Numba-friendly form."""
+    threadstate = savethread()
     rows = sp_idx.shape[0]
     cols = dLdY.shape[1]
     vec_dim = X.shape[1]
@@ -88,6 +89,7 @@ def nsl_bp_sp(sp_idx, table_idx, X, W, dLdY, dLdX, dW, db):
             for k in range(vec_dim):
                 dW[idx,k] += dldy * X[i,k]
                 dLdX[i,k] += dldy * W[idx,k]
+    restorethread(threadstate)
     return
 fn_sig_2 = void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:])
 nsl_bp_st = jit(fn_sig_2, nopython=True)(nsl_bp_sp)
@@ -95,6 +97,7 @@ nsl_bp_loop = make_multithread(nsl_bp_st, THREAD_NUM)
 
 def nsl_fp_sp(sp_idx, table_idx, X, W, b, Y):
     """Feedforward for NSLayer: main loop in Numba-friendly form."""
+    threadstate = savethread()
     rows = sp_idx.shape[0]
     cols = table_idx.shape[1]
     vec_dim = X.shape[1]
@@ -105,6 +108,7 @@ def nsl_fp_sp(sp_idx, table_idx, X, W, b, Y):
             Y[i,j] = b[idx]
             for k in range(vec_dim):
                 Y[i,j] += X[i,k] * W[idx,k]
+    restorethread(threadstate)
     return
 fn_sig_3 = void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:])
 nsl_fp_st = jit(fn_sig_3, nopython=True)(nsl_fp_sp)
@@ -151,12 +155,14 @@ def lut_sp(sp_idx, row_idx, dLdY, dW):
 
     This adds each row of dLdY to some row of dW. The row of dW to adjust
     is given by the corresponding item in row_idx."""
+    threadstate = savethread()
     row_count = sp_idx.shape[0]
     vec_dim = dW.shape[1]
     for i in range(row_count):
         idx = row_idx[sp_idx[i]]
         for j in range(vec_dim):
             dW[idx,j] += dLdY[i,j]
+    restorethread(threadstate)
     return
 fn_sig_5 = void(i4[:], i4[:], f8[:,:], f8[:,:])
 lut_st = jit(fn_sig_5, nopython=True)(lut_sp)
@@ -1267,7 +1273,7 @@ if __name__ == '__main__':
 
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['test_full_phrases']
+    te_phrases = stb_data['dev_full_phrases']
     # Get the list of all word occurrences in the training phrases
     tr_words = []
     for phrase in tr_phrases:

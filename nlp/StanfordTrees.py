@@ -146,9 +146,11 @@ class STBParser:
         train_words = self.get_vocab(self.train_trees)
         # Make a mapping from the training vocab to look-up-table indices
         self.lut_keys = {}
+        self.lut_reverse = {}
         idx = 0
         for word in train_words:
             self.lut_keys[word] = idx
+            self.lut_reverse[idx] = word
             idx = idx + 1
         self.lut_keys["UNK_WORD"] = idx
         # Set the look-up-table indices for train/dev/test trees

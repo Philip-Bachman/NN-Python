@@ -6,6 +6,7 @@ import random as random
 from time import clock
 from sys import stdout as stdout
 
+@profile
 def run_test():
     # Load tree data
     tree_dir = './trees'
@@ -23,11 +24,11 @@ def run_test():
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
 
-    batch_count = 200001
+    batch_count = 1001
     batch_size = 256
     context_size = 6
     word_count = max_lut_idx + 1
-    embed_dim = 200
+    embed_dim = 300
     lam_l2 = 1e-3
 
     print("Word count: {0:d}, word dim: {1:d}".format(word_count, embed_dim))
