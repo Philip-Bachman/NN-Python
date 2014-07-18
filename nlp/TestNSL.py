@@ -22,7 +22,7 @@ def run_test(stb_data=None):
 
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['test_full_phrases']
+    te_phrases = stb_data['dev_full_phrases']
     # Get the list of all word occurrences in the training phrases
     tr_words = []
     for phrase in tr_phrases:

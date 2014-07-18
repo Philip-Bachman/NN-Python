@@ -199,12 +199,12 @@ class NSLayer:
         self.params = {}
         self.params['W'] = npr.randn(key_count, in_dim)
         self.params['b'] = np.zeros((key_count,))
-        self.param_grads = {}
-        self.param_grads['W'] = np.zeros((key_count, in_dim))
-        self.param_grads['b'] = np.zeros((key_count,))
-        self.param_moms = {}
-        self.param_moms['W'] = np.zeros((key_count, in_dim))
-        self.param_moms['b'] = np.zeros((key_count,))
+        self.grads = {}
+        self.grads['W'] = np.zeros((key_count, in_dim))
+        self.grads['b'] = np.zeros((key_count,))
+        self.moms = {}
+        self.moms['W'] = np.zeros((key_count, in_dim))
+        self.moms['b'] = np.zeros((key_count,))
         self.max_norm = 10.0
         self.comp_time = 0.0
         # Set common stuff for all types layers
@@ -221,9 +221,9 @@ class NSLayer:
     def init_params(self, w_scale=0.01, b_scale=0.0):
         """Randomly initialize the weights in this layer."""
         self.params['W'] = w_scale * npr.randn(self.key_count, self.dim_input)
-        self.param_grads['W'] = np.zeros((self.key_count, self.dim_input))
+        self.grads['W'] = np.zeros((self.key_count, self.dim_input))
         self.params['b'] = np.zeros((self.key_count,))
-        self.param_grads['b'] = np.zeros((self.key_count,))
+        self.grads['b'] = np.zeros((self.key_count,))
         return
 
     def clip_params(self):
@@ -283,7 +283,7 @@ class NSLayer:
         self.dLdX = np.zeros(self.X.shape)
         self.grad_idx.update(self.samp_keys.ravel())
         nsl_bp_loop(self.samp_keys, self.X, self.params['W'], self.dLdY, \
-                    self.dLdX, self.param_grads['W'], self.param_grads['b'])
+                    self.dLdX, self.grads['W'], self.grads['b'])
         return self.dLdX
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -296,17 +296,17 @@ class NSLayer:
         """Apply the current accumulated gradients, with adagrad."""
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
-        ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
-                     self.param_moms['W'], learn_rate, ada_smooth, lam_l2)
-        ag_update_1d(nz_idx, self.params['b'], self.param_grads['b'], \
-                     self.param_moms['b'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
+                     self.moms['W'], learn_rate, ada_smooth, lam_l2)
+        ag_update_1d(nz_idx, self.params['b'], self.grads['b'], \
+                     self.moms['b'], learn_rate, ada_smooth, lam_l2)
         self.grad_idx = set()
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
-        self.param_moms['W'] = (0.0 * self.param_moms['W']) + ada_init
-        self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
     def _cleanup(self):
@@ -331,12 +331,12 @@ class HSMLayer:
         self.params = {}
         self.params['W'] = npr.randn(in_dim, code_vecs)
         self.params['b'] = np.zeros((1, code_vecs))
-        self.param_grads = {}
-        self.param_grads['W'] = np.zeros((in_dim, code_vecs))
-        self.param_grads['b'] = np.zeros((1, code_vecs))
-        self.param_moms = {}
-        self.param_moms['W'] = np.zeros((in_dim, code_vecs))
-        self.param_moms['b'] = np.zeros((1, code_vecs))
+        self.grads = {}
+        self.grads['W'] = np.zeros((in_dim, code_vecs))
+        self.grads['b'] = np.zeros((1, code_vecs))
+        self.moms = {}
+        self.moms['W'] = np.zeros((in_dim, code_vecs))
+        self.moms['b'] = np.zeros((1, code_vecs))
         self.max_norm = 10.0
         self.comp_time = 0.0
         # Set common stuff for all types layers
@@ -353,9 +353,9 @@ class HSMLayer:
     def init_params(self, w_scale=0.01, b_scale=0.0):
         """Randomly initialize the weights in this layer."""
         self.params['W'] = w_scale * npr.randn(self.dim_input, self.code_vecs)
-        self.param_grads['W'] = np.zeros((self.dim_input, self.code_vecs))
+        self.grads['W'] = np.zeros((self.dim_input, self.code_vecs))
         self.params['b'] = np.zeros((1, self.code_vecs))
-        self.param_grads['b'] = np.zeros((1, self.code_vecs))
+        self.grads['b'] = np.zeros((1, self.code_vecs))
         return
 
     def clip_params(self):
@@ -398,8 +398,8 @@ class HSMLayer:
         code_idx = self.code_idx
         W = self.params['W']
         b = self.params['b']
-        dW = self.param_grads['W']
-        db = self.param_grads['b']
+        dW = self.grads['W']
+        db = self.grads['b']
         dLdY = np.log(1.0 + np.exp(-1.0 * (self.Y * self.code_sign)))
         dLdX = np.zeros(self.X.shape)
         for i in range(self.X.shape[0]):
@@ -419,27 +419,27 @@ class HSMLayer:
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        self.param_grads['b'] += lam_l2 * self.params['b']
-        self.param_moms['W'] += self.param_grads['W']**2.0
-        self.param_moms['b'] += self.param_grads['b']**2.0
-        self.params['W'] -= learn_rate * (self.param_grads['W'] / \
-                (np.sqrt(self.param_moms['W']) + ada_smooth))
-        self.params['b'] -= learn_rate * (self.param_grads['b'] / \
-                (np.sqrt(self.param_moms['b']) + ada_smooth))
+        self.grads['W'] += lam_l2 * self.params['W']
+        self.grads['b'] += lam_l2 * self.params['b']
+        self.moms['W'] += self.grads['W']**2.0
+        self.moms['b'] += self.grads['b']**2.0
+        self.params['W'] -= learn_rate * (self.grads['W'] / \
+                (np.sqrt(self.moms['W']) + ada_smooth))
+        self.params['b'] -= learn_rate * (self.grads['b'] / \
+                (np.sqrt(self.moms['b']) + ada_smooth))
         self.reset_grads()
         return
 
     def reset_grads(self):
         """Reset the gradient accumulators for this layer."""
-        self.param_grads['W'] = 0.0 * self.param_grads['W']
-        self.param_grads['b'] = 0.0 * self.param_grads['b']
+        self.grads['W'] = 0.0 * self.grads['W']
+        self.grads['b'] = 0.0 * self.grads['b']
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
-        self.param_moms['W'] = (0.0 * self.param_moms['W']) + ada_init
-        self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
     def _cleanup(self):
@@ -464,12 +464,12 @@ class GPUFullLayer:
         self.params = {}
         self.params['W'] = gp.randn((in_dim, out_dim))
         self.params['b'] = gp.zeros((1, out_dim))
-        self.param_grads = {}
-        self.param_grads['W'] = gp.zeros((in_dim, out_dim))
-        self.param_grads['b'] = gp.zeros((1, out_dim))
-        self.param_moms = {}
-        self.param_moms['W'] = gp.zeros((in_dim, out_dim))
-        self.param_moms['b'] = gp.zeros((1, out_dim))
+        self.grads = {}
+        self.grads['W'] = gp.zeros((in_dim, out_dim))
+        self.grads['b'] = gp.zeros((1, out_dim))
+        self.moms = {}
+        self.moms['W'] = gp.zeros((in_dim, out_dim))
+        self.moms['b'] = gp.zeros((1, out_dim))
         self.max_norm = 10.0
         self.comp_time = 0.0
         # Set common stuff for all types layers
@@ -484,9 +484,9 @@ class GPUFullLayer:
     def init_params(self, w_scale=0.01, b_scale=0.0):
         """Randomly initialize the weights in this layer."""
         self.params['W'] = w_scale * gp.randn((self.dim_input, self.dim_output))
-        self.param_grads['W'] = gp.zeros((self.dim_input, self.dim_output))
+        self.grads['W'] = gp.zeros((self.dim_input, self.dim_output))
         self.params['b'] = gp.zeros((1, self.dim_output))
-        self.param_grads['b'] = gp.zeros((1, self.dim_output))
+        self.grads['b'] = gp.zeros((1, self.dim_output))
         return
 
     def clip_params(self):
@@ -522,8 +522,8 @@ class GPUFullLayer:
         dLdW = gp.dot(self.X.T, self.dLdY)
         dLdb = gp.sum(self.dLdY, axis=0)
         dLdb = dLdb[gp.newaxis,:]
-        self.param_grads['W'] += dLdW
-        self.param_grads['b'] += dLdb
+        self.grads['W'] += dLdW
+        self.grads['b'] += dLdb
         # Compute gradient with respect to layer input
         self.dLdX = gp.dot(self.dLdY, self.params['W'].T)
         return self.dLdX
@@ -572,27 +572,27 @@ class GPUFullLayer:
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        self.param_grads['b'] += lam_l2 * self.params['b']
-        self.param_moms['W'] += self.param_grads['W']**2.0
-        self.param_moms['b'] += self.param_grads['b']**2.0
-        self.params['W'] -= learn_rate * (self.param_grads['W'] / \
-                (gp.sqrt(self.param_moms['W']) + ada_smooth))
-        self.params['b'] -= learn_rate * (self.param_grads['b'] / \
-                (gp.sqrt(self.param_moms['b']) + ada_smooth))
+        self.grads['W'] += lam_l2 * self.params['W']
+        self.grads['b'] += lam_l2 * self.params['b']
+        self.moms['W'] += self.grads['W']**2.0
+        self.moms['b'] += self.grads['b']**2.0
+        self.params['W'] -= learn_rate * (self.grads['W'] / \
+                (gp.sqrt(self.moms['W']) + ada_smooth))
+        self.params['b'] -= learn_rate * (self.grads['b'] / \
+                (gp.sqrt(self.moms['b']) + ada_smooth))
         self.reset_grads()
         return
 
     def reset_grads(self):
         """Reset the gradient accumulators for this layer."""
-        self.param_grads['W'] = 0.0 * self.param_grads['W']
-        self.param_grads['b'] = 0.0 * self.param_grads['b']
+        self.grads['W'] = 0.0 * self.grads['W']
+        self.grads['b'] = 0.0 * self.grads['b']
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
-        self.param_moms['W'] = (0.0 * self.param_moms['W']) + ada_init
-        self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
     def _cleanup(self):
@@ -611,12 +611,12 @@ class FullLayer:
         self.params = {}
         self.params['W'] = npr.randn(in_dim, out_dim)
         self.params['b'] = np.zeros((1, out_dim))
-        self.param_grads = {}
-        self.param_grads['W'] = np.zeros((in_dim, out_dim))
-        self.param_grads['b'] = np.zeros((1, out_dim))
-        self.param_moms = {}
-        self.param_moms['W'] = np.zeros((in_dim, out_dim))
-        self.param_moms['b'] = np.zeros((1, out_dim))
+        self.grads = {}
+        self.grads['W'] = np.zeros((in_dim, out_dim))
+        self.grads['b'] = np.zeros((1, out_dim))
+        self.moms = {}
+        self.moms['W'] = np.zeros((in_dim, out_dim))
+        self.moms['b'] = np.zeros((1, out_dim))
         self.max_norm = 10.0
         self.comp_time = 0.0
         # Set common stuff for all types layers
@@ -630,9 +630,9 @@ class FullLayer:
     def init_params(self, w_scale=0.01, b_scale=0.0):
         """Randomly initialize the weights in this layer."""
         self.params['W'] = w_scale * npr.randn(self.dim_input, self.dim_output)
-        self.param_grads['W'] = np.zeros((self.dim_input, self.dim_output))
+        self.grads['W'] = np.zeros((self.dim_input, self.dim_output))
         self.params['b'] = np.zeros((1, self.dim_output))
-        self.param_grads['b'] = np.zeros((1, self.dim_output))
+        self.grads['b'] = np.zeros((1, self.dim_output))
         return
 
     def clip_params(self):
@@ -668,8 +668,8 @@ class FullLayer:
         # Compute gradient with respect to layer parameters
         dLdW = np.dot(self.X.T, self.dLdY)
         dLdb = np.sum(self.dLdY, axis=0, keepdims=True)
-        self.param_grads['W'] = self.param_grads['W'] + dLdW
-        self.param_grads['b'] = self.param_grads['b'] + dLdb
+        self.grads['W'] = self.grads['W'] + dLdW
+        self.grads['b'] = self.grads['b'] + dLdb
         # Compute gradient with respect to layer input
         self.dLdX = np.dot(self.dLdY, self.params['W'].T)
         return self.dLdX
@@ -712,27 +712,27 @@ class FullLayer:
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
-        self.param_grads['W'] += lam_l2 * self.params['W']
-        self.param_grads['b'] += lam_l2 * self.params['b']
-        self.param_moms['W'] += self.param_grads['W']**2.0
-        self.param_moms['b'] += self.param_grads['b']**2.0
-        self.params['W'] -= learn_rate * (self.param_grads['W'] / \
-                (np.sqrt(self.param_moms['W']) + ada_smooth))
-        self.params['b'] -= learn_rate * (self.param_grads['b'] / \
-                (np.sqrt(self.param_moms['b']) + ada_smooth))
+        self.grads['W'] += lam_l2 * self.params['W']
+        self.grads['b'] += lam_l2 * self.params['b']
+        self.moms['W'] += self.grads['W']**2.0
+        self.moms['b'] += self.grads['b']**2.0
+        self.params['W'] -= learn_rate * (self.grads['W'] / \
+                (np.sqrt(self.moms['W']) + ada_smooth))
+        self.params['b'] -= learn_rate * (self.grads['b'] / \
+                (np.sqrt(self.moms['b']) + ada_smooth))
         self.reset_grads()
         return
 
     def reset_grads(self):
         """Reset the gradient accumulators for this layer."""
-        self.param_grads['W'] = 0.0 * self.param_grads['W']
-        self.param_grads['b'] = 0.0 * self.param_grads['b']
+        self.grads['W'] = 0.0 * self.grads['W']
+        self.grads['b'] = 0.0 * self.grads['b']
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
-        self.param_moms['W'] = (0.0 * self.param_moms['W']) + ada_init
-        self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
     def _cleanup(self):
@@ -753,10 +753,10 @@ class LUTLayer:
         self.comp_time = 0.0
         self.params = {}
         self.params['W'] = npr.randn(key_count, embed_dim)
-        self.param_grads = {}
-        self.param_grads['W'] = np.zeros(self.params['W'].shape)
-        self.param_moms = {}
-        self.param_moms['W'] = np.zeros(self.params['W'].shape)
+        self.grads = {}
+        self.grads['W'] = np.zeros(self.params['W'].shape)
+        self.moms = {}
+        self.moms['W'] = np.zeros(self.params['W'].shape)
         self.grad_idx = set()
         self.trained_idx = set()
         self.key_count = key_count
@@ -773,7 +773,7 @@ class LUTLayer:
     def init_params(self, w_scale=0.01):
         """Randomly initialize the weights in this layer."""
         self.params['W'] = w_scale * npr.randn(self.key_count, self.embed_dim)
-        self.param_grads['W'] = np.zeros((self.key_count, self.embed_dim))
+        self.grads['W'] = np.zeros((self.key_count, self.embed_dim))
         return
 
     def clip_params(self):
@@ -818,7 +818,7 @@ class LUTLayer:
         self.dLdY = dLdY
         self.grad_idx.update(self.X.ravel())
         # Add the gradients to the gradient accumulator
-        lut_bp(self.X, self.dLdY, self.param_grads['W'])
+        lut_bp(self.X, self.dLdY, self.grads['W'])
         return 1
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -830,8 +830,8 @@ class LUTLayer:
         """Apply the current accumulated gradients, with adagrad."""
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
-        ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
-                     self.param_moms['W'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
+                     self.moms['W'], learn_rate, ada_smooth, lam_l2)
         self.params['W'][-1,:] = 0.0
         self.grad_idx = set()
         return
@@ -839,7 +839,7 @@ class LUTLayer:
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
-        self.param_moms['W'] = (0.0 * self.param_moms['W']) + ada_init
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
         return
 
     def _cleanup(self):
@@ -861,12 +861,12 @@ class CMLayer:
         self.params = {}
         self.params['W'] = np.zeros((key_count, source_dim))
         self.params['b'] = np.zeros((key_count, bias_dim))
-        self.param_grads = {}
-        self.param_grads['W'] = np.zeros(self.params['W'].shape)
-        self.param_grads['b'] = np.zeros(self.params['b'].shape)
-        self.param_moms = {}
-        self.param_moms['W'] = np.zeros(self.params['W'].shape)
-        self.param_moms['b'] = np.zeros(self.params['b'].shape)
+        self.grads = {}
+        self.grads['W'] = np.zeros(self.params['W'].shape)
+        self.grads['b'] = np.zeros(self.params['b'].shape)
+        self.moms = {}
+        self.moms['W'] = np.zeros(self.params['W'].shape)
+        self.moms['b'] = np.zeros(self.params['b'].shape)
         self.grad_idx = set()
         self.trained_idx = set()
         self.key_count = key_count
@@ -886,9 +886,9 @@ class CMLayer:
     def init_params(self, w_scale=0.01):
         """Randomly initialize the weights in this layer."""
         self.params['W'] = w_scale * npr.randn(self.key_count, self.source_dim)
-        self.param_grads['W'] = np.zeros(self.params['W'].shape)
+        self.grads['W'] = np.zeros(self.params['W'].shape)
         self.params['b'] = w_scale * npr.randn(self.key_count, self.bias_dim)
-        self.param_grads['b'] = np.zeros(self.params['b'].shape)
+        self.grads['b'] = np.zeros(self.params['b'].shape)
         return
 
     def clip_params(self):
@@ -945,8 +945,8 @@ class CMLayer:
         W_exp = np.exp(self.W)
         W_sig = W_exp / (1.0 + W_exp)
         dLdW = (W_sig / W_exp) * self.X * dLdYw
-        lut_bp(self.C, dLdW, self.param_grads['W'])
-        lut_bp(self.C, dLdYb, self.param_grads['b'])
+        lut_bp(self.C, dLdW, self.grads['W'])
+        lut_bp(self.C, dLdYb, self.grads['b'])
         dLdX = W_sig * dLdYw
         return dLdX
 
@@ -960,17 +960,17 @@ class CMLayer:
         self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx])
         nz_idx = nz_idx.astype(np.int32)
-        ag_update_2d(nz_idx, self.params['W'], self.param_grads['W'], \
-                     self.param_moms['W'], learn_rate, ada_smooth, lam_l2)
-        ag_update_2d(nz_idx, self.params['b'], self.param_grads['b'], \
-                     self.param_moms['b'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
+                     self.moms['W'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(nz_idx, self.params['b'], self.grads['b'], \
+                     self.moms['b'], learn_rate, ada_smooth, lam_l2)
         self.grad_idx = set()
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
-        self.param_moms['W'] = (0.0 * self.param_moms['W']) + ada_init
-        self.param_moms['b'] = (0.0 * self.param_moms['b']) + ada_init
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
     def _cleanup(self):
@@ -1183,8 +1183,8 @@ class W2VLayer:
         pn_sign[:,0] = -1.0
         L = np.zeros((1,))
         # Brute-force convert untrained words to OOV word
-        anc_idx = catch_oov_words(anc_idx, self.trained_idx, oov_idx[0])
-        pn_idx = catch_oov_words(pn_idx, self.trained_idx, oov_idx[0])
+        anc_idx = catch_oov_words(anc_idx, self.trained_Wa, oov_idx[0])
+        pn_idx = catch_oov_words(pn_idx, self.trained_Wc, oov_idx[0])
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
                self.params['Wc'], self.params['b'], self.grads['Wa'], \
@@ -1202,11 +1202,6 @@ class W2VLayer:
 #######################
 # RANDOM KNICK-KNACKS #
 #######################
-
-def rand_idx_list(max_idx, samples):
-    """Sample "samples" random ints between 0 and "max_idx"."""
-    idx_list = npr.randint(0, high=max_idx, size=(samples,))
-    return idx_list
 
 def rand_word_pairs(phrase_list, pair_count, context_size):
     """Sample random anchor/context pairs for skip-gram training.

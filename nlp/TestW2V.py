@@ -6,7 +6,6 @@ import random as random
 from time import clock
 from sys import stdout as stdout
 
-@profile
 def run_test():
     # Load tree data
     tree_dir = './trees'

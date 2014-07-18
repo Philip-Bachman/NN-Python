@@ -22,7 +22,7 @@ def run_test(stb_data=None):
 
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['test_full_phrases']
+    te_phrases = stb_data['dev_full_phrases']
     # Get the list of all word occurrences in the training phrases
     tr_words = []
     for phrase in tr_phrases:
@@ -31,7 +31,7 @@ def run_test(stb_data=None):
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
 
-    batch_count = 200001
+    batch_count = 20001
     batch_size = 256
     context_size = 5
     word_count = max_lut_idx + 1
@@ -45,10 +45,8 @@ def run_test(stb_data=None):
     # Initialize params for the LUT and softmax classifier
     w2v_layer.init_params(0.05)
 
-    sample_time = 0.0
-    update_time = 0.0
-    print("Processing batches:")
     L = 0.0
+    print("Processing batches:")
     for b in range(batch_count):
         # Sample a batch of random anchor/context prediction pairs for
         # training a skip-gram model.
@@ -63,8 +61,9 @@ def run_test(stb_data=None):
             obs_count = batch_size * 100.0
             print("Batch {0:d}, loss {1:.4f}".format(b, (L / obs_count)))
             L = 0.0
+
         # Occasionally compute validation set loss
-        if ((b % 1000) == 0):
+        if ((b % 500) == 0):
             obs_count = 1000
             [a_idx, p_idx, n_idx, phrase_idx] = \
                 w2v.rand_pos_neg(te_phrases, tr_words, obs_count, context_size, 8)
