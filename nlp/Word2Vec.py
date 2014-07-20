@@ -20,7 +20,7 @@ class NSLayer:
         self.dim_input = in_dim
         self.key_count = key_count
         self.params = {}
-        self.params['W'] = npr.randn(key_count, in_dim)
+        self.params['W'] = 0.01 * npr.randn(key_count, in_dim)
         self.params['b'] = np.zeros((key_count,))
         self.grads = {}
         self.grads['W'] = np.zeros((key_count, in_dim))
@@ -281,7 +281,7 @@ class FullLayer:
         self.dim_input = in_dim
         self.dim_output = out_dim
         self.params = {}
-        self.params['W'] = gp.randn((in_dim, out_dim))
+        self.params['W'] = 0.01 * gp.randn((in_dim, out_dim))
         self.params['b'] = gp.zeros((1, out_dim))
         self.grads = {}
         self.grads['W'] = gp.zeros((in_dim, out_dim))
@@ -429,7 +429,7 @@ class LUTLayer:
         # Set stuff for managing this type of layer
         key_count = key_count + 1
         self.params = {}
-        self.params['W'] = npr.randn(key_count, embed_dim)
+        self.params['W'] = 0.01 * npr.randn(key_count, embed_dim)
         self.grads = {}
         self.grads['W'] = np.zeros(self.params['W'].shape)
         self.moms = {}
@@ -771,8 +771,8 @@ class W2VLayer:
         # Initialize arrays for tracking parameters, gradients, and
         # adagrad "momentums" (i.e. sums of squared gradients).
         self.params = {}
-        self.params['Wa'] = npr.randn(word_count, word_dim)
-        self.params['Wc'] = npr.randn(word_count, word_dim)
+        self.params['Wa'] = 0.01 * npr.randn(word_count, word_dim)
+        self.params['Wc'] = 0.01 * npr.randn(word_count, word_dim)
         self.params['b'] = np.zeros((word_count,))
         self.grads = {}
         self.grads['Wa'] = np.zeros((word_count, word_dim))

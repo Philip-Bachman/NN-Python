@@ -2,7 +2,7 @@ import numpy as np
 import numpy.random as npr
 import Word2Vec as w2v
 import ParVec as pv
-import random as random
+import HelperFuncs as hf
 
 """
 TODO: write classes for managing training and testing of several types of
@@ -23,7 +23,92 @@ Model 3: Word2Vec style skip-gram model with added dropout, gaussian fuzzing,
          context-adaptive biases and context-adaptive feature reweighting.
 """
 
-def run_test(stb_data=None):
+class PVModel:
+    """
+    Paragraph Vector model, as described in "Distributed Representations of
+    Sentences and Documents" by Quoc Le and Tomas Mikolov (ICML 2014).
+
+    Important Parameters (accessible via self.*):
+      wv_dim: dimension of the LUT word vectors
+      cv_dim: dimension of the context (a.k.a. paragraph) vectors
+      max_wv_key: max key of a valid word in the word LUT
+      max_cv_key: max key of a valid context in the context LUT
+      pre_words: # of previous context words to use in forward-prediction
+      lam_wv: l2 regularization parameter for word vectors
+      lam_cv: l2 regularization parameter for context vectors
+      lam_sm: l2 regularization parameter for weights in softmax layer
+
+    Note: This implementation also passes the word/context vectors through
+          an extra "noise layer" prior to the softmax layer. The noise layer
+          adds the option of using dropout/masking noise and also Gaussian
+          "weight fuzzing" noise for stronger regularization.
+    """
+    def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key, \
+                 pre_words=5, lam_wv=1e-4, lam_cv=1e-4, lam_sm=1e-4):
+        # Record options/parameters
+        self.wv_dim = wv_dim
+        self.cv_dim = cv_dim
+        self.max_wv_key = max_wv_key
+        self.max_cv_key = max_cv_key
+        self.pre_words = pre_words
+        self.lam_wv = lam_wv
+        self.lam_cv = lam_cv
+        self.lam_sm = lam_sm
+        # Set noise layer parameters (for better regularization)
+        self.drop_rate = 0.0
+        self.fuzz_scale = 0.0
+        # Create layers to use during training
+        self.context_layer = pv.ContextLayer(max_wv_key, wv_dim, max_cv_key, cv_dim)
+        self.noise_layer = pv.NoiseLayer(drop_rate=self.drop_rate,
+                                         fuzz_scale=self.fuzz_scale)
+        self.softmax_layer = pv.FullLayer(in_dim=(pre_words*wv_dim + cv_dim), \
+                                          out_dim=max_wv_key)
+        return
+
+    def init_params(self, weight_scale=0.05):
+        """Reset weights in the context LUT and softmax layers."""
+        self.context_layer.init_params(weight_scale)
+        self.softmax_layer.init_params(weight_scale)
+        return
+
+    def reset_moms(self, ada_init=1e-3):
+        """Reset the adagrad "momentums" in each layer."""
+        self.context_layer.reset_moms(ada_init)
+        self.softmax_layer.reset_moms(ada_init)
+        return
+
+    def batch_update(self, pre_idx, post_idx, phrase_idx, learn_rate, ada_smooth=1e-3):
+        """Perform a single "minibatch" update of the model parameters.
+
+        This uses the word key sequences stored in the rows of the matrix
+        word_idx together with their corresponding context keys stored in the
+        vector phrase_idx. Parameters learn_rate and ada_smooth control the
+        step size and "smoothing" applied during the adagrad update.
+        """
+        # Feedforward through look-up-table, noise, and softmax layers
+        Xb = self.context_layer.feedforward(pre_idx, phrase_idx, test=False)
+        Xn = self.noise_layer.feedforward(Xb)
+        Yn = self.softmax_layer.feedforward(Xn)
+        # Compute loss at softmax layer
+        L = self.softmax_layer.cross_entropy_loss(Yn, post_idx)
+
+        # Backprop through the layers in reverse order
+        dLdXn = self.softmax_layer.backprop(post_idx, return_on_gpu=True)
+        dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
+        self.context_layer.backprop(dLdXb)
+
+        # Apply gradients computed during backprop
+        self.softmax_layer.apply_grad_reg(learn_rate=learn_rate, \
+                                          ada_smooth=ada_smooth, \
+                                          lam_l2=self.lam_sm)
+        self.context_layer.apply_grad_reg(learn_rate=learn_rate, \
+                                          ada_smooth=ada_smooth, \
+                                          lam_w=self.lam_wv, \
+                                          lam_c=self.lam_cv)
+        return L
+
+def stb_test_PVModel():
+    """Hard-coded test on STB data, for development/debugging."""
     import StanfordTrees as st
      # Load tree data
     tree_dir = './trees'
@@ -39,82 +124,46 @@ def run_test(stb_data=None):
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
     # Record maximum required keys for the context layer's tables
-    max_word_key = max(stb_data['lut_keys'].values()) + 1
-    max_context_key = len(tr_phrases) - 1
+    max_wv_key = max(stb_data['lut_keys'].values()) + 1
+    max_cv_key = len(tr_phrases) - 1
 
     # Set some simple hyperparameters for training
-    non_word_key = max_word_key
+    null_key = max_wv_key
     batch_count = 500001
     batch_size = 256
-    pre_words = 5
-    word_dim = 100
-    context_dim = 50
+    pre_words = 7
+    wv_dim = 200
+    cv_dim = 200
     lam_l2 = 1e-3
 
-    # Create a lookup table for word representations
-    print("Word count: {0:d}, word dim: {1:d}".format(word_count, embed_dim))
-    word_lut = w2v.LUTLayer(word_count, embed_dim)
-    tanh_layer = w2v.TanhLayer()
-    noise_layer = w2v.NoiseLayer(drop_rate=0.5, fuzz_scale=0.02)
-    phrase_layer = w2v.CMLayer(key_count=len(tr_phrases), source_dim=embed_dim, bias_dim=bias_dim)
+    pvm = PVModel(wv_dim, cv_dim, max_wv_key, max_cv_key, pre_words=pre_words, \
+                  lam_wv=lam_l2, lam_cv=lam_l2, lam_sm=lam_l2)
+    pvm.init_params(0.05)
 
-    # Create a negative-sampling layer for classification
-    class_layer = w2v.NSLayer(key_count=max_lut_idx, in_dim=(embed_dim+bias_dim))
-
-    # Initialize params for the LUT and softmax classifier
-    word_lut.init_params(0.05)
-    class_layer.init_params(0.05)
-
-    @profile
-    def process_batch(a_idx, p_idx, n_idx, phrase_idx):
-        # Feedforward through the layers for this batch
-        Xb = word_lut.feedforward(a_idx)
-        Xp = phrase_layer.feedforward(Xb, phrase_idx)
-        Xn = noise_layer.feedforward(Xp)
-        L = class_layer.feedforward(Xn, p_idx, n_idx)
-        # Backprop through layers based on feedforward result
-        dLdXn = class_layer.backprop()
-        dLdXp = noise_layer.backprop(dLdXn)
-        dLdXb = phrase_layer.backprop(dLdXp)
-        word_lut.backprop(dLdXb)
-        # Update parameters based on the gradients computed in backprop
-        word_lut.apply_grad_reg(learn_rate=2e-4, ada_smooth=1e-3, lam_l2=lam_l2)
-        class_layer.apply_grad_reg(learn_rate=2e-4, ada_smooth=1e-3, lam_l2=lam_l2)
-        phrase_layer.apply_grad_reg(learn_rate=2e-4, ada_smooth=1e-3, lam_l2=lam_l2)
-        return L
-
-    print("Processing batches:")
     L = 0.0
     for b in range(batch_count):
-        # Reset adagrad smoothing factors from time-to-time
-        if ((b > 1) and ((b % 5000) == 0)):
-            word_lut.reset_moms()
-            phrase_layer.reset_moms()
-            class_layer.reset_moms()
+        # Sample a batch of random word sequences extract from a fixed set
+        # of "phrases".
+        [seq_idx, phrase_idx] = \
+            hf.rand_word_seqs(tr_phrases, batch_size, pre_words+1, null_key)
+        # Get the keys for the words to use for prediction
+        pre_idx = seq_idx[:,0:-1]
+        # Get the keys for the words to be predicted
+        post_idx = seq_idx[:,-1]
+        
+        # Update the PVModel using the sampled word/phrase contexts
+        L += pvm.batch_update(pre_idx, post_idx, phrase_idx, 1e-3)
 
-        # Sample a batch of random anchor/context prediction pairs for
-        # training a skip-gram model.
-        [a_idx, p_idx, n_idx, phrase_idx] = \
-            w2v.rand_pos_neg(tr_phrases, tr_words, batch_size, context_size, 8)
-
-        # Process the batch, with feedforward, backprop, and weight updates
-        L += process_batch(a_idx, p_idx, n_idx, phrase_idx)
-
-        # Compute and display loss from time-to-time (for diagnostics)
         if ((b % 50) == 0):
-            print("Batch {0:d}, loss {1:.4f}".format(b, (L / 10.0)))
+            obs_count = 50.0 * batch_size
+            print("Batch {0:d}, loss {1:.4f}".format(b, (L / obs_count)))
             L = 0.0
-        if ((b % 500) == 0):
-            info = phrase_layer.norm_info('W')
-            print("    ||W|| -- mean: {0:.4f}, min: {1:.4f}, median: {2:.4f}, max: {3:.4f}".format( \
-                    info['mean'], info['min'], info['median'], info['max']))
-            info = phrase_layer.norm_info('b')
-            print("    ||b|| -- mean: {0:.4f}, min: {1:.4f}, median: {2:.4f}, max: {3:.4f}".format( \
-                    info['mean'], info['min'], info['median'], info['max']))
+    return
+
+
 
 if __name__ == '__main__':
-    stb_data = load_data()
-    run_test(stb_data)
+    stb_test_PVModel()
 
 
 ##############

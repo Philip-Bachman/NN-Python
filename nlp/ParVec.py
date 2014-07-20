@@ -19,11 +19,12 @@ class FullLayer:
         # Set dimension of incoming vectors and the number of outcomes for
         # which to perform prediction. Increment the requested prediction size
         # by 1, to accommodate an OOV prediction.
+        out_dim = out_dim + 1
         self.dim_input = in_dim
-        self.dim_output = out_dim + 1
+        self.dim_output = out_dim
         # Initialize parameters, gradients, and adagrad "momentums"
         self.params = {}
-        self.params['W'] = gp.randn((in_dim, out_dim))
+        self.params['W'] = 0.01 * gp.randn((in_dim, out_dim))
         self.params['b'] = gp.zeros((1, out_dim))
         self.grads = {}
         self.grads['W'] = gp.zeros((in_dim, out_dim))
@@ -47,7 +48,7 @@ class FullLayer:
         self.grads['b'] = gp.zeros((1, self.dim_output))
         # Zero-out parameters for the OOV prediction
         self.params['W'][-1,:] = 0.0
-        self.params['b'][1,-1] = 0.0
+        self.params['b'][0,-1] = 0.0
         return
 
     def clip_params(self, max_norm=10.0):
@@ -152,7 +153,7 @@ class FullLayer:
                 (gp.sqrt(self.moms['b']) + ada_smooth))
         # Zero-out parameters for the OOV prediction
         self.params['W'][-1,:] = 0.0
-        self.params['b'][1,-1] = 0.0
+        self.params['b'][0,-1] = 0.0
         # Reset gradient accumulators
         self.reset_grads()
         return
@@ -190,8 +191,8 @@ class ContextLayer:
         # that trainable words/contexts are those with LUT keys referencing
         # rows up to (and including) the penultimate rows of their LUTs.
         self.params = {}
-        self.params['Vw'] = npr.randn(word_keys, word_dim)
-        self.params['Vc'] = npr.randn(context_keys, context_dim)
+        self.params['Vw'] = 0.01 * npr.randn(word_keys, word_dim)
+        self.params['Vc'] = 0.01 * npr.randn(context_keys, context_dim)
         self.grads = {}
         self.grads['Vw'] = np.zeros(self.params['Vw'].shape)
         self.grads['Vc'] = np.zeros(self.params['Vc'].shape)
@@ -277,7 +278,7 @@ class ContextLayer:
             lut_bp(self.Iw[:,i], dLdY[:,s_idx:e_idx], self.grads['Vw'])
         return
 
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
+    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_w=0.0, lam_c=0.0):
         """Apply the current accumulated gradients, adagrad style."""
         # Update the sets of LUT keys tracking which params we have trained
         self.trained_idx_w.update(self.grad_idx_w)
@@ -287,9 +288,9 @@ class ContextLayer:
         nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
         # Update the params for words/contexts with pending updates
         ag_update_2d(nz_idx_w, self.params['Vw'], self.grads['Vw'], \
-                     self.moms['Vw'], learn_rate, ada_smooth, lam_l2)
+                     self.moms['Vw'], learn_rate, ada_smooth, lam_w)
         ag_update_2d(nz_idx_c, self.params['Vc'], self.grads['Vc'], \
-                     self.moms['Vc'], learn_rate, ada_smooth, lam_l2)
+                     self.moms['Vc'], learn_rate, ada_smooth, lam_c)
         # Zero-out the final word/context vector (for use as OOV)
         self.params['Vw'][-1,:] = 0.0
         self.params['Vc'][-1,:] = 0.0
@@ -298,10 +299,10 @@ class ContextLayer:
         self.grad_idx_c = set()
         return
 
-    def l2_regularize(self, lam_l2=1e-5):
+    def l2_regularize(self, lam_w=1e-5, lam_c=1e-5):
         """Apply some amount of l2 "shrinkage" to word/context params."""
-        self.params['Vw'] -= lam_l2 * self.params['Vw']
-        self.params['Vc'] -= lam_l2 * self.params['Vc']
+        self.params['Vw'] -= lam_w * self.params['Vw']
+        self.params['Vc'] -= lam_c * self.params['Vc']
         return
 
     def reset_moms(self, ada_init=1e-3):
@@ -331,7 +332,6 @@ class NoiseLayer:
         # Set stuff common to all layer types
         self.X = []
         self.Y = []
-        self.dLdX = []
         self.dLdY = []
         return
 
@@ -348,35 +348,36 @@ class NoiseLayer:
         # Cleanup debris from any previous feedforward
         self._cleanup()
         # Record (a pointer to) the passed input
-        self.X = X
+        self.X = gp.garray(X)
         # Generate and apply a dropout mask to the input
         if (self.drop_rate > 1e-4):
             drop_mask = self.drop_scale * \
-                    (npr.rand(self.X.shape[0], self.X.shape[1]) > self.drop_rate)
+                    (gp.rand(self.X.shape[0], self.X.shape[1]) > self.drop_rate)
         else:
-            drop_mask = np.ones((self.X.shape[0], self.X.shape[1]))
+            drop_mask = gp.ones((self.X.shape[0], self.X.shape[1]))
         self.dYdX = drop_mask
         if (self.fuzz_scale > 1e-4):
             fuzz_bump = (self.fuzz_scale / self.drop_scale) * \
-                    npr.randn(self.X.shape[0], self.X.shape[1])
+                    gp.randn(self.X.shape[0], self.X.shape[1])
             self.Y = drop_mask * (self.X + fuzz_bump)
         else:
             self.Y = drop_mask * self.X
         return self.Y
 
-    def backprop(self, dLdY):
+    def backprop(self, dLdY, return_on_gpu=False):
         """Perform backprop through this layer.
         """
         # Backprop is just multiplication by the mask from feedforward
-        self.dLdX = dLdY * self.dYdX
-        return self.dLdX
+        dLdX = gp.garray(dLdY) * self.dYdX
+        if not return_on_gpu:
+            dLdX = gp.as_numpy_array(dLdX)
+        return dLdX
 
     def _cleanup(self):
         """Clear all temp variables for this layer."""
         self.X = []
         self.Y = []
         self.dYdX = []
-        self.dLdX = []
         return
 
 ###################################
@@ -406,9 +407,9 @@ def run_test():
     non_word_key = max_word_key
     batch_count = 500001
     batch_size = 256
-    pre_words = 5
-    word_dim = 100
-    context_dim = 50
+    pre_words = 7
+    word_dim = 200
+    context_dim = 200
     lam_l2 = 1e-3
 
     # Create a lookup table for word representations
@@ -438,17 +439,17 @@ def run_test():
         L += class_layer.cross_entropy_loss(Yn, predictee_idx)
 
         # Backprop through classifier and look-up-table layers
-        dLdXn = class_layer.backprop(predictee_idx, return_on_gpu=False)
-        dLdXb = noise_layer.backprop(dLdXn)
+        dLdXn = class_layer.backprop(predictee_idx, return_on_gpu=True)
+        dLdXb = noise_layer.backprop(dLdXn, return_on_gpu=False)
         context_layer.backprop(dLdXb)
 
         # Apply gradients computed during backprop
-        class_layer.apply_grad_reg(learn_rate=1e-4, ada_smooth=1e-3, lam_l2=lam_l2)
-        context_layer.apply_grad_reg(learn_rate=1e-4, ada_smooth=1e-3, lam_l2=lam_l2)
+        class_layer.apply_grad_reg(learn_rate=4e-4, ada_smooth=1e-3, lam_l2=lam_l2)
+        context_layer.apply_grad_reg(learn_rate=4e-4, ada_smooth=1e-3, lam_w=lam_l2, lam_c=lam_l2)
 
         # Compute and display loss from time-to-time (for diagnostics)
-        if ((b % 10) == 0):
-            obs_count = 10.0 * batch_size
+        if ((b % 50) == 0):
+            obs_count = 50.0 * batch_size
             print("Batch {0:d}, loss {1:.4f}".format(b, (L / obs_count)))
             L = 0.0
 
