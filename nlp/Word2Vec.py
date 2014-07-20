@@ -1,191 +1,14 @@
 from __future__ import absolute_import
 
+# Imports of public stuff
 import numpy as np
 import numpy.random as npr
 import gnumpy as gp
-import threading
-import numba
-from math import exp, log, pow as mpow, sqrt
 
-from time import clock
-from numba import jit, void, i4, f8
-from ctypes import pythonapi, c_void_p
-
-########################################
-# MULTITHREADING HELPER-FUNC AND DEFNS #
-########################################
-
-THREAD_NUM = 4
-
-savethread = pythonapi.PyEval_SaveThread
-savethread.argtypes = []
-savethread.restype = c_void_p
-
-restorethread = pythonapi.PyEval_RestoreThread
-restorethread.argtypes = [c_void_p]
-restorethread.restype = None
-
-def make_multithread(inner_func, numthreads):
-    def func_mt(*args):
-        length = len(args[0])
-        sp_idx = np.arange(0,length).astype(np.int32)
-        chunklen = (length + 1) // numthreads
-        chunkargs = [(sp_idx[i*chunklen:(i+1)*chunklen],)+args for i in range(numthreads)]
-        # Start a thread for all but the last chunk of work
-        threads = [threading.Thread(target=inner_func, args=cargs)
-                   for cargs in chunkargs[:-1]]
-        for thread in threads:
-            thread.start()
-        # Give the last chunk of work to the main thread
-        inner_func(*chunkargs[-1])
-        for thread in threads:
-            thread.join()
-        return 1
-    return func_mt
-
-##############################
-# NUMBA FUNCTION DEFINITIONS #
-##############################
-
-def w2v_ff_bp_sp(sp_idx, anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L):
-    """Feedforward and backprop for unified (neg-sample) word-2-vec layer."""
-    threadstate = savethread()
-    sp_size = sp_idx.shape[0]
-    cols = pn_idx.shape[1]
-    vec_dim = Wa.shape[1]
-    for sp_i in range(sp_size):
-        i = sp_idx[sp_i]
-        ai = anc_idx[i]
-        for j in range(cols):
-            ci = pn_idx[i,j]
-            y = b[ci]
-            for k in range(vec_dim):
-                y += (Wa[ai,k] * Wc[ci,k])
-            exp_pns_y = exp(pn_sign[i,j] * y)
-            L[0] += log(1.0 + exp_pns_y)
-            dLdy = pn_sign[i,j] * (exp_pns_y / (1.0 + exp_pns_y))
-            db[ci] = db[ci] + dLdy
-            for k in range(vec_dim):
-                dWa[ai,k] += (dLdy * Wc[ci,k])
-                dWc[ci,k] += (dLdy * Wa[ai,k])
-    restorethread(threadstate)
-    return
-fn_sig_1 = void(i4[:], i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:], f8[:,:], f8[:], f8[:])
-w2v_ff_bp_st = jit(fn_sig_1, nopython=True)(w2v_ff_bp_sp)
-w2v_ff_bp = make_multithread(w2v_ff_bp_st, THREAD_NUM)
-
-def nsl_bp_sp(sp_idx, table_idx, X, W, dLdY, dLdX, dW, db):
-    """Backprop for NSLayer: main loop in Numba-friendly form."""
-    threadstate = savethread()
-    rows = sp_idx.shape[0]
-    cols = dLdY.shape[1]
-    vec_dim = X.shape[1]
-    for spi in range(rows):
-        i = sp_idx[spi]
-        for j in range(cols):
-            dldy = dLdY[i,j]
-            idx = table_idx[i,j]
-            db[idx] += dldy
-            for k in range(vec_dim):
-                dW[idx,k] += dldy * X[i,k]
-                dLdX[i,k] += dldy * W[idx,k]
-    restorethread(threadstate)
-    return
-fn_sig_2 = void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:])
-nsl_bp_st = jit(fn_sig_2, nopython=True)(nsl_bp_sp)
-nsl_bp_loop = make_multithread(nsl_bp_st, THREAD_NUM)
-
-def nsl_fp_sp(sp_idx, table_idx, X, W, b, Y):
-    """Feedforward for NSLayer: main loop in Numba-friendly form."""
-    threadstate = savethread()
-    rows = sp_idx.shape[0]
-    cols = table_idx.shape[1]
-    vec_dim = X.shape[1]
-    for spi in range(rows):
-        i = sp_idx[spi]
-        for j in range(cols):
-            idx = table_idx[i,j]
-            Y[i,j] = b[idx]
-            for k in range(vec_dim):
-                Y[i,j] += X[i,k] * W[idx,k]
-    restorethread(threadstate)
-    return
-fn_sig_3 = void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:])
-nsl_fp_st = jit(fn_sig_3, nopython=True)(nsl_fp_sp)
-nsl_fp_loop = make_multithread(nsl_fp_st, THREAD_NUM)
-
-def ag_update_2d_sp(sp_idx, row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
-    """Row-wise partial update ala adagrad.
-
-    This updates params and adagrad "momentums", and then zeros the grads.
-    """
-    threadstate = savethread()
-    row_count = sp_idx.shape[0]
-    vec_dim = W.shape[1]
-    for spi in range(row_count):
-        idx = row_idx[sp_idx[spi]]
-        for j in range(vec_dim):
-            dW[idx,j] += (lam_l2 * W[idx,j])
-            mW[idx,j] += mpow(dW[idx,j], 4)
-            W[idx,j] -= (learn_rate * (dW[idx,j] / (sqrt(mW[idx,j]) + ada_smooth)))
-            dW[idx,j] = 0.0
-    restorethread(threadstate)
-    return
-fn_sig_4 = void(i4[:], i4[:], f8[:,:], f8[:,:], f8[:,:], f8, f8, f8)
-ag_update_2d_st = jit(fn_sig_4, nopython=True)(ag_update_2d_sp)
-ag_update_2d = make_multithread(ag_update_2d_st, THREAD_NUM)
-
-@numba.jit("void(i4[:], f8[:], f8[:], f8[:], f8, f8, f8)")
-def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
-    """Element-wise partial update ala adagrad.
-
-    This updates params and adagrad "momentums", and then zeros the grads.
-    """
-    row_count = row_idx.shape[0]
-    for i in range(row_count):
-        idx = row_idx[i]
-        dW[idx] += lam_l2 * W[idx]
-        mW[idx] += mpow(dW[idx], 2)
-        W[idx] -= learn_rate * (dW[idx] / (sqrt(mW[idx]) + ada_smooth))
-        dW[idx] = 0.0
-    return
-
-def lut_sp(sp_idx, row_idx, dLdY, dW):
-    """Simple row-wise updates for adjusting dW with dLdY.
-
-    This adds each row of dLdY to some row of dW. The row of dW to adjust
-    is given by the corresponding item in row_idx."""
-    threadstate = savethread()
-    row_count = sp_idx.shape[0]
-    vec_dim = dW.shape[1]
-    for i in range(row_count):
-        idx = row_idx[sp_idx[i]]
-        for j in range(vec_dim):
-            dW[idx,j] += dLdY[i,j]
-    restorethread(threadstate)
-    return
-fn_sig_5 = void(i4[:], i4[:], f8[:,:], f8[:,:])
-lut_st = jit(fn_sig_5, nopython=True)(lut_sp)
-lut_bp = make_multithread(lut_st, THREAD_NUM)
-
-###########################################
-# WORD VALIDATION, FOR MANAGING OOV WORDS #
-###########################################
-
-def catch_oov_words(w_idx, v_idx, oov_idx):
-    """w_idx is an ndarray, v_idx is a set, and oov_idx is an int32."""
-    assert((w_idx.ndim == 1) or (w_idx.ndim == 2))
-    # Brute-force convert untrained words to OOV word
-    if (w_idx.ndim == 1):
-        for i in range(w_idx.shape[0]):
-            if not (w_idx[i] in v_idx):
-                w_idx[i] = oov_idx
-    else:
-        for i in range(w_idx.shape[0]):
-            for j in range(w_idx.shape[1]):
-                if not (w_idx[i,j] in v_idx):
-                    w_idx[i,j] = oov_idx
-    return w_idx
+# Imports of my stuff
+import HelperFuncs as hf
+from HelperFuncs import w2v_ff_bp, nsl_ff, nsl_bp, lut_bp, ag_update_2d, \
+                        ag_update_1d, lut_bp, catch_oov_words
 
 ###########################
 # NEGATIVE SAMPLING LAYER #
@@ -206,9 +29,7 @@ class NSLayer:
         self.moms['W'] = np.zeros((key_count, in_dim))
         self.moms['b'] = np.zeros((key_count,))
         self.max_norm = 10.0
-        self.comp_time = 0.0
         # Set common stuff for all types layers
-        self.has_params = True
         self.X = []
         self.Y = []
         self.samp_keys = []
@@ -251,7 +72,7 @@ class NSLayer:
         assert(X.shape[1] == self.params['W'].shape[1])
         assert(pos_samples.shape[0] == X.shape[0])
         assert(neg_samples.shape[0] == X.shape[0])
-        # Cleanup detritus from any previous feedforward
+        # Cleanup debris from any previous feedforward
         self._cleanup()
         # Record input and keys for positive/negative sample examples
         pos_samples = pos_samples[:,np.newaxis]
@@ -262,11 +83,11 @@ class NSLayer:
         self.samp_keys = self.samp_keys.astype(np.int32)
         # Handle OOV if testing
         if test:
-            oov_idx = (self.key_count-1) * np.ones((1,)).astype(np.int32)
-            self.samp_keys = catch_oov_words(self.samp_keys, self.trained_idx, oov_idx[0])
+            oov_key = (self.key_count-1) * np.ones((1,)).astype(np.int32)
+            self.samp_keys = catch_oov_words(self.samp_keys, self.trained_idx, oov_key[0])
         # Do the feedforward
         self.Y = np.zeros((X.shape[0], self.samp_keys.shape[1]))
-        nsl_fp_loop(self.samp_keys, self.X, self.params['W'], \
+        nsl_ff(self.samp_keys, self.X, self.params['W'], \
                 self.params['b'], self.Y)
         # Using the outputs for these positive and negative samples, compute
         # loss and gradients for pseudo noise-contrastive training.
@@ -282,7 +103,7 @@ class NSLayer:
         """
         self.dLdX = np.zeros(self.X.shape)
         self.grad_idx.update(self.samp_keys.ravel())
-        nsl_bp_loop(self.samp_keys, self.X, self.params['W'], self.dLdY, \
+        nsl_bp(self.samp_keys, self.X, self.params['W'], self.dLdY, \
                     self.dLdX, self.grads['W'], self.grads['b'])
         return self.dLdX
 
@@ -338,9 +159,7 @@ class HSMLayer:
         self.moms['W'] = np.zeros((in_dim, code_vecs))
         self.moms['b'] = np.zeros((1, code_vecs))
         self.max_norm = 10.0
-        self.comp_time = 0.0
         # Set common stuff for all types layers
-        self.has_params = True
         self.X = []
         self.code_idx = []
         self.code_sign = []
@@ -376,7 +195,7 @@ class HSMLayer:
     def feedforward(self, X, code_idx, code_sign):
         """Run feedforward for this layer.
         """
-        # Cleanup detritus from any previous feedforward
+        # Cleanup debris from any previous feedforward
         self._cleanup()
         # Do new feedforward...
         self.X = X
@@ -452,11 +271,11 @@ class HSMLayer:
         self.dLdY = []
         return
 
-##################################
-# FULLY-CONNECTED SOFTMAX LAYERS #
-##################################
+#################################
+# FULLY-CONNECTED SOFTMAX LAYER #
+#################################
 
-class GPUFullLayer:
+class FullLayer:
     def __init__(self, in_dim=0, out_dim=0):
         # Set stuff for managing this type of layer
         self.dim_input = in_dim
@@ -471,9 +290,7 @@ class GPUFullLayer:
         self.moms['W'] = gp.zeros((in_dim, out_dim))
         self.moms['b'] = gp.zeros((1, out_dim))
         self.max_norm = 10.0
-        self.comp_time = 0.0
         # Set common stuff for all types layers
-        self.has_params = True
         self.X = []
         self.Y = []
         self.dLdX = []
@@ -507,7 +324,7 @@ class GPUFullLayer:
     def feedforward(self, X):
         """Run feedforward for this layer.
         """
-        # Cleanup detritus from any previous feedforward
+        # Cleanup debris from any previous feedforward
         self._cleanup()
         # Do new feedforward...
         self.X = gp.garray(X)
@@ -603,146 +420,6 @@ class GPUFullLayer:
         self.dLdY = []
         return
 
-class FullLayer:
-    def __init__(self, in_dim=0, out_dim=0):
-        # Set stuff for managing this type of layer
-        self.dim_input = in_dim
-        self.dim_output = out_dim
-        self.params = {}
-        self.params['W'] = npr.randn(in_dim, out_dim)
-        self.params['b'] = np.zeros((1, out_dim))
-        self.grads = {}
-        self.grads['W'] = np.zeros((in_dim, out_dim))
-        self.grads['b'] = np.zeros((1, out_dim))
-        self.moms = {}
-        self.moms['W'] = np.zeros((in_dim, out_dim))
-        self.moms['b'] = np.zeros((1, out_dim))
-        self.max_norm = 10.0
-        self.comp_time = 0.0
-        # Set common stuff for all types layers
-        self.has_params = True
-        self.X = []
-        self.Y = []
-        self.dLdX = []
-        self.dLdY = []
-        return
-
-    def init_params(self, w_scale=0.01, b_scale=0.0):
-        """Randomly initialize the weights in this layer."""
-        self.params['W'] = w_scale * npr.randn(self.dim_input, self.dim_output)
-        self.grads['W'] = np.zeros((self.dim_input, self.dim_output))
-        self.params['b'] = np.zeros((1, self.dim_output))
-        self.grads['b'] = np.zeros((1, self.dim_output))
-        return
-
-    def clip_params(self):
-        """Bound L2 (column-wise) norm of self.params['W'] by wt_bnd."""
-        EPS = 1e-5
-        W = self.params['W']
-        # Compute L2 norm of weights inbound to each node in this layer
-        w_norms = np.sqrt(np.sum(W**2.0,axis=0) + EPS)
-        # Compute scales based on norms and the upperbound set by wt_bnd
-        w_scales = self.max_norm / w_norms
-        mask = (w_scales < 1.0)
-        w_scales = (w_scales * mask) + (1.0 - mask)
-        w_scales = w_scales[np.newaxis,:]
-        # Rescale weights to meet the bound set by wt_bnd
-        W = W * w_scales
-        return
-
-    def feedforward(self, X):
-        """Run feedforward for this layer.
-        """
-        # Cleanup detritus from any previous feedforward
-        self._cleanup()
-        # Do new feedforward...
-        self.X = X
-        self.Y = np.dot(self.X, self.params['W']) + self.params['b']
-        self.dLdY = np.zeros(self.Y.shape)
-        return self.Y
-
-    def _backprop_(self, dLdY_bp):
-        """Backprop through this layer.
-        """
-        self.dLdY = self.dLdY + dLdY_bp
-        # Compute gradient with respect to layer parameters
-        dLdW = np.dot(self.X.T, self.dLdY)
-        dLdb = np.sum(self.dLdY, axis=0, keepdims=True)
-        self.grads['W'] = self.grads['W'] + dLdW
-        self.grads['b'] = self.grads['b'] + dLdb
-        # Compute gradient with respect to layer input
-        self.dLdX = np.dot(self.dLdY, self.params['W'].T)
-        return self.dLdX
-
-    def backprop_sm(self, Y_cat):
-        """Backprop through this layer.
-        """
-        Y_cat = Y_cat.astype(np.int32)
-        Y_ind = np.zeros(self.Y.shape)
-        Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
-        dLdY_bp = self.cross_entropy(self.Y, Y_ind)
-        self._backprop_(dLdY_bp)
-        return self.dLdX
-
-    def safe_softmax(self, Y):
-        """Compute a relatively (numerically) safe softmax."""
-        Y_exp = np.exp(Y - np.max(Y, axis=1, keepdims=True))
-        Y_sm = Y_exp / np.sum(Y_exp, axis=1, keepdims=True)
-        return Y_sm
-
-    def cross_entropy(self, Yh, Y_ind):
-        """Cross-entropy loss/grad for predictions Yh and true classes Y."""
-        Yh_sm = self.safe_softmax(Yh)
-        dLdYh = Yh_sm - Y_ind
-        return dLdYh
-
-    def check_loss(self, Yh, Y_cat):
-        """Cross-entropy loss/grad for predictions Yh and true classes Y."""
-        Y_ind = np.zeros(Yh.shape)
-        Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
-        Yh_sm = self.safe_softmax(Yh)
-        L = -np.sum((Y_ind * np.log(Yh_sm)))
-        return L
-
-    def l2_regularize(self, lam_l2=1e-5):
-        """Add gradients for l2 regularization. And compute loss."""
-        self.params['W'] -= lam_l2 * self.params['W']
-        self.params['b'] -= lam_l2 * self.params['b']
-        return 1
-
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
-        """Apply the current accumulated gradients, with adagrad."""
-        self.grads['W'] += lam_l2 * self.params['W']
-        self.grads['b'] += lam_l2 * self.params['b']
-        self.moms['W'] += self.grads['W']**2.0
-        self.moms['b'] += self.grads['b']**2.0
-        self.params['W'] -= learn_rate * (self.grads['W'] / \
-                (np.sqrt(self.moms['W']) + ada_smooth))
-        self.params['b'] -= learn_rate * (self.grads['b'] / \
-                (np.sqrt(self.moms['b']) + ada_smooth))
-        self.reset_grads()
-        return
-
-    def reset_grads(self):
-        """Reset the gradient accumulators for this layer."""
-        self.grads['W'] = 0.0 * self.grads['W']
-        self.grads['b'] = 0.0 * self.grads['b']
-        return
-
-    def reset_moms(self, ada_init=1e-3):
-        """Reset the gradient accumulators for this layer."""
-        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
-        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
-        return
-
-    def _cleanup(self):
-        """Cleanup temporary feedforward/backprop stuff."""
-        self.X = []
-        self.Y = []
-        self.dLdX = []
-        self.dLdY = []
-        return
-
 #######################
 # LOOK-UP TABLE LAYER #
 #######################
@@ -750,7 +427,7 @@ class FullLayer:
 class LUTLayer:
     def __init__(self, key_count, embed_dim):
         # Set stuff for managing this type of layer
-        self.comp_time = 0.0
+        key_count = key_count + 1
         self.params = {}
         self.params['W'] = npr.randn(key_count, embed_dim)
         self.grads = {}
@@ -763,7 +440,6 @@ class LUTLayer:
         self.embed_dim = embed_dim
         self.max_norm = 10.0
         # Set common stuff for all types layers
-        self.has_params = True
         self.X = []
         self.Y = []
         self.dLdX = []
@@ -774,6 +450,7 @@ class LUTLayer:
         """Randomly initialize the weights in this layer."""
         self.params['W'] = w_scale * npr.randn(self.key_count, self.embed_dim)
         self.grads['W'] = np.zeros((self.key_count, self.embed_dim))
+        self.params['W'][-1,:] = 0.0
         return
 
     def clip_params(self):
@@ -791,6 +468,7 @@ class LUTLayer:
         W = W * w_scales
         # Store clipped parameters
         self.params['W'] = W
+        self.params['W'][-1,:] = 0.0
         return
 
     def feedforward(self, X, test=False):
@@ -799,15 +477,14 @@ class LUTLayer:
         The input passed to feedforward here should be either a single list
         of integer indices into the look-up table or a list of lut index lists.
         """
-        # Cleanup detritus from any previous feedforward
+        # Cleanup debris from any previous feedforward
         self._cleanup()
         # Record the incoming list of row indices to extract
         self.X = X.astype(np.int32)
         # Handle OOV if testing
         if test:
-            oov_idx = (self.key_count-1) * np.ones((1,)).astype(np.int32)
-            self.X = catch_oov_words(self.X, self.trained_idx, oov_idx[0])
-
+            oov_key = (self.key_count-1) * np.ones((1,)).astype(np.int32)
+            self.X = catch_oov_words(self.X, self.trained_idx, oov_key[0])
         # Use look-up table to generate the desired sequences
         self.Y = self.params['W'][self.X,:]
         return self.Y
@@ -824,6 +501,7 @@ class LUTLayer:
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
         self.params['W'] -= lam_l2 * self.params['W']
+        self.params['W'][-1,:] = 0.0
         return 1
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
@@ -835,7 +513,6 @@ class LUTLayer:
         self.params['W'][-1,:] = 0.0
         self.grad_idx = set()
         return
-
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
@@ -857,7 +534,6 @@ class LUTLayer:
 class CMLayer:
     def __init__(self, key_count=0, source_dim=0, bias_dim=0):
         # Set stuff for managing this type of layer
-        self.comp_time = 0.0
         self.params = {}
         self.params['W'] = np.zeros((key_count, source_dim))
         self.params['b'] = np.zeros((key_count, bias_dim))
@@ -874,7 +550,6 @@ class CMLayer:
         self.bias_dim = bias_dim
         self.max_norm = 10.0
         # Set common stuff for all types layers
-        self.has_params = True
         self.X = []
         self.C = []
         self.W = []
@@ -922,7 +597,7 @@ class CMLayer:
     def feedforward(self, X, C, test=False):
         """Run feedforward for this layer.
         """
-        # Cleanup detritus from any previous feedforward
+        # Cleanup debris from any previous feedforward
         self._cleanup()
         # Record the incoming list of row indices to extract
         self.X = X
@@ -993,7 +668,6 @@ class NoiseLayer:
         self.drop_scale = 1.0 / (1.0 - drop_rate)
         self.fuzz_scale = fuzz_scale
         # Set stuff common to all layer types
-        self.has_params = False
         self.X = []
         self.Y = []
         self.dLdX = []
@@ -1010,17 +684,18 @@ class NoiseLayer:
     def feedforward(self, X, test=False):
         """Perform feedforward through this layer.
         """
-        # Cleanup detritus from any previous feedforward
+        # Cleanup debris from any previous feedforward
         self._cleanup()
-        # Record (a pointer to) the passed input
+        # Keep a pointer to the given input
         self.X = X
-        # Generate and apply a dropout mask to the input
+        # Generate a dropout mask for the input
         if (self.drop_rate > 1e-4):
             drop_mask = self.drop_scale * \
                     (npr.rand(self.X.shape[0], self.X.shape[1]) > self.drop_rate)
         else:
             drop_mask = np.ones((self.X.shape[0], self.X.shape[1]))
         self.dYdX = drop_mask
+        # Add gaussian fuzz to the input and apply the dropout mask
         if (self.fuzz_scale > 1e-4):
             fuzz_bump = (self.fuzz_scale / self.drop_scale) * \
                     npr.randn(self.X.shape[0], self.X.shape[1])
@@ -1050,10 +725,7 @@ class NoiseLayer:
 
 class TanhLayer:
     def __init__(self):
-        # Set stufff required for managing this type of layer
-        self.dYdX = []
-        # Set stuff common to all layer types
-        self.has_params = False
+        # Initialize the temp vars used in feedforward/backprop
         self.X = []
         self.Y = []
         self.dLdX = []
@@ -1063,7 +735,7 @@ class TanhLayer:
     def feedforward(self, X, test=False):
         """Perform feedforward through this layer.
         """
-        # Cleanup detritus from any previous feedforward
+        # Cleanup debris from any previous feedforward
         self._cleanup()
         # Record (a pointer to) the passed input
         self.X = X
@@ -1075,7 +747,7 @@ class TanhLayer:
         """Perform backprop through this layer.
         """
         # Backprop is just multiplication by tanh grads, and we have tanh
-        # of self.X already stored in self.Y...
+        # of self.X already stored in self.Y, so backprop is easy.
         self.dLdX = dLdY * (1.0 - self.Y**2.0)
         return self.dLdX
 
@@ -1083,14 +755,12 @@ class TanhLayer:
         """Clear all temp variables for this layer."""
         self.X = []
         self.Y = []
-        self.dYdX = []
         self.dLdX = []
         return
 
 ################################
 # WORD-2-VEC IN A SINGLE LAYER #
 ################################
-
 
 class W2VLayer:
     def __init__(self, word_count=0, word_dim=0, lam_l2=1e-3):
@@ -1175,7 +845,7 @@ class W2VLayer:
         """Perform a batch update of all parameters based on the given sets
         of anchor/positive example/negative examples indices.
         """
-        oov_idx = (self.word_count-1) * np.ones((1,)).astype(np.int32)
+        oov_key = (self.word_count-1) * np.ones((1,)).astype(np.int32)
         anc_idx = anc_idx.astype(np.int32)
         pos_idx = pos_idx[:,np.newaxis]
         pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
@@ -1183,8 +853,8 @@ class W2VLayer:
         pn_sign[:,0] = -1.0
         L = np.zeros((1,))
         # Brute-force convert untrained words to OOV word
-        anc_idx = catch_oov_words(anc_idx, self.trained_Wa, oov_idx[0])
-        pn_idx = catch_oov_words(pn_idx, self.trained_Wc, oov_idx[0])
+        anc_idx = catch_oov_words(anc_idx, self.trained_Wa, oov_key[0])
+        pn_idx = catch_oov_words(pn_idx, self.trained_Wc, oov_key[0])
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
                self.params['Wc'], self.params['b'], self.grads['Wa'], \
@@ -1199,67 +869,11 @@ class W2VLayer:
         self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
-#######################
-# RANDOM KNICK-KNACKS #
-#######################
+###################################
+# TEST BASIC MODULE FUNCTIONALITY #
+###################################
 
-def rand_word_pairs(phrase_list, pair_count, context_size):
-    """Sample random anchor/context pairs for skip-gram training.
-
-    Given a list of phrases, where each phrase is described by a list of
-    indices into a look-up-table, sample random pairs of anchor word and
-    context word for training a skip-gram model. The skip-gram objective is
-    to predict the context word given the anchor word. The "context_size"
-    determines the max separation between sampled context words and their
-    corresponding anchor.
-    """
-    phrase_count = len(phrase_list)
-    anchor_idx = np.zeros((pair_count,), dtype=np.int32)
-    context_idx = np.zeros((pair_count,), dtype=np.int32)
-    phrase_idx = np.zeros((pair_count,), dtype=np.int32)
-    for i in range(pair_count):
-        phrase_idx[i] = npr.randint(0, phrase_count)
-        phrase = phrase_list[phrase_idx[i]]
-        phrase_len = len(phrase)
-        a_idx = npr.randint(0, phrase_len)
-        c_max = min((a_idx+context_size+1), phrase_len)
-        c_min = max((a_idx-context_size), 0)
-        c_idx = a_idx
-        while (c_idx == a_idx):
-            c_idx = npr.randint(c_min, c_max)
-        anchor_idx[i] = phrase[a_idx]
-        context_idx[i] = phrase[c_idx]
-    return [anchor_idx, context_idx, phrase_idx]
-
-def rand_pos_neg(phrase_list, all_words, pair_count, context_size, neg_count):
-    """Sample random anchor/positive/negative tuples for training a skip-gram
-    model using "negative sampling" (i.e. "fake" noise-contrastive...).
-    """
-    phrase_count = len(phrase_list)
-    word_count = len(all_words)
-    anchor_idx = np.zeros((pair_count,), dtype=np.int32)
-    pos_idx = np.zeros((pair_count,), dtype=np.int32)
-    neg_idx = np.zeros((pair_count,neg_count), dtype=np.int32)
-    phrase_idx = np.zeros((pair_count,), dtype=np.int32)
-    for i in range(pair_count):
-        phrase_idx[i] = npr.randint(0, high=phrase_count)
-        phrase = phrase_list[phrase_idx[i]]
-        phrase_len = len(phrase)
-        a_idx = npr.randint(0, high=phrase_len)
-        c_max = min((a_idx+context_size+1), phrase_len)
-        c_min = max((a_idx-context_size), 0)
-        c_idx = a_idx
-        while (c_idx == a_idx):
-            c_idx = npr.randint(c_min, high=c_max)
-        # Record the anchor word and its positive context word
-        anchor_idx[i] = phrase[a_idx]
-        pos_idx[i] = phrase[c_idx]
-        # Sample a random negative example from the full word list
-        n_idx = npr.randint(0, high=word_count, size=(1,neg_count))
-        neg_idx[i,:] = all_words[n_idx]
-    return [anchor_idx, pos_idx, neg_idx, phrase_idx]
-
-if __name__ == '__main__':
+def run_test():
     import StanfordTrees as st
      # Load tree data
     tree_dir = './trees'
@@ -1277,7 +891,7 @@ if __name__ == '__main__':
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
 
-    batch_count = 501
+    batch_count = 100001
     batch_size = 256
     context_size = 5
     word_count = max_lut_idx + 1
@@ -1290,34 +904,46 @@ if __name__ == '__main__':
     # Initialize params for the LUT and softmax classifier
     w2v_layer.init_params(0.05)
 
-    sample_time = 0.0
-    update_time = 0.0
+    print("Word count: {0:d}, word dim: {1:d}".format(word_count, embed_dim))
     print("Processing batches:")
-    t1 = clock()
     L = 0.0
     for b in range(batch_count):
         # Sample a batch of random anchor/context prediction pairs for
         # training a skip-gram model.
         [a_idx, p_idx, n_idx, phrase_idx] = \
-            rand_pos_neg(tr_phrases, tr_words, batch_size, context_size, 8)
+            hf.rand_pos_neg(tr_phrases, tr_words, batch_size, context_size, 8)
 
         # Compute and apply the updates for this batch
         L += w2v_layer.batch_train(a_idx, p_idx, n_idx, learn_rate=2e-4)
 
-        # Compute and display loss from time-to-time (for diagnostics)
-        if ((b % 100) == 0):
-            print("Batch {0:d}, loss {1:.4f}".format(b, (L / 10.0)))
-            L = 0.0
         # Reset adagrad smoothing factors from time-to-time
-        if ((b > 1) and ((b % 5000) == 0)):
+        if ((b > 1) and ((b % 10000) == 0)):
             w2v_layer.reset_moms()
 
-    t2 = clock()
-    e_time = t2 - t1
-    print("Word count: {0:d}, word dim: {1:d}".format(word_count, embed_dim))
-    print("elapsed time: {0:.4f}".format(e_time))
-    print("Words per second: {0:.4f}".format((1.0*batch_count*batch_size /
-        e_time)))
+        # Display loss on the training set from time-to-time
+        if ((b % 200) == 0):
+            obs_count = batch_size * 200.0
+            print("Batch {0:d}, loss {1:.4f}".format(b, (L / obs_count)))
+            L = 0.0
+        # Occasionally compute loss on the validation set
+        if ((b > 1) and ((b % 1000) == 0)):
+            obs_count = 1000
+            [a_idx, p_idx, n_idx, phrase_idx] = \
+                hf.rand_pos_neg(te_phrases, tr_words, obs_count, context_size, 8)
+            Lv = w2v_layer.batch_test(a_idx, p_idx, n_idx)
+            print("    test loss: {0:.4f}".format(Lv / obs_count))
+
+
+if __name__ == '__main__':
+    run_test()
+
+
+
+
+
+
+
+
 
 
 ##############

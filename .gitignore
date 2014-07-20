@@ -11,6 +11,7 @@
 *.pyc
 *.DS_STORE
 *.DS_Store
+*.lprof
 /general/data/*
 /general/test_results/*
 /nlp/trees/*
