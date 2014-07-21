@@ -15,11 +15,11 @@ from HelperFuncs import ag_update_2d, ag_update_1d, lut_bp, catch_oov_words
 #################################
 
 class FullLayer:
-    def __init__(self, in_dim=0, out_dim=0):
+    def __init__(self, in_dim=0, max_out_key=0):
         # Set dimension of incoming vectors and the number of outcomes for
         # which to perform prediction. Increment the requested prediction size
-        # by 1, to accommodate an OOV prediction.
-        out_dim = out_dim + 1
+        # by 1, to accommodate 0 indexing.
+        out_dim = max_out_key + 1
         self.dim_input = in_dim
         self.dim_output = out_dim
         # Initialize parameters, gradients, and adagrad "momentums"
@@ -36,8 +36,6 @@ class FullLayer:
         self.X = []
         self.Y = []
         self.Y_cat = []
-        # self.trained_idx tracks which prediction vectors we have trained
-        self.trained_idx = set()
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -46,9 +44,6 @@ class FullLayer:
         self.grads['W'] = gp.zeros((self.dim_input, self.dim_output))
         self.params['b'] = gp.zeros((1, self.dim_output))
         self.grads['b'] = gp.zeros((1, self.dim_output))
-        # Zero-out parameters for the OOV prediction
-        self.params['W'][-1,:] = 0.0
-        self.params['b'][0,-1] = 0.0
         return
 
     def clip_params(self, max_norm=10.0):
@@ -71,15 +66,10 @@ class FullLayer:
         self.Y = gp.dot(self.X, self.params['W']) + self.params['b']
         return self.Y
 
-    def backprop(self, Y_cat, return_on_gpu=False, test=False):
+    def backprop(self, Y_cat, return_on_gpu=False):
         """Backprop through softmax using the given target predictions."""
         Y_cat = Y_cat.astype(np.int32)
-        # Handle untrained (or otherwise unknown) targets when testing
-        if test:
-            oov_idx = (self.dim_output-1) * np.ones((1,)).astype(np.int32)
-            Y_cat = catch_oov_words(Y_cat, self.trained_idx, oov_idx[0])
-        else:
-            self.Y_cat = Y_cat
+        self.Y_cat = Y_cat
         # Convert from categorical classes to "one-hot" vectors
         Y_ind = np.zeros(self.Y.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
@@ -138,8 +128,6 @@ class FullLayer:
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
-        # Update the set of trained prediction vectors
-        self.trained_idx.update([i for i in self.Y_cat.ravel()])
         # Add l2 regularization effect to the gradients
         self.grads['W'] += lam_l2 * self.params['W']
         self.grads['b'] += lam_l2 * self.params['b']
@@ -151,9 +139,6 @@ class FullLayer:
                 (gp.sqrt(self.moms['W']) + ada_smooth))
         self.params['b'] -= learn_rate * (self.grads['b'] / \
                 (gp.sqrt(self.moms['b']) + ada_smooth))
-        # Zero-out parameters for the OOV prediction
-        self.params['W'][-1,:] = 0.0
-        self.params['b'][0,-1] = 0.0
         # Reset gradient accumulators
         self.reset_grads()
         return
@@ -182,10 +167,10 @@ class FullLayer:
 ###################################################
 
 class ContextLayer:
-    def __init__(self, word_keys, word_dim, context_keys, context_dim):
-        #  Add 1s to accommodate OOV tokens (for words _and_ contexts).
-        word_keys = word_keys + 1
-        context_keys = context_keys + 1
+    def __init__(self, max_word_key, word_dim, max_context_key, context_dim):
+        #  Add 1s to accommodate 0 indexing.
+        word_keys = max_word_key + 1
+        context_keys = max_context_key + 1
         # We need param vectors for each trainable word and each trainable
         # context, as well as their gradients and adagrad "momentums". Note
         # that trainable words/contexts are those with LUT keys referencing
@@ -206,9 +191,7 @@ class ContextLayer:
         self.cont_dim = context_dim
         # Create sets to track which word/context vectors we have trained
         self.grad_idx_w = set()
-        self.trained_idx_w = set()
         self.grad_idx_c = set()
-        self.trained_idx_c = set()
         # Set temp vars to use during feedforward and backprop
         self.Iw = []
         self.Ic = []
@@ -221,9 +204,6 @@ class ContextLayer:
         self.params['Vc'] = w_scale * npr.randn(self.cont_keys, self.cont_dim)
         self.grads['Vw'] = np.zeros(self.params['Vw'].shape)
         self.grads['Vc'] = np.zeros(self.params['Vc'].shape)
-        # Zero-out the final word/context vector (for use as OOV)
-        self.params['Vw'][-1,:] = 0.0
-        self.params['Vc'][-1,:] = 0.0
         return
 
     def clip_params(self, Vw_norm=10.0, Vc_norm=10.0):
@@ -239,7 +219,7 @@ class ContextLayer:
             self.params[param] = W
         return
 
-    def feedforward(self, Iw, Ic, test_w=False, test_c=False):
+    def feedforward(self, Iw, Ic):
         """Run feedforward for this layer. Using sacks of LUT keys.
         """
         # Cleanup debris from any previous feedforward
@@ -248,13 +228,6 @@ class ContextLayer:
         # Record the incoming lists of rows to extract from each LUT
         self.Iw = Iw.astype(np.int32)
         self.Ic = Ic.astype(np.int32)
-        # Handle OOV keys if testing (for words and/or contexts)
-        if test_w:
-            oov_idx = (self.word_keys-1) * np.ones((1,)).astype(np.int32)
-            self.Iw = catch_oov_words(self.Iw, self.trained_idx_w, oov_idx[0])
-        if test_c:
-            oov_idx = (self.cont_keys-1) * np.ones((1,)).astype(np.int32)
-            self.Ic = catch_oov_words(self.Ic, self.trained_idx_c, oov_idx[0])
         # Construct the output of this layer using table look-ups
         self.Y = np.zeros((obs_count,self.cont_dim+(pre_words*self.word_dim)))
         self.Y[:,0:self.cont_dim] = self.params['Vc'][self.Ic,:]
@@ -281,9 +254,6 @@ class ContextLayer:
 
     def apply_grad_reg(self, learn_rate=1e-3, ada_smooth=1e-3, lam_w=0.0, lam_c=0.0):
         """Apply the current accumulated gradients, adagrad style."""
-        # Update the sets of LUT keys tracking which params we have trained
-        self.trained_idx_w.update(self.grad_idx_w)
-        self.trained_idx_c.update(self.grad_idx_c)
         # Find which LUT keys point to params with pending updates
         nz_idx_w = np.asarray([i for i in self.grad_idx_w]).astype(np.int32)
         nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
@@ -292,9 +262,6 @@ class ContextLayer:
                      self.moms['Vw'], learn_rate, ada_smooth, lam_w)
         ag_update_2d(nz_idx_c, self.params['Vc'], self.grads['Vc'], \
                      self.moms['Vc'], learn_rate, ada_smooth, lam_c)
-        # Zero-out the final word/context vector (for use as OOV)
-        self.params['Vw'][-1,:] = 0.0
-        self.params['Vc'][-1,:] = 0.0
         # Reset the sets of LUT keys for parameters with pending updates
         self.grad_idx_w = set()
         self.grad_idx_c = set()
@@ -302,11 +269,9 @@ class ContextLayer:
 
     def update_context_vectors(self, learn_rate=1e-3, ada_smooth=1e-3, lam_c=0.0):
         """Apply only the context-vector gradients, adagrad style."""
-        self.trained_idx_c.update(self.grad_idx_c)
         nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
         ag_update_2d(nz_idx_c, self.params['Vc'], self.grads['Vc'], \
                      self.moms['Vc'], learn_rate, ada_smooth, lam_c)
-        self.params['Vc'][-1,:] = 0.0
         self.grad_idx_c = set()
         return
 
@@ -410,24 +375,27 @@ def run_test():
     tr_words = np.asarray(tr_words).astype(np.int32)
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
-    # Record maximum required keys for the context layer's tables
-    max_word_key = max(stb_data['lut_keys'].values()) + 1
+    # Add a NULL token, to use in n-gram sampling
+    max_word_key = max(stb_data['words_to_keys'].values()) + 1
+    stb_data['words_to_keys']['*NULL*'] = max_word_key
+    stb_data['keys_to_words'][max_word_key] = '*NULL*'
+
     max_context_key = len(tr_phrases) - 1
 
     # Set some simple hyperparameters for training
-    non_word_key = max_word_key
-    batch_count = 500001
-    batch_size = 256
-    pre_words = 7
-    word_dim = 200
-    context_dim = 200
+    null_key = max_word_key
+    batch_count = 5001
+    batch_size = 200
+    pre_words = 3
+    word_dim = 100
+    context_dim = 50
     lam_l2 = 1e-3
 
     # Create a lookup table for word representations
     context_layer = ContextLayer(max_word_key, word_dim, max_context_key, context_dim)
-    noise_layer = NoiseLayer(drop_rate=0.5, fuzz_scale=0.025)
+    noise_layer = NoiseLayer(drop_rate=0.0, fuzz_scale=0.0)
     class_layer = FullLayer(in_dim=(pre_words*word_dim + context_dim), \
-                               out_dim=max_word_key)
+                            max_out_key=max_word_key)
 
     # Initialize params for the LUT and softmax classifier
     context_layer.init_params(0.05)
@@ -438,19 +406,19 @@ def run_test():
     for b in range(batch_count):
         # Sample a batch of random anchor/context prediction pairs for
         # training a skip-gram model.
-        [seq_idx, phrase_idx] = \
-            hf.rand_word_seqs(tr_phrases, batch_size, pre_words+1, non_word_key)
-        predictor_idx = seq_idx[:,:-1]
-        predictee_idx = seq_idx[:,-1]
+        [seq_keys, phrase_keys] = \
+            hf.rand_word_seqs(tr_phrases, batch_size, pre_words+1, null_key)
+        pre_keys = seq_keys[:,:-1]
+        post_keys = seq_keys[:,-1]
 
         # Feedforward through look-up-table and classifier layers
-        Xb = context_layer.feedforward(predictor_idx, phrase_idx)
+        Xb = context_layer.feedforward(pre_keys, phrase_keys)
         Xn = noise_layer.feedforward(Xb)
         Yn = class_layer.feedforward(Xn)
-        L += class_layer.cross_entropy_loss(Yn, predictee_idx)
+        L += class_layer.cross_entropy_loss(Yn, post_keys)
 
         # Backprop through classifier and look-up-table layers
-        dLdXn = class_layer.backprop(predictee_idx, return_on_gpu=True)
+        dLdXn = class_layer.backprop(post_keys, return_on_gpu=True)
         dLdXb = noise_layer.backprop(dLdXn, return_on_gpu=False)
         context_layer.backprop(dLdXb)
 

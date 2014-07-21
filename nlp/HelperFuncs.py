@@ -198,14 +198,14 @@ def catch_oov_words(w_keys, v_keys, oov_key):
 #######################
 
 def rand_word_seqs(phrase_list, seq_count, seq_len, null_key):
-    """Sample random n-grams from a list of phrases.
+    """Sample LUT key n-grams from a list of phrases.
 
     Given a list of phrases, where each phrase is described by a list of
     keys into a look-up-table, sample random n-grams of keys from the
     sequences, where n is given by seq_len. The sampled n-grams are only
     constrained to have their final item inside the source phrase. When any
     of the first n-1 items in a sampled sequence are not in the source phrase,
-    they are assigned the key "null_key".
+    they are assigned the key given by null_key.
     """
     phrase_count = len(phrase_list)
     seq_keys = np.zeros((seq_count, seq_len), dtype=np.int32)
@@ -222,25 +222,31 @@ def rand_word_seqs(phrase_list, seq_count, seq_len, null_key):
                 seq_keys[i,j] = null_key
             else:
                 seq_keys[i,j] = phrase[preceding_key]
+    seq_keys = seq_keys.astype(np.int32)
+    phrase_keys = phrase_keys.astype(np.int32)
     return [seq_keys, phrase_keys]
 
 def rand_word_pairs(phrase_list, pair_count, context_size):
-    """Sample random anchor/context pairs for skip-gram training.
+    """Sample anchor/context LUT key pairs for skip-gram training.
 
-    Given a list of phrases, where each phrase is described by a list of
-    indices into a look-up-table, sample random pairs of anchor word and
-    context word for training a skip-gram model. The skip-gram objective is
-    to predict the context word given the anchor word. The "context_size"
-    determines the max separation between sampled context words and their
-    corresponding anchor.
+    Parameters:
+        phrase_list: list of lists/vectors of LUT keys representing phrases
+        pair_count: number of training pairs of LUT keys to sample
+        context_size: half-width of context window to sample positives from
+            NOTE: Samples are always drawn uniformly from within a context
+                  window that was already clipped to fit the source phrase.
+    Outputs:
+        anchor_keys: vector of np.int32 (samp_count,)
+        context_keys: vector of np.int32 (samp_count,)
+        phrase_keys: vector of np.int32 (samp_count,)
     """
     phrase_count = len(phrase_list)
-    anchor_idx = np.zeros((pair_count,), dtype=np.int32)
-    context_idx = np.zeros((pair_count,), dtype=np.int32)
-    phrase_idx = np.zeros((pair_count,), dtype=np.int32)
+    anchor_keys = np.zeros((pair_count,), dtype=np.int32)
+    context_keys = np.zeros((pair_count,), dtype=np.int32)
+    phrase_keys = np.zeros((pair_count,), dtype=np.int32)
     for i in range(pair_count):
-        phrase_idx[i] = npr.randint(0, phrase_count)
-        phrase = phrase_list[phrase_idx[i]]
+        phrase_keys[i] = npr.randint(0, phrase_count)
+        phrase = phrase_list[phrase_keys[i]]
         phrase_len = len(phrase)
         a_idx = npr.randint(0, phrase_len)
         c_max = min((a_idx+context_size+1), phrase_len)
@@ -248,23 +254,37 @@ def rand_word_pairs(phrase_list, pair_count, context_size):
         c_idx = a_idx
         while (c_idx == a_idx):
             c_idx = npr.randint(c_min, c_max)
-        anchor_idx[i] = phrase[a_idx]
-        context_idx[i] = phrase[c_idx]
-    return [anchor_idx, context_idx, phrase_idx]
+        anchor_keys[i] = phrase[a_idx]
+        context_keys[i] = phrase[c_idx]
+    anchor_keys = anchor_keys.astype(np.int32)
+    context_keys = context_keys.astype(np.int32)
+    phrase_keys =  phrase_keys.astype(np.int32)
+    return [anchor_keys, context_keys, phrase_keys]
 
-def rand_pos_neg(phrase_list, all_words, pair_count, context_size, neg_count):
-    """Sample random anchor/positive/negative tuples for training a skip-gram
-    model using "negative sampling" (i.e. "fake" noise-contrastive...).
+def rand_pos_neg(phrase_list, all_words, samp_count, context_size, neg_count):
+    """Sample LUT key tuples for skip-gram training via negative sampling.
+
+    Parameters:
+        phrase_list: list of lists/vectors of LUT keys representing phrases
+        all_words: set of LUT keys to sample uniformly for negative examples
+        samp_count: number of training tuples of LUT keys to sample
+        context_size: half-width of context window to sample positives from
+        neg_count: number of negative samples to draw for each positive one
+    Outputs:
+        anchor_keys: vector of np.int32 (samp_count,)
+        pos_keys: vector of np.int32 (samp_count,)
+        neg_keys: matrix of np.int32 (samp_count, neg_count)
+        phrase_keys: vector of np.int32 (samp_count,)
     """
     phrase_count = len(phrase_list)
     word_count = len(all_words)
-    anchor_idx = np.zeros((pair_count,), dtype=np.int32)
-    pos_idx = np.zeros((pair_count,), dtype=np.int32)
-    neg_idx = np.zeros((pair_count,neg_count), dtype=np.int32)
-    phrase_idx = np.zeros((pair_count,), dtype=np.int32)
-    for i in range(pair_count):
-        phrase_idx[i] = npr.randint(0, high=phrase_count)
-        phrase = phrase_list[phrase_idx[i]]
+    anchor_keys = np.zeros((samp_count,), dtype=np.int32)
+    pos_keys = np.zeros((samp_count,), dtype=np.int32)
+    neg_keys = np.zeros((samp_count,neg_count), dtype=np.int32)
+    phrase_keys = np.zeros((samp_count,), dtype=np.int32)
+    for i in range(samp_count):
+        phrase_keys[i] = npr.randint(0, high=phrase_count)
+        phrase = phrase_list[phrase_keys[i]]
         phrase_len = len(phrase)
         a_idx = npr.randint(0, high=phrase_len)
         c_max = min((a_idx+context_size+1), phrase_len)
@@ -273,12 +293,24 @@ def rand_pos_neg(phrase_list, all_words, pair_count, context_size, neg_count):
         while (c_idx == a_idx):
             c_idx = npr.randint(c_min, high=c_max)
         # Record the anchor word and its positive context word
-        anchor_idx[i] = phrase[a_idx]
-        pos_idx[i] = phrase[c_idx]
+        anchor_keys[i] = phrase[a_idx]
+        pos_keys[i] = phrase[c_idx]
         # Sample a random negative example from the full word list
         n_idx = npr.randint(0, high=word_count, size=(1,neg_count))
-        neg_idx[i,:] = all_words[n_idx]
-    return [anchor_idx, pos_idx, neg_idx, phrase_idx]
+        neg_keys[i,:] = all_words[n_idx]
+    anchor_keys = anchor_keys.astype(np.int32)
+    pos_keys = pos_keys.astype(np.int32)
+    neg_keys = neg_keys.astype(np.int32)
+    phrase_keys = phrase_keys.astype(np.int32)
+    return [anchor_keys, pos_keys, neg_keys, phrase_keys]
+
+
+
+
+
+
+
+
 
 ##############
 # EYE BUFFER #

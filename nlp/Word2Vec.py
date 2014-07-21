@@ -15,28 +15,27 @@ from HelperFuncs import w2v_ff_bp, nsl_ff, nsl_bp, lut_bp, ag_update_2d, \
 ###########################
 
 class NSLayer:
-    def __init__(self, key_count=0, in_dim=0):
-        # Set stuff for managing this type of layer
+    def __init__(self, in_dim=0, max_out_key=0):
+        # Record the required input dimension and output dimension. The
+        # required ouput dimension is one more than the max output key.
         self.dim_input = in_dim
-        self.key_count = key_count
+        self.key_count = max_out_key + 1
         self.params = {}
-        self.params['W'] = 0.01 * npr.randn(key_count, in_dim)
-        self.params['b'] = np.zeros((key_count,))
+        self.params['W'] = 0.01 * npr.randn(self.key_count, in_dim)
+        self.params['b'] = np.zeros((self.key_count,))
         self.grads = {}
-        self.grads['W'] = np.zeros((key_count, in_dim))
-        self.grads['b'] = np.zeros((key_count,))
+        self.grads['W'] = np.zeros((self.key_count, in_dim))
+        self.grads['b'] = np.zeros((self.key_count,))
         self.moms = {}
-        self.moms['W'] = np.zeros((key_count, in_dim))
-        self.moms['b'] = np.zeros((key_count,))
-        self.max_norm = 10.0
-        # Set common stuff for all types layers
+        self.moms['W'] = np.zeros((self.key_count, in_dim))
+        self.moms['b'] = np.zeros((self.key_count,))
+        # Set temp vars to use in feedforward/backprop
         self.X = []
         self.Y = []
-        self.samp_keys = []
         self.dLdX = []
         self.dLdY = []
+        self.samp_keys = []
         self.grad_idx = set()
-        self.trained_idx = set()
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -47,14 +46,13 @@ class NSLayer:
         self.grads['b'] = np.zeros((self.key_count,))
         return
 
-    def clip_params(self):
+    def clip_params(self, max_norm=10.0):
         """Bound L2 (column-wise) norm of self.params['W'] by wt_bnd."""
-        EPS = 1e-5
         W = self.params['W']
         # Compute L2 norm of weights inbound to each node in this layer
-        w_norms = np.sqrt(np.sum(W**2.0,axis=1) + EPS)
+        w_norms = np.sqrt(np.sum(W**2.0,axis=1) + 1e-5)
         # Compute scales based on norms and the upperbound set by wt_bnd
-        w_scales = self.max_norm / w_norms
+        w_scales = max_norm / w_norms
         mask = (w_scales < 1.0)
         w_scales = (w_scales * mask) + (1.0 - mask)
         w_scales = w_scales[:,np.newaxis]
@@ -62,7 +60,7 @@ class NSLayer:
         W = W * w_scales
         return
 
-    def feedforward(self, X, pos_samples, neg_samples, test=False):
+    def feedforward(self, X, pos_samples, neg_samples):
         """Run feedforward for this layer.
 
         Parameter pos_samples should be a single column vector of integer
@@ -74,21 +72,15 @@ class NSLayer:
         assert(neg_samples.shape[0] == X.shape[0])
         # Cleanup debris from any previous feedforward
         self._cleanup()
-        # Record input and keys for positive/negative sample examples
+        # Record inputs and keys for positive/negative sample examples
         pos_samples = pos_samples[:,np.newaxis]
-        pos_samples = np.minimum(pos_samples, self.key_count-1)
-        neg_samples = np.minimum(neg_samples, self.key_count-1)
         self.X = X
         self.samp_keys = np.hstack((pos_samples, neg_samples))
         self.samp_keys = self.samp_keys.astype(np.int32)
-        # Handle OOV if testing
-        if test:
-            oov_key = (self.key_count-1) * np.ones((1,)).astype(np.int32)
-            self.samp_keys = catch_oov_words(self.samp_keys, self.trained_idx, oov_key[0])
         # Do the feedforward
         self.Y = np.zeros((X.shape[0], self.samp_keys.shape[1]))
         nsl_ff(self.samp_keys, self.X, self.params['W'], \
-                self.params['b'], self.Y)
+               self.params['b'], self.Y)
         # Using the outputs for these positive and negative samples, compute
         # loss and gradients for pseudo noise-contrastive training.
         samp_sign = np.ones(self.samp_keys.shape)
@@ -115,7 +107,6 @@ class NSLayer:
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
-        self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
                      self.moms['W'], learn_rate, ada_smooth, lam_l2)
@@ -139,9 +130,9 @@ class NSLayer:
         self.dLdY = []
         return
 
-##############################
-# HIERARCHICAL SOFTMAX LAYER #
-##############################
+#################################################
+# HIERARCHICAL SOFTMAX LAYER -- VERY INCOMPLETE #
+#################################################
 
 class HSMLayer:
     def __init__(self, in_dim=0, code_vecs=0, max_code_len=0):
@@ -158,7 +149,6 @@ class HSMLayer:
         self.moms = {}
         self.moms['W'] = np.zeros((in_dim, code_vecs))
         self.moms['b'] = np.zeros((1, code_vecs))
-        self.max_norm = 10.0
         # Set common stuff for all types layers
         self.X = []
         self.code_idx = []
@@ -166,7 +156,6 @@ class HSMLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        self.trained_idx = set()
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -177,14 +166,14 @@ class HSMLayer:
         self.grads['b'] = np.zeros((1, self.code_vecs))
         return
 
-    def clip_params(self):
+    def clip_params(self, max_norm=10.0):
         """Bound L2 (column-wise) norm of self.params['W'] by wt_bnd."""
         EPS = 1e-5
         W = self.params['W']
         # Compute L2 norm of weights inbound to each node in this layer
         w_norms = np.sqrt(np.sum(W**2.0,axis=0) + EPS)
         # Compute scales based on norms and the upperbound set by wt_bnd
-        w_scales = self.max_norm / w_norms
+        w_scales = max_norm / w_norms
         mask = (w_scales < 1.0)
         w_scales = (w_scales * mask) + (1.0 - mask)
         w_scales = w_scales[np.newaxis,:]
@@ -276,10 +265,14 @@ class HSMLayer:
 #################################
 
 class FullLayer:
-    def __init__(self, in_dim=0, out_dim=0):
-        # Set stuff for managing this type of layer
+    def __init__(self, in_dim=0, max_out_key=0):
+        # Set dimension of incoming vectors and the number of outcomes for
+        # which to perform prediction. Increment the requested prediction size
+        # by 1, to accommodate 0 indexing.
+        out_dim = max_out_key + 1
         self.dim_input = in_dim
         self.dim_output = out_dim
+        # Initialize parameters, gradients, and adagrad "momentums"
         self.params = {}
         self.params['W'] = 0.01 * gp.randn((in_dim, out_dim))
         self.params['b'] = gp.zeros((1, out_dim))
@@ -289,13 +282,10 @@ class FullLayer:
         self.moms = {}
         self.moms['W'] = gp.zeros((in_dim, out_dim))
         self.moms['b'] = gp.zeros((1, out_dim))
-        self.max_norm = 10.0
-        # Set common stuff for all types layers
+        # Initialize temp vars to use during feedforward/backpropagation
         self.X = []
         self.Y = []
-        self.dLdX = []
-        self.dLdY = []
-        self.trained_idx = set()
+        self.Y_cat = []
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -306,24 +296,19 @@ class FullLayer:
         self.grads['b'] = gp.zeros((1, self.dim_output))
         return
 
-    def clip_params(self):
-        """Bound L2 (column-wise) norm of self.params['W'] by wt_bnd."""
-        EPS = 1e-5
+    def clip_params(self, max_norm=10.0):
+        """Bound l2 (row-wise) norm of self.params['W'] by max_norm."""
         W = self.params['W']
-        # Compute L2 norm of weights inbound to each node in this layer
-        w_norms = gp.sqrt(gp.sum(W**2.0,axis=0) + EPS)
-        # Compute scales based on norms and the upperbound set by wt_bnd
-        w_scales = self.max_norm / w_norms
+        w_norms = gp.sqrt(gp.sum(W**2.0,axis=0) + 1e-5)
+        w_scales = max_norm / w_norms
         mask = (w_scales < 1.0)
         w_scales = (w_scales * mask) + (1.0 - mask)
         w_scales = w_scales[gp.newaxis,:]
-        # Rescale weights to meet the bound set by wt_bnd
         W = W * w_scales
         return
 
     def feedforward(self, X):
-        """Run feedforward for this layer.
-        """
+        """Run feedforward for this layer."""
         # Cleanup debris from any previous feedforward
         self._cleanup()
         # Do new feedforward...
@@ -331,32 +316,31 @@ class FullLayer:
         self.Y = gp.dot(self.X, self.params['W']) + self.params['b']
         return self.Y
 
-    def _backprop_(self, dLdY):
-        """Backprop through this layer.
-        """
-        self.dLdY = gp.garray(dLdY)
-        # Compute gradient with respect to layer parameters
-        dLdW = gp.dot(self.X.T, self.dLdY)
-        dLdb = gp.sum(self.dLdY, axis=0)
+    def backprop(self, Y_cat, return_on_gpu=False):
+        """Backprop through softmax using the given target predictions."""
+        Y_cat = Y_cat.astype(np.int32)
+        self.Y_cat = Y_cat
+        # Convert from categorical classes to "one-hot" vectors
+        Y_ind = np.zeros(self.Y.shape)
+        Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
+        # Compute gradient of cross-entropy objective, based on the given
+        # target predictions and the most recent feedforward information.
+        dLdY = self.cross_entropy_grad(self.Y, Y_ind)
+        # Backprop cross-ent grads to get grads w.r.t. layer parameters
+        dLdW = gp.dot(self.X.T, dLdY)
+        dLdb = gp.sum(dLdY, axis=0)
         dLdb = dLdb[gp.newaxis,:]
         self.grads['W'] += dLdW
         self.grads['b'] += dLdb
-        # Compute gradient with respect to layer input
-        self.dLdX = gp.dot(self.dLdY, self.params['W'].T)
-        return self.dLdX
-
-    def backprop(self, Y_cat):
-        """Backprop through this layer.
-        """
-        Y_cat = Y_cat.astype(np.int32)
-        Y_ind = np.zeros(self.Y.shape)
-        Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
-        dLdY_bp = self.cross_entropy(self.Y, Y_ind)
-        self._backprop_(dLdY_bp)
-        return self.dLdX
+        # Backprop cross-ent grads to get grads w.r.t. layer input
+        dLdX = gp.dot(dLdY, self.params['W'].T)
+        # Return gradients w.r.t. to input, either on or off the GPU
+        if not return_on_gpu:
+            dLdX = gp.as_numpy_array(dLdX)
+        return dLdX
 
     def safe_softmax(self, Y):
-        """Compute a relatively (numerically) safe softmax."""
+        """Compute a reasonably (numerically) safe softmax."""
         Y_max = gp.max(Y, axis=1)
         Y_max = Y_max[:,gp.newaxis]
         Y_exp = gp.exp(Y - Y_max)
@@ -365,38 +349,47 @@ class FullLayer:
         Y_sm = Y_exp / Y_sum
         return Y_sm
 
-    def cross_entropy(self, Yh, Y_ind):
-        """Cross-entropy loss/grad for predictions Yh and true classes Y."""
+    def cross_entropy_grad(self, Yh, Y_ind):
+        """Cross-entropy gradient for predictions Yh given targets Y_ind."""
+        # Push one-hot target vectors to GPU if not already there
         Y_ind = gp.garray(Y_ind)
+        # Compute softmax and cross-entropy gradients
         Yh_sm = self.safe_softmax(Yh)
         dLdYh = Yh_sm - Y_ind
         return dLdYh
 
-    def check_loss(self, Yh, Y_cat):
-        """Cross-entropy loss/grad for predictions Yh and true classes Y."""
+    def cross_entropy_loss(self, Yh, Y_cat):
+        """Cross-entropy loss for predictions Yh given targets Y_cat."""
+        # Convert from categorical classes to "one-hot" target vectors
         Y_ind = np.zeros(Yh.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
+        # Push one-hot targets vectors to the GPU
         Y_ind = gp.garray(Y_ind)
+        # Compute softmax and then cross-entropy loss
         Yh_sm = self.safe_softmax(Yh)
         L = -gp.sum((Y_ind * gp.log(Yh_sm)))
         return L
 
     def l2_regularize(self, lam_l2=1e-5):
-        """Add gradients for l2 regularization. And compute loss."""
+        """Apply some amount of l2 "shrinkage" to weights and biases."""
         self.params['W'] -= lam_l2 * self.params['W']
         self.params['b'] -= lam_l2 * self.params['b']
-        return 1
+        return
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
+        # Add l2 regularization effect to the gradients
         self.grads['W'] += lam_l2 * self.params['W']
         self.grads['b'] += lam_l2 * self.params['b']
+        # Update the adagrad "momentums"
         self.moms['W'] += self.grads['W']**2.0
         self.moms['b'] += self.grads['b']**2.0
+        # Apply adagrad-style updates using current grads and moms
         self.params['W'] -= learn_rate * (self.grads['W'] / \
                 (gp.sqrt(self.moms['W']) + ada_smooth))
         self.params['b'] -= learn_rate * (self.grads['b'] / \
                 (gp.sqrt(self.moms['b']) + ada_smooth))
+        # Reset gradient accumulators
         self.reset_grads()
         return
 
@@ -407,17 +400,16 @@ class FullLayer:
         return
 
     def reset_moms(self, ada_init=1e-3):
-        """Reset the gradient accumulators for this layer."""
+        """Reset the adagrad "momentums" for this layer."""
         self.moms['W'] = (0.0 * self.moms['W']) + ada_init
         self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
     def _cleanup(self):
-        """Cleanup temporary feedforward/backprop stuff."""
+        """Cleanup temp vars used during feedforward/backprop."""
         self.X = []
         self.Y = []
-        self.dLdX = []
-        self.dLdY = []
+        self.Y_cat = []
         return
 
 #######################
@@ -425,42 +417,34 @@ class FullLayer:
 #######################
 
 class LUTLayer:
-    def __init__(self, key_count, embed_dim):
+    def __init__(self, max_key, embed_dim):
         # Set stuff for managing this type of layer
-        key_count = key_count + 1
+        self.key_count = max_key + 1 # add 1 to accommodate 0 indexing
         self.params = {}
-        self.params['W'] = 0.01 * npr.randn(key_count, embed_dim)
+        self.params['W'] = 0.01 * npr.randn(self.key_count, embed_dim)
         self.grads = {}
         self.grads['W'] = np.zeros(self.params['W'].shape)
         self.moms = {}
         self.moms['W'] = np.zeros(self.params['W'].shape)
         self.grad_idx = set()
-        self.trained_idx = set()
-        self.key_count = key_count
         self.embed_dim = embed_dim
-        self.max_norm = 10.0
-        # Set common stuff for all types layers
         self.X = []
         self.Y = []
-        self.dLdX = []
-        self.dLdY = []
         return
 
     def init_params(self, w_scale=0.01):
         """Randomly initialize the weights in this layer."""
         self.params['W'] = w_scale * npr.randn(self.key_count, self.embed_dim)
         self.grads['W'] = np.zeros((self.key_count, self.embed_dim))
-        self.params['W'][-1,:] = 0.0
         return
 
-    def clip_params(self):
+    def clip_params(self, max_norm=10.0):
         """Bound L2 (row-wise) norm of self.params['W'] by wt_bnd."""
-        EPS = 1e-5
         W = self.params['W']
         # Compute L2 norm of weights inbound to each node in this layer
-        w_norms = np.sqrt(np.sum(W**2.0,axis=1) + EPS)
+        w_norms = np.sqrt(np.sum(W**2.0,axis=1) + 1e-5)
         # Compute scales based on norms and the upperbound set by wt_bnd
-        w_scales = self.max_norm / w_norms
+        w_scales = max_norm / w_norms
         mask = (w_scales < 1.0)
         w_scales = (w_scales * mask) + (1.0 - mask)
         w_scales = w_scales[:,np.newaxis]
@@ -468,10 +452,9 @@ class LUTLayer:
         W = W * w_scales
         # Store clipped parameters
         self.params['W'] = W
-        self.params['W'][-1,:] = 0.0
         return
 
-    def feedforward(self, X, test=False):
+    def feedforward(self, X):
         """Run feedforward for this layer.
 
         The input passed to feedforward here should be either a single list
@@ -481,10 +464,6 @@ class LUTLayer:
         self._cleanup()
         # Record the incoming list of row indices to extract
         self.X = X.astype(np.int32)
-        # Handle OOV if testing
-        if test:
-            oov_key = (self.key_count-1) * np.ones((1,)).astype(np.int32)
-            self.X = catch_oov_words(self.X, self.trained_idx, oov_key[0])
         # Use look-up table to generate the desired sequences
         self.Y = self.params['W'][self.X,:]
         return self.Y
@@ -492,25 +471,21 @@ class LUTLayer:
     def backprop(self, dLdY):
         """Backprop through this layer.
         """
-        self.dLdY = dLdY
         self.grad_idx.update(self.X.ravel())
         # Add the gradients to the gradient accumulator
-        lut_bp(self.X, self.dLdY, self.grads['W'])
+        lut_bp(self.X, dLdY, self.grads['W'])
         return 1
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
         self.params['W'] -= lam_l2 * self.params['W']
-        self.params['W'][-1,:] = 0.0
         return 1
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
-        self.trained_idx.update(self.grad_idx)
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
                      self.moms['W'], learn_rate, ada_smooth, lam_l2)
-        self.params['W'][-1,:] = 0.0
         self.grad_idx = set()
         return
 
@@ -523,8 +498,6 @@ class LUTLayer:
         """Cleanup temporary feedforward/backprop stuff."""
         self.X = []
         self.Y = []
-        self.dLdX = []
-        self.dLdY = []
         return
 
 #############################
@@ -532,11 +505,14 @@ class LUTLayer:
 #############################
 
 class CMLayer:
-    def __init__(self, key_count=0, source_dim=0, bias_dim=0):
+    def __init__(self, max_key=0, source_dim=0, bias_dim=0):
         # Set stuff for managing this type of layer
+        self.key_count = max_key + 1 # add 1 to accommodate 0 indexing
+        self.source_dim = source_dim
+        self.bias_dim = bias_dim
         self.params = {}
-        self.params['W'] = np.zeros((key_count, source_dim))
-        self.params['b'] = np.zeros((key_count, bias_dim))
+        self.params['W'] = np.zeros((self.key_count, source_dim))
+        self.params['b'] = np.zeros((self.key_count, bias_dim))
         self.grads = {}
         self.grads['W'] = np.zeros(self.params['W'].shape)
         self.grads['b'] = np.zeros(self.params['b'].shape)
@@ -544,11 +520,6 @@ class CMLayer:
         self.moms['W'] = np.zeros(self.params['W'].shape)
         self.moms['b'] = np.zeros(self.params['b'].shape)
         self.grad_idx = set()
-        self.trained_idx = set()
-        self.key_count = key_count
-        self.source_dim = source_dim
-        self.bias_dim = bias_dim
-        self.max_norm = 10.0
         # Set common stuff for all types layers
         self.X = []
         self.C = []
@@ -566,21 +537,15 @@ class CMLayer:
         self.grads['b'] = np.zeros(self.params['b'].shape)
         return
 
-    def clip_params(self):
+    def clip_params(self, max_norm=10.0):
         """Bound L2 (row-wise) norm of W and b by wt_bnd."""
-        EPS = 1e-5
         # Rescale some parameters to unit norm
-        M = self.params['W']
-        m_scales = self.max_norm / np.sqrt(np.sum(M**2.0,axis=1) + EPS)
-        mask = (m_scales < 1.0)
-        m_scales = (m_scales * mask) + (1.0 - mask)
-        self.params['W'] = M * m_scales[:,np.newaxis]
-        # Do it again
-        M = self.params['b']
-        m_scales = self.max_norm / np.sqrt(np.sum(M**2.0,axis=1) + EPS)
-        mask = (m_scales < 1.0)
-        m_scales = (m_scales * mask) + (1.0 - mask)
-        self.params['b'] = M * m_scales[:,np.newaxis]
+        for param in ['W', 'b']:
+            M = self.params[param]
+            m_scales = self.max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
+            mask = (m_scales < 1.0)
+            m_scales = (m_scales * mask) + (1.0 - mask)
+            self.params[param] = M * m_scales[:,np.newaxis]
         return
 
     def norm_info(self, param_name='W'):
@@ -594,7 +559,7 @@ class CMLayer:
         info = {'mean': men_n, 'min': min_n, 'median': med_n, 'max': max_n}
         return info
 
-    def feedforward(self, X, C, test=False):
+    def feedforward(self, X, C):
         """Run feedforward for this layer.
         """
         # Cleanup debris from any previous feedforward
@@ -632,9 +597,7 @@ class CMLayer:
 
     def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
         """Apply the current accumulated gradients, with adagrad."""
-        self.trained_idx.update(self.grad_idx)
-        nz_idx = np.asarray([i for i in self.grad_idx])
-        nz_idx = nz_idx.astype(np.int32)
+        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
                      self.moms['W'], learn_rate, ada_smooth, lam_l2)
         ag_update_2d(nz_idx, self.params['b'], self.grads['b'], \
@@ -663,15 +626,11 @@ class CMLayer:
 class NoiseLayer:
     def __init__(self, drop_rate=0.0, fuzz_scale=0.0):
         # Set stuff required for managing this type of layer
-        self.dYdX = []
         self.drop_rate = drop_rate
         self.drop_scale = 1.0 / (1.0 - drop_rate)
         self.fuzz_scale = fuzz_scale
-        # Set stuff common to all layer types
         self.X = []
-        self.Y = []
-        self.dLdX = []
-        self.dLdY = []
+        self.dYdX = []
         return
 
     def set_noise_params(self, drop_rate=0.0, fuzz_scale=0.0):
@@ -681,7 +640,7 @@ class NoiseLayer:
         self.fuzz_scale = fuzz_scale
         return
 
-    def feedforward(self, X, test=False):
+    def feedforward(self, X):
         """Perform feedforward through this layer.
         """
         # Cleanup debris from any previous feedforward
@@ -699,24 +658,22 @@ class NoiseLayer:
         if (self.fuzz_scale > 1e-4):
             fuzz_bump = (self.fuzz_scale / self.drop_scale) * \
                     npr.randn(self.X.shape[0], self.X.shape[1])
-            self.Y = drop_mask * (self.X + fuzz_bump)
+            Y = drop_mask * (self.X + fuzz_bump)
         else:
-            self.Y = drop_mask * self.X
-        return self.Y
+            Y = drop_mask * self.X
+        return Y
 
     def backprop(self, dLdY):
         """Perform backprop through this layer.
         """
         # Backprop is just multiplication by the mask from feedforward
-        self.dLdX = dLdY * self.dYdX
-        return self.dLdX
+        dLdX = dLdY * self.dYdX
+        return dLdX
 
     def _cleanup(self):
         """Clear all temp variables for this layer."""
         self.X = []
-        self.Y = []
         self.dYdX = []
-        self.dLdX = []
         return
 
 #########################
@@ -728,11 +685,9 @@ class TanhLayer:
         # Initialize the temp vars used in feedforward/backprop
         self.X = []
         self.Y = []
-        self.dLdX = []
-        self.dLdY = []
         return
 
-    def feedforward(self, X, test=False):
+    def feedforward(self, X):
         """Perform feedforward through this layer.
         """
         # Cleanup debris from any previous feedforward
@@ -748,14 +703,13 @@ class TanhLayer:
         """
         # Backprop is just multiplication by tanh grads, and we have tanh
         # of self.X already stored in self.Y, so backprop is easy.
-        self.dLdX = dLdY * (1.0 - self.Y**2.0)
-        return self.dLdX
+        dLdX = dLdY * (1.0 - self.Y**2.0)
+        return dLdX
 
     def _cleanup(self):
         """Clear all temp variables for this layer."""
         self.X = []
         self.Y = []
-        self.dLdX = []
         return
 
 ################################
@@ -763,25 +717,25 @@ class TanhLayer:
 ################################
 
 class W2VLayer:
-    def __init__(self, word_count=0, word_dim=0, lam_l2=1e-3):
-        # Set basic layer parameters. The word_count passed as an argument
-        # is incremented by one to accomodate an OOV token (out-of-vocab).
+    def __init__(self, max_word_key=0, word_dim=0, lam_l2=1e-3):
+        # Set basic layer parameters. The max_word_key passed as an argument
+        # is incremented by 1 to accommodate 0 indexing.
         self.word_dim = word_dim
-        self.word_count = word_count+1
+        self.word_count = max_word_key + 1
         # Initialize arrays for tracking parameters, gradients, and
         # adagrad "momentums" (i.e. sums of squared gradients).
         self.params = {}
-        self.params['Wa'] = 0.01 * npr.randn(word_count, word_dim)
-        self.params['Wc'] = 0.01 * npr.randn(word_count, word_dim)
-        self.params['b'] = np.zeros((word_count,))
+        self.params['Wa'] = 0.01 * npr.randn(self.word_count, word_dim)
+        self.params['Wc'] = 0.01 * npr.randn(self.word_count, word_dim)
+        self.params['b'] = np.zeros((self.word_count,))
         self.grads = {}
-        self.grads['Wa'] = np.zeros((word_count, word_dim))
-        self.grads['Wc'] = np.zeros((word_count, word_dim))
-        self.grads['b'] = np.zeros((word_count,))
+        self.grads['Wa'] = np.zeros((self.word_count, word_dim))
+        self.grads['Wc'] = np.zeros((self.word_count, word_dim))
+        self.grads['b'] = np.zeros((self.word_count,))
         self.moms = {}
-        self.moms['Wa'] = np.zeros((word_count, word_dim))
-        self.moms['Wc'] = np.zeros((word_count, word_dim))
-        self.moms['b'] = np.zeros((word_count,))
+        self.moms['Wa'] = np.zeros((self.word_count, word_dim))
+        self.moms['Wc'] = np.zeros((self.word_count, word_dim))
+        self.moms['b'] = np.zeros((self.word_count,))
         # Set l2 regularization parameter
         self.lam_l2 = lam_l2
         # Initialize sets for tracking which words we have trained
@@ -793,18 +747,13 @@ class W2VLayer:
         """Randomly initialize the weights in this layer."""
         self.params['Wa'] = w_scale * npr.randn(self.word_count, self.word_dim)
         self.grads['Wa'] = np.zeros((self.word_count, self.word_dim))
-        self.moms['Wa'] = np.zeros((self.word_count, self.word_dim))
+        self.moms['Wa'] = np.zeros((self.word_count, self.word_dim)) + 1e-3
         self.params['Wc'] = w_scale * npr.randn(self.word_count, self.word_dim)
         self.grads['Wc'] = np.zeros((self.word_count, self.word_dim))
-        self.moms['Wc'] = np.zeros((self.word_count, self.word_dim))
+        self.moms['Wc'] = np.zeros((self.word_count, self.word_dim)) + 1e-3
         self.params['b'] = np.zeros((self.word_count,))
         self.grads['b'] = np.zeros((self.word_count,))
-        self.moms['Wa'] = np.zeros((self.word_count, self.word_dim)) + 1e-3
-        self.moms['Wc'] = np.zeros((self.word_count, self.word_dim)) + 1e-3
         self.moms['b'] = np.zeros((self.word_count,)) + 1e-3
-        # Set the OOV word vectors to 0
-        self.params['Wa'][-1,:] = 0.0
-        self.params['Wc'][-1,:] = 0.0
         return
 
     def batch_train(self, anc_idx, pos_idx, neg_idx, learn_rate=1e-3):
@@ -812,20 +761,17 @@ class W2VLayer:
         of anchor/positive example/negative examples indices.
         """
         ada_smooth = 1e-3
-        # Force incoming LUT indices to the right type (i.e. int32)
+        # Force incoming LUT indices to the right type (i.e. np.int32)
         anc_idx = anc_idx.astype(np.int32)
         pos_idx = pos_idx[:,np.newaxis]
         pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
-        # Record the set of trained anchor and context indices
-        self.trained_Wa.update(anc_idx.ravel())
-        self.trained_Wc.update(pn_idx.ravel())
         pn_sign = np.ones(pn_idx.shape)
         pn_sign[:,0] = -1.0
         L = np.zeros((1,))
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
-               self.params['Wc'], self.params['b'], self.grads['Wa'], \
-               self.grads['Wc'], self.grads['b'], L)
+                self.params['Wc'], self.params['b'], self.grads['Wa'], \
+                self.grads['Wc'], self.grads['b'], L)
         L = L[0]
         # Apply gradients to (touched only) look-up-table parameters
         a_mod_idx = np.unique(anc_idx.ravel())
@@ -836,25 +782,18 @@ class W2VLayer:
                 self.moms['Wc'], learn_rate, ada_smooth, self.lam_l2)
         ag_update_1d(c_mod_idx, self.params['b'], self.grads['b'], \
                 self.moms['b'], learn_rate, ada_smooth, self.lam_l2)
-        # Force the OOV word vectors to 0
-        self.params['Wa'][-1,:] = 0.0
-        self.params['Wc'][-1,:] = 0.0
         return L
 
     def batch_test(self, anc_idx, pos_idx, neg_idx):
         """Perform a batch update of all parameters based on the given sets
         of anchor/positive example/negative examples indices.
         """
-        oov_key = (self.word_count-1) * np.ones((1,)).astype(np.int32)
         anc_idx = anc_idx.astype(np.int32)
         pos_idx = pos_idx[:,np.newaxis]
         pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
         pn_sign = np.ones(pn_idx.shape)
         pn_sign[:,0] = -1.0
         L = np.zeros((1,))
-        # Brute-force convert untrained words to OOV word
-        anc_idx = catch_oov_words(anc_idx, self.trained_Wa, oov_key[0])
-        pn_idx = catch_oov_words(pn_idx, self.trained_Wc, oov_key[0])
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
                self.params['Wc'], self.params['b'], self.grads['Wa'], \
@@ -873,12 +812,11 @@ class W2VLayer:
 # TEST BASIC MODULE FUNCTIONALITY #
 ###################################
 
-def run_test():
+def run_stb_test():
     import StanfordTrees as st
      # Load tree data
     tree_dir = './trees'
     stb_data = st.SimpleLoad(tree_dir)
-    max_lut_idx = max(stb_data['lut_keys'].values())
 
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
@@ -891,20 +829,19 @@ def run_test():
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
 
+    max_word_key = max(stb_data['words_to_keys'].values())
     batch_count = 100001
     batch_size = 256
     context_size = 5
-    word_count = max_lut_idx + 1
     embed_dim = 200
     lam_l2 = 1e-3
 
     # Create a lookup table for word representations
-    w2v_layer = W2VLayer(word_count, embed_dim)
+    w2v_layer = W2VLayer(max_word_key, embed_dim)
 
     # Initialize params for the LUT and softmax classifier
     w2v_layer.init_params(0.05)
 
-    print("Word count: {0:d}, word dim: {1:d}".format(word_count, embed_dim))
     print("Processing batches:")
     L = 0.0
     for b in range(batch_count):
@@ -919,7 +856,6 @@ def run_test():
         # Reset adagrad smoothing factors from time-to-time
         if ((b > 1) and ((b % 10000) == 0)):
             w2v_layer.reset_moms()
-
         # Display loss on the training set from time-to-time
         if ((b % 200) == 0):
             obs_count = batch_size * 200.0
@@ -935,7 +871,7 @@ def run_test():
 
 
 if __name__ == '__main__':
-    run_test()
+    run_stb_test()
 
 
 
