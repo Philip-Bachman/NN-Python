@@ -176,14 +176,14 @@ class ContextLayer:
         # that trainable words/contexts are those with LUT keys referencing
         # rows up to (and including) the penultimate rows of their LUTs.
         self.params = {}
-        self.params['Vw'] = 0.01 * npr.randn(word_keys, word_dim)
-        self.params['Vc'] = 0.01 * npr.randn(context_keys, context_dim)
+        self.params['W'] = 0.01 * npr.randn(word_keys, word_dim)
+        self.params['C'] = 0.01 * npr.randn(context_keys, context_dim)
         self.grads = {}
-        self.grads['Vw'] = np.zeros(self.params['Vw'].shape)
-        self.grads['Vc'] = np.zeros(self.params['Vc'].shape)
+        self.grads['W'] = np.zeros(self.params['W'].shape)
+        self.grads['C'] = np.zeros(self.params['C'].shape)
         self.moms = {}
-        self.moms['Vw'] = np.zeros(self.params['Vw'].shape)
-        self.moms['Vc'] = np.zeros(self.params['Vc'].shape)
+        self.moms['W'] = np.zeros(self.params['W'].shape)
+        self.moms['C'] = np.zeros(self.params['C'].shape)
         # Record the sizes of our word and context LUTs
         self.word_keys = word_keys
         self.word_dim = word_dim
@@ -200,15 +200,15 @@ class ContextLayer:
 
     def init_params(self, w_scale=0.01):
         """Randomly initialize the weights in this layer."""
-        self.params['Vw'] = w_scale * npr.randn(self.word_keys, self.word_dim)
-        self.params['Vc'] = w_scale * npr.randn(self.cont_keys, self.cont_dim)
-        self.grads['Vw'] = np.zeros(self.params['Vw'].shape)
-        self.grads['Vc'] = np.zeros(self.params['Vc'].shape)
+        self.params['W'] = w_scale * npr.randn(self.word_keys, self.word_dim)
+        self.params['C'] = w_scale * npr.randn(self.cont_keys, self.cont_dim)
+        self.grads['W'] = np.zeros(self.params['W'].shape)
+        self.grads['C'] = np.zeros(self.params['C'].shape)
         return
 
-    def clip_params(self, Vw_norm=10.0, Vc_norm=10.0):
+    def clip_params(self, W_norm=10.0, C_norm=10.0):
         """Bound L2 (row-wise) norm of self.params['W'] by wt_bnd."""
-        for (param, max_norm) in zip(['Vw', 'Vc'], [Vw_norm, Vc_norm]):
+        for (param, max_norm) in zip(['W', 'C'], [W_norm, C_norm]):
             W = self.params[param]
             w_norms = np.sqrt(np.sum(W**2.0,axis=1) + 1e-5)
             w_scales = max_norm / w_norms
@@ -230,11 +230,11 @@ class ContextLayer:
         self.Ic = Ic.astype(np.int32)
         # Construct the output of this layer using table look-ups
         self.Y = np.zeros((obs_count,self.cont_dim+(pre_words*self.word_dim)))
-        self.Y[:,0:self.cont_dim] = self.params['Vc'][self.Ic,:]
+        self.Y[:,0:self.cont_dim] = self.params['C'][self.Ic,:]
         for i in range(pre_words):
             s_idx = self.cont_dim + (i * self.word_dim)
             e_idx = s_idx + self.word_dim
-            self.Y[:,s_idx:e_idx] = self.params['Vw'][self.Iw[:,i]]
+            self.Y[:,s_idx:e_idx] = self.params['W'][self.Iw[:,i]]
         return self.Y
 
     def backprop(self, dLdY):
@@ -244,12 +244,12 @@ class ContextLayer:
         self.grad_idx_w.update(self.Iw.ravel())
         self.grad_idx_c.update(self.Ic.ravel())
         # Backprop for the context vectors
-        lut_bp(self.Ic, dLdY[:,0:self.cont_dim], self.grads['Vc'])
+        lut_bp(self.Ic, dLdY[:,0:self.cont_dim], self.grads['C'])
         # Backprop for each of the predictor words
         for i in range(pre_words):
             s_idx = self.cont_dim + (i * self.word_dim)
             e_idx = s_idx + self.word_dim
-            lut_bp(self.Iw[:,i], dLdY[:,s_idx:e_idx], self.grads['Vw'])
+            lut_bp(self.Iw[:,i], dLdY[:,s_idx:e_idx], self.grads['W'])
         return
 
     def apply_grad_reg(self, learn_rate=1e-3, ada_smooth=1e-3, lam_w=0.0, lam_c=0.0):
@@ -258,10 +258,10 @@ class ContextLayer:
         nz_idx_w = np.asarray([i for i in self.grad_idx_w]).astype(np.int32)
         nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
         # Update the params for words/contexts with pending updates
-        ag_update_2d(nz_idx_w, self.params['Vw'], self.grads['Vw'], \
-                     self.moms['Vw'], learn_rate, ada_smooth, lam_w)
-        ag_update_2d(nz_idx_c, self.params['Vc'], self.grads['Vc'], \
-                     self.moms['Vc'], learn_rate, ada_smooth, lam_c)
+        ag_update_2d(nz_idx_w, self.params['W'], self.grads['W'], \
+                     self.moms['W'], learn_rate, ada_smooth, lam_w)
+        ag_update_2d(nz_idx_c, self.params['C'], self.grads['C'], \
+                     self.moms['C'], learn_rate, ada_smooth, lam_c)
         # Reset the sets of LUT keys for parameters with pending updates
         self.grad_idx_w = set()
         self.grad_idx_c = set()
@@ -270,21 +270,21 @@ class ContextLayer:
     def update_context_vectors(self, learn_rate=1e-3, ada_smooth=1e-3, lam_c=0.0):
         """Apply only the context-vector gradients, adagrad style."""
         nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
-        ag_update_2d(nz_idx_c, self.params['Vc'], self.grads['Vc'], \
-                     self.moms['Vc'], learn_rate, ada_smooth, lam_c)
+        ag_update_2d(nz_idx_c, self.params['C'], self.grads['C'], \
+                     self.moms['C'], learn_rate, ada_smooth, lam_c)
         self.grad_idx_c = set()
         return
 
     def l2_regularize(self, lam_w=1e-5, lam_c=1e-5):
         """Apply some amount of l2 "shrinkage" to word/context params."""
-        self.params['Vw'] -= lam_w * self.params['Vw']
-        self.params['Vc'] -= lam_c * self.params['Vc']
+        self.params['W'] -= lam_w * self.params['W']
+        self.params['C'] -= lam_c * self.params['C']
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the adagrad "momentums" for this layer."""
-        self.moms['Vw'] = (0.0 * self.moms['Vw']) + ada_init
-        self.moms['Vc'] = (0.0 * self.moms['Vc']) + ada_init
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['C'] = (0.0 * self.moms['C']) + ada_init
         return
 
     def _cleanup(self):

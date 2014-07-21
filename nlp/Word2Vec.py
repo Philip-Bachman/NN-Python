@@ -500,16 +500,17 @@ class LUTLayer:
         self.Y = []
         return
 
-#############################
-# CONTEXTUAL MODIFIER LAYER #
-#############################
+##########################
+# CONTEXT MODIFIER LAYER #
+##########################
 
 class CMLayer:
-    def __init__(self, max_key=0, source_dim=0, bias_dim=0):
+    def __init__(self, max_key=0, source_dim=0, bias_dim=0, do_rescale=False):
         # Set stuff for managing this type of layer
         self.key_count = max_key + 1 # add 1 to accommodate 0 indexing
         self.source_dim = source_dim
         self.bias_dim = bias_dim
+        self.do_rescale = do_rescale # set to True for magical fun
         self.params = {}
         self.params['W'] = np.zeros((self.key_count, source_dim))
         self.params['b'] = np.zeros((self.key_count, bias_dim))
@@ -569,8 +570,11 @@ class CMLayer:
         self.C = C.astype(np.int32)
         # Get the feature re-weighting and bias adjustment parameters
         self.W = self.params['W'][C,:]
-        W_exp = np.exp(self.W)
-        W_sig = W_exp / (1.0 + W_exp)
+        if self.do_rescale:
+            W_exp = np.exp(self.W)
+            W_sig = W_exp / (1.0 + W_exp)
+        else:
+            W_sig = np.ones(X.shape)
         # Modify X by scaling and augmenting
         self.Y = np.hstack((self.params['b'][C,:], (X * W_sig)))
         return self.Y
@@ -582,9 +586,13 @@ class CMLayer:
         self.grad_idx.update(self.C.ravel())
         self.dLdY = dLdY
         dLdYb, dLdYw = np.hsplit(dLdY, [self.bias_dim])
-        W_exp = np.exp(self.W)
-        W_sig = W_exp / (1.0 + W_exp)
-        dLdW = (W_sig / W_exp) * self.X * dLdYw
+        if self.do_rescale:
+            W_exp = np.exp(self.W)
+            W_sig = W_exp / (1.0 + W_exp)
+            dLdW = (W_sig / W_exp) * self.X * dLdYw
+        else:
+            W_sig = np.ones(dLdYw.shape)
+            dLdW = np.zeros(dLdYw.shape)
         lut_bp(self.C, dLdW, self.grads['W'])
         lut_bp(self.C, dLdYb, self.grads['b'])
         dLdX = W_sig * dLdYw

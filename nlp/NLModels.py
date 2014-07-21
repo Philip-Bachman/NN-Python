@@ -4,33 +4,32 @@ import Word2Vec as w2v
 import ParVec as pv
 import HelperFuncs as hf
 
-"""
-TODO: write classes for managing training and testing of several types of
-neural language models.
-
-Note: For all models, it will be assumed that sampling LUT indices
-corresponding to the word vectors needed for training and testing will be done
-by outside code. I.e. these classes don't include tools for converting chunks
-of text into sequences of look-up-table keys or for sampling from the LUT key
-sequences to get sets of LUT keys suitable for training/testing.
-
-Model 1: Basic Word2Vec style skip-gram model trained with negative sampling.
-
-Model 2: Basic Paragraph Vector model, i.e. forward-prediction n-gram model
-         with context-adaptive biases.
-
-Model 3: Word2Vec style skip-gram model with added dropout, gaussian fuzzing,
-         context-adaptive biases and context-adaptive feature reweighting.
-"""
-
 class PVModel:
     """
     Paragraph Vector model, as described in "Distributed Representations of
     Sentences and Documents" by Quoc Le and Tomas Mikolov (ICML 2014).
 
+    All training of this model is based on feeding it Python lists of phrases,
+    where each element in a list is the representation of some phrase as a
+    sequence of look-up-table keys stored in a 1d numpy array. The model is
+    written to automatically add a "NULL" key that will be used when a sampled
+    training n-gram extends beyond the scope of its source phrase. The model
+    does _not_ deal with OOV words. It is up to the user to assign valid LUT
+    keys to words not seen in training. In particular, no phrase passed during
+    full training or test-time inference of new context vectors should contain
+    a LUT key greater than the parameter max_wv_key passed when the model was
+    initialized.
+    
+    At present I've only implemented this with a "full softmax" at the output
+    layer, which will work on the GPU if you have one. With a GPU the speed is
+    tolerable, but without a GPU training is dreadfully slow. The updates are
+    applied using adagrad, which helps a bit with convergence. Hopefully I'll
+    get around to implementing hierarchical softmax soon, which should let you
+    train this model purely on the CPU.
+
     Important Parameters (accessible via self.*):
-      wv_dim: dimension of the LUT word vectors
-      cv_dim: dimension of the context (a.k.a. paragraph) vectors
+      wv_dim: dimension of the word LUT vectors
+      cv_dim: dimension of the context (a.k.a. paragraph) LUT vectors
       max_wv_key: max key of a valid word in the word LUT
       max_cv_key: max key of a valid context in the context LUT
       pre_words: # of previous context words to use in forward-prediction
@@ -68,6 +67,14 @@ class PVModel:
                                           max_out_key=self.max_wv_key)
         return
 
+    def set_noise(self, drop_rate=0.0, fuzz_scale=0.0):
+        """Set params for the noise injection (i.e. perturbation) layer."""
+        self.noise_layer.set_noise_params(drop_rate=drop_rate, \
+                                          fuzz_scale=fuzz_scale)
+        self.drop_rate = drop_rate
+        self.fuzz_scale = fuzz_scale
+        return
+
     def init_params(self, weight_scale=0.05):
         """Reset weights in the context LUT and softmax layers."""
         self.context_layer.init_params(weight_scale)
@@ -101,7 +108,7 @@ class PVModel:
 
         # Backprop through the layers in reverse order
         dLdXn = self.softmax_layer.backprop(post_keys, return_on_gpu=True)
-        dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
+        dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=True)
         self.context_layer.backprop(dLdXb)
         if not context_only:
             # Apply gradients computed during backprop (to all parameters)
@@ -145,20 +152,20 @@ class PVModel:
     def infer_context_vectors(self, phrase_list, batch_size, batch_count):
         """Train context/paragraph vectors for each of the given phrases.
 
-        Each phrase in phrase_list gives a sequence of keys into the word
-        LUT that was (presumably) previously trained for this model. During
-        test inference words not previously trained will be given the OOV
-        vector (which should be zero, if ParVec.py is bug-free).
+        Parameters:
+            phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
+            batch_size: batch size for minibatch updates
+            batch_count: number of minibatch updates to perform
         """
         # Put a new context layer in place of self.context_layer, but keep
         # a pointer to self.context_layer around to restore later...
         max_cv_key = len(phrase_list) - 1
         new_context_layer = pv.ContextLayer(self.max_wv_key, self.wv_dim, \
                                             max_cv_key, self.cv_dim)
-        new_context_layer.init_params(0.05)
+        new_context_layer.init_params(0.0)
         # The new context layer will use the same word weights as the existing
         # context layer. Only the context weights will be re-estimated
-        new_context_layer.params['Vw'] = self.context_layer.params['Vw'].copy()
+        new_context_layer.params['W'] = self.context_layer.params['W'].copy()
         prev_context_layer = self.context_layer
         self.context_layer = new_context_layer
         # Update the context vectors in the new context layer for some number
@@ -217,9 +224,10 @@ class CAModel:
         self.fuzz_scale = 0.0
         # Create layers to use during training
         self.word_layer = w2v.LUTLayer(max_wv_key, wv_dim)
-        self.context_layer = w2v.CMLayer(max_key=max_cv_key,
-                                         source_dim=wv_dim,
-                                         bias_dim=cv_dim)
+        self.context_layer = w2v.CMLayer(max_key=max_cv_key, \
+                                         source_dim=wv_dim, \
+                                         bias_dim=cv_dim, \
+                                         do_rescale=True)
         self.noise_layer = w2v.NoiseLayer(drop_rate=self.drop_rate, \
                                           fuzz_scale=self.fuzz_scale)
         self.class_layer = w2v.NSLayer(in_dim=(self.cv_dim + self.wv_dim), \
@@ -229,7 +237,7 @@ class CAModel:
     def init_params(self, weight_scale=0.05):
         """Reset weights in the context LUT and softmax layers."""
         self.word_layer.init_params(weight_scale)
-        self.context_layer.init_params(weight_scale)
+        self.context_layer.init_params(0.0 * weight_scale)
         self.class_layer.init_params(weight_scale)
         return
 
@@ -251,6 +259,17 @@ class CAModel:
     def batch_update(self, anc_keys, pos_keys, neg_keys, phrase_keys, \
                      learn_rate=1e-3, ada_smooth=1e-3, context_only=False):
         """Perform a single "minibatch" update of the model parameters.
+
+        Parameters:
+            anc_keys: word LUT keys for the anchor words
+            pos_keys: word LUT keys for the positive examples to predict
+            neg_keys: word LUT keys for the negative examples to predict
+            phrase_keys: phrase/context LUT keys for the phrases from which
+                         the words to predict with (in anc_keys and pos_keys)
+                         were sampled.
+            learn_rate: learning rate for adagrad updates
+            ada_smooth: smoothing parameter for adagrad updates
+            context_only: set to True to only the train the context params
         """
         # Feedforward through the various layers of this model
         Xb = self.word_layer.feedforward(anc_keys)
@@ -283,7 +302,8 @@ class CAModel:
                                               lam_l2=self.lam_cv)
         return L
 
-    def train_all_params(self, phrase_list, all_words, batch_size, batch_count):
+    def train_all_params(self, phrase_list, all_words, batch_size, batch_count, \
+                         learn_rate=1e-3):
         """Train all parameters in the model using the given phrases.
 
         Parameters:
@@ -291,6 +311,7 @@ class CAModel:
             all_words: list of words to sample uniformly for negative examples
             batch_size: size of minibatches for each update
             batch_count: number of minibatch updates to perform
+            learn_rate: learning rate for adagrad updates
         """
         L = 0.0
         print("Training all parameters:")
@@ -299,17 +320,22 @@ class CAModel:
                     phrase_list, all_words, batch_size, self.sg_window, \
                     self.ns_count)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
-                                   learn_rate=1e-3, ada_smooth=1e-3, \
+                                   learn_rate=learn_rate, ada_smooth=1e-3, \
                                    context_only=False)
+            if ((b > 1) and ((b % 1000) == 0)):
+                W_info = self.context_layer.norm_info('W')
+                b_info = self.context_layer.norm_info('b')
+                print("-- mean norms: W = {0:.4f}, b = {1:.4f}".format(W_info['mean'],b_info['mean']))
             if ((b > 1) and ((b % 10000) == 0)):
-                self.reset_moms(ada_smooth=1e-3)
+                self.reset_moms(ada_init=1e-3)
             if ((b % 100) == 0):
                 obs_count = 100.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         return
 
-    def infer_context_vectors(self, phrase_list, all_words, batch_size, batch_count):
+    def infer_context_vectors(self, phrase_list, all_words, batch_size, batch_count, 
+                              learn_rate=1e-3):
         """Train a new set of context layer parameters using the given phrases.
 
         Parameters:
@@ -321,10 +347,11 @@ class CAModel:
         # Put a new context layer in place of self.context_layer, but keep
         # a pointer to self.context_layer around to restore later...
         max_cv_key = len(phrase_list) - 1
-        new_context_layer = w2v.CMLayer(max_key=max_cv_key,
-                                        source_dim=self.wv_dim,
-                                        bias_dim=self.cv_dim)
-        new_context_layer.init_params(0.05)
+        new_context_layer = w2v.CMLayer(max_key=max_cv_key, \
+                                        source_dim=self.wv_dim, \
+                                        bias_dim=self.cv_dim, \
+                                        do_rescale=True)
+        new_context_layer.init_params(0.0)
         prev_context_layer = self.context_layer
         self.context_layer = new_context_layer
         L = 0.0
@@ -334,10 +361,14 @@ class CAModel:
                     phrase_list, all_words, batch_size, self.sg_window, \
                     self.ns_count)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
-                                   learn_rate=1e-3, ada_smooth=1e-3, \
+                                   learn_rate=learn_rate, ada_smooth=1e-3, \
                                    context_only=True)
+            if ((b > 1) and ((b % 1000) == 0)):
+                W_info = self.context_layer.norm_info('W')
+                b_info = self.context_layer.norm_info('b')
+                print("-- mean norms: W = {0:.4f}, b = {1:.4f}".format(W_info['mean'],b_info['mean']))
             if ((b > 1) and ((b % 10000) == 0)):
-                self.reset_moms(ada_smooth=1e-3)
+                self.reset_moms(ada_init=1e-3)
             if ((b % 100) == 0):
                 obs_count = 100.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
@@ -400,26 +431,28 @@ def stb_test_CAModel():
 
     # Choose some simple hyperparameters for the model
     sg_window = 6
-    ns_count = 8
-    wv_dim = 150
-    cv_dim = 50
+    ns_count = 10
+    wv_dim = 200
+    cv_dim = 100
     lam_l2 = 1e-3
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
                   ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
-    cam.set_noise(drop_rate=0.5, fuzz_scale=0.025)
+    cam.set_noise(drop_rate=0.5, fuzz_scale=0.02)
 
     # Train all parameters using the training set phrases
-    cam.train_all_params(tr_phrases, tr_words, 256, 10001)
+    cam.train_all_params(tr_phrases, tr_words, 256, 200001)
     cl_train = cam.context_layer
 
     # Infer new context vectors for the test set phrases
-    cl_test = cam.infer_context_vectors(te_phrases, tr_words, 256, 25001)
-    return
+    cl_test = cam.infer_context_vectors(te_phrases, tr_words, 256, 100001)
+    return [cl_train, cl_test, stb_data]
 
 if __name__ == '__main__':
     #stb_test_PVModel()
-    stb_test_CAModel()
+    cl_train, cl_test, stb_data = stb_test_CAModel()
+
+
 
 
 ##############
