@@ -62,7 +62,7 @@ class FullLayer:
         W = W * w_scales
         return
 
-    def feedforward(self, X, test=False):
+    def feedforward(self, X):
         """Run feedforward for this layer."""
         # Cleanup debris from any previous feedforward
         self._cleanup()
@@ -239,7 +239,7 @@ class ContextLayer:
             self.params[param] = W
         return
 
-    def feedforward(self, Iw, Ic, test=False):
+    def feedforward(self, Iw, Ic, test_w=False, test_c=False):
         """Run feedforward for this layer. Using sacks of LUT keys.
         """
         # Cleanup debris from any previous feedforward
@@ -248,10 +248,11 @@ class ContextLayer:
         # Record the incoming lists of rows to extract from each LUT
         self.Iw = Iw.astype(np.int32)
         self.Ic = Ic.astype(np.int32)
-        # Handle OOV keys if testing (for words _and_ contexts)
-        if test:
+        # Handle OOV keys if testing (for words and/or contexts)
+        if test_w:
             oov_idx = (self.word_keys-1) * np.ones((1,)).astype(np.int32)
             self.Iw = catch_oov_words(self.Iw, self.trained_idx_w, oov_idx[0])
+        if test_c:
             oov_idx = (self.cont_keys-1) * np.ones((1,)).astype(np.int32)
             self.Ic = catch_oov_words(self.Ic, self.trained_idx_c, oov_idx[0])
         # Construct the output of this layer using table look-ups
@@ -263,7 +264,7 @@ class ContextLayer:
             self.Y[:,s_idx:e_idx] = self.params['Vw'][self.Iw[:,i]]
         return self.Y
 
-    def backprop(self, dLdY, test=False):
+    def backprop(self, dLdY):
         """Backprop through this layer.
         """
         obs_count, pre_words = self.Iw.shape
@@ -278,7 +279,7 @@ class ContextLayer:
             lut_bp(self.Iw[:,i], dLdY[:,s_idx:e_idx], self.grads['Vw'])
         return
 
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_w=0.0, lam_c=0.0):
+    def apply_grad_reg(self, learn_rate=1e-3, ada_smooth=1e-3, lam_w=0.0, lam_c=0.0):
         """Apply the current accumulated gradients, adagrad style."""
         # Update the sets of LUT keys tracking which params we have trained
         self.trained_idx_w.update(self.grad_idx_w)
@@ -296,6 +297,16 @@ class ContextLayer:
         self.params['Vc'][-1,:] = 0.0
         # Reset the sets of LUT keys for parameters with pending updates
         self.grad_idx_w = set()
+        self.grad_idx_c = set()
+        return
+
+    def update_context_vectors(self, learn_rate=1e-3, ada_smooth=1e-3, lam_c=0.0):
+        """Apply only the context-vector gradients, adagrad style."""
+        self.trained_idx_c.update(self.grad_idx_c)
+        nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
+        ag_update_2d(nz_idx_c, self.params['Vc'], self.grads['Vc'], \
+                     self.moms['Vc'], learn_rate, ada_smooth, lam_c)
+        self.params['Vc'][-1,:] = 0.0
         self.grad_idx_c = set()
         return
 
@@ -342,7 +353,7 @@ class NoiseLayer:
         self.fuzz_scale = fuzz_scale
         return
 
-    def feedforward(self, X, test=False):
+    def feedforward(self, X):
         """Perform feedforward through this layer.
         """
         # Cleanup debris from any previous feedforward
@@ -433,7 +444,7 @@ def run_test():
         predictee_idx = seq_idx[:,-1]
 
         # Feedforward through look-up-table and classifier layers
-        Xb = context_layer.feedforward(predictor_idx, phrase_idx, test=False)
+        Xb = context_layer.feedforward(predictor_idx, phrase_idx)
         Xn = noise_layer.feedforward(Xb)
         Yn = class_layer.feedforward(Xn)
         L += class_layer.cross_entropy_loss(Yn, predictee_idx)

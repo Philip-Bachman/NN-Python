@@ -77,35 +77,103 @@ class PVModel:
         self.softmax_layer.reset_moms(ada_init)
         return
 
-    def batch_update(self, pre_idx, post_idx, phrase_idx, learn_rate, ada_smooth=1e-3):
+    def batch_update(self, pre_keys, post_keys, phrase_keys, learn_rate, \
+                    ada_smooth=1e-3, context_only=False):
         """Perform a single "minibatch" update of the model parameters.
 
         This uses the word key sequences stored in the rows of the matrix
-        word_idx together with their corresponding context keys stored in the
-        vector phrase_idx. Parameters learn_rate and ada_smooth control the
+        word_keys together with their corresponding context keys stored in the
+        vector phrase_keys. Parameters learn_rate and ada_smooth control the
         step size and "smoothing" applied during the adagrad update.
         """
         # Feedforward through look-up-table, noise, and softmax layers
-        Xb = self.context_layer.feedforward(pre_idx, phrase_idx, test=False)
+        Xb = self.context_layer.feedforward(pre_keys, phrase_keys, \
+                                            test_w=False, \
+                                            test_c=False)
         Xn = self.noise_layer.feedforward(Xb)
         Yn = self.softmax_layer.feedforward(Xn)
         # Compute loss at softmax layer
-        L = self.softmax_layer.cross_entropy_loss(Yn, post_idx)
+        L = self.softmax_layer.cross_entropy_loss(Yn, post_keys)
 
         # Backprop through the layers in reverse order
-        dLdXn = self.softmax_layer.backprop(post_idx, return_on_gpu=True)
+        dLdXn = self.softmax_layer.backprop(post_keys, return_on_gpu=True, \
+                                            test=context_only)
         dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
         self.context_layer.backprop(dLdXb)
-
-        # Apply gradients computed during backprop
-        self.softmax_layer.apply_grad_reg(learn_rate=learn_rate, \
-                                          ada_smooth=ada_smooth, \
-                                          lam_l2=self.lam_sm)
-        self.context_layer.apply_grad_reg(learn_rate=learn_rate, \
-                                          ada_smooth=ada_smooth, \
-                                          lam_w=self.lam_wv, \
-                                          lam_c=self.lam_cv)
+        if not context_only:
+            # Apply gradients computed during backprop (to all parameters)
+            self.softmax_layer.apply_grad_reg(learn_rate=learn_rate, \
+                                              ada_smooth=ada_smooth, \
+                                              lam_l2=self.lam_sm)
+            self.context_layer.apply_grad_reg(learn_rate=learn_rate, \
+                                              ada_smooth=ada_smooth, \
+                                              lam_w=self.lam_wv, \
+                                              lam_c=self.lam_cv)
+        else:
+            # Apply gradients only to the context vectors (for test-time)
+            self.context_layer.update_context_vectors(learn_rate=learn_rate, \
+                                                      ada_smooth=ada_smooth, \
+                                                      lam_c=self.lam_cv)
         return L
+
+    def train_all_params(self, phrase_list, batch_size, batch_count):
+        """Train all parameters in the model using the given phrases.
+
+        Parameters:
+            phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
+            batch_size: size of minibatches for each update
+            batch_count: number of minibatch updates to perform
+        """
+        L = 0.0
+        print("Training new context vectors:")
+        for b in range(batch_count):
+            [seq_keys, phrase_keys] = hf.rand_word_seqs(phrase_list, batch_size, \
+                                    self.pre_words+1, self.max_wv_key)
+            pre_keys = seq_keys[:,0:-1]
+            post_keys = seq_keys[:,-1]
+            L += self.batch_update(pre_keys, post_keys, phrase_keys, 1e-3, \
+                                   ada_smooth=1e-3, context_only=False)
+            if ((b % 100) == 0):
+                obs_count = 100.0 * batch_size
+                print("Batch {0:d}, loss {1:.4f}".format(b, L/obs_count))
+                L = 0.0
+        return
+
+    def new_context_vectors(self, phrase_list, batch_size, batch_count):
+        """Train context/paragraph vectors for each of the given phrases.
+
+        Each phrase in phrase_list gives a sequence of keys into the word
+        LUT that was (presumably) previously trained for this model. During
+        test inference words not previously trained will be given the OOV
+        vector (which should be zero, if ParVec.py is bug-free).
+        """
+        # Put a new context layer in place of self.context_layer, but keep
+        # a pointer to self.context_layer around to restore later...
+        max_cv_key = len(phrase_list) - 1
+        new_context_layer = pv.ContextLayer(self.max_wv_key, self.wv_dim, \
+                                            max_cv_key, self.cv_dim)
+        new_context_layer.params['Vw'] = self.context_layer.params['Vw'].copy()
+        prev_context_layer = self.context_layer
+        self.context_layer = new_context_layer
+        # Update the context vectors in the new context layer for some number
+        # of minibatch update rounds
+        L = 0.0
+        print("Training new context vectors:")
+        for b in range(batch_count):
+            [seq_keys, phrase_keys] = hf.rand_word_seqs(phrase_list, batch_size, \
+                                    self.pre_words+1, self.max_wv_key)
+            pre_keys = seq_keys[:,0:-1]
+            post_keys = seq_keys[:,-1]
+            L += self.batch_update(pre_keys, post_keys, phrase_keys, 4e-3, \
+                                   ada_smooth=1e-3, context_only=True)
+            if ((b % 100) == 0):
+                obs_count = 100.0 * batch_size
+                print("Test batch {0:d}, loss {1:.4f}".format(b, L/obs_count))
+                L = 0.0
+        # Set self.context_layer back to what it was prior to retraining
+        self.context_layer = prev_context_layer
+        return new_context_layer
+
 
 def stb_test_PVModel():
     """Hard-coded test on STB data, for development/debugging."""
@@ -127,37 +195,21 @@ def stb_test_PVModel():
     max_wv_key = max(stb_data['lut_keys'].values()) + 1
     max_cv_key = len(tr_phrases) - 1
 
-    # Set some simple hyperparameters for training
-    null_key = max_wv_key
-    batch_count = 500001
-    batch_size = 256
-    pre_words = 7
-    wv_dim = 200
-    cv_dim = 200
+    # Choose some simple hyperparameters for the model
+    pre_words = 5
+    wv_dim = 250
+    cv_dim = 250
     lam_l2 = 1e-3
 
     pvm = PVModel(wv_dim, cv_dim, max_wv_key, max_cv_key, pre_words=pre_words, \
                   lam_wv=lam_l2, lam_cv=lam_l2, lam_sm=lam_l2)
     pvm.init_params(0.05)
 
-    L = 0.0
-    for b in range(batch_count):
-        # Sample a batch of random word sequences extract from a fixed set
-        # of "phrases".
-        [seq_idx, phrase_idx] = \
-            hf.rand_word_seqs(tr_phrases, batch_size, pre_words+1, null_key)
-        # Get the keys for the words to use for prediction
-        pre_idx = seq_idx[:,0:-1]
-        # Get the keys for the words to be predicted
-        post_idx = seq_idx[:,-1]
-        
-        # Update the PVModel using the sampled word/phrase contexts
-        L += pvm.batch_update(pre_idx, post_idx, phrase_idx, 1e-3)
+    # Train all parameters using the training set phrases
+    pvm.train_all_params(tr_phrases, 256, 100001)
 
-        if ((b % 50) == 0):
-            obs_count = 50.0 * batch_size
-            print("Batch {0:d}, loss {1:.4f}".format(b, (L / obs_count)))
-            L = 0.0
+    # Train new context vectors using the validation set phrases
+    pvm.new_context_vectors(te_phrases, 256, 100001)
     return
 
 

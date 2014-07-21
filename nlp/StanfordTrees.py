@@ -96,7 +96,7 @@ class STBNode:
                 self.lut_idx = lut_keys[self.word]
             else:
                 # The word here is not known by the dict
-                self.lut_idx = lut_keys["UNK_WORD"]
+                self.lut_idx = lut_keys["*UNK*"]
         return
 
     def get_lutis_and_labels(self):
@@ -152,7 +152,7 @@ class STBParser:
             self.lut_keys[word] = idx
             self.lut_reverse[idx] = word
             idx = idx + 1
-        self.lut_keys["UNK_WORD"] = idx
+        self.lut_keys["*UNK*"] = idx
         # Set the look-up-table indices for train/dev/test trees
         for tree in self.train_trees:
             tree.set_lut_idx(self.lut_keys)

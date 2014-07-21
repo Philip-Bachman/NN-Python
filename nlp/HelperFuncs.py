@@ -175,48 +175,54 @@ lut_bp = make_multithread(lut_st, THREAD_NUM)
 # WORD VALIDATION, FOR MANAGING OOV WORDS #
 ###########################################
 
-def catch_oov_words(w_idx, v_idx, oov_idx):
-    """w_idx is an ndarray, v_idx is a set, and oov_idx is an int32."""
-    assert((w_idx.ndim == 1) or (w_idx.ndim == 2))
-    # Brute-force convert untrained words to OOV word
-    if (w_idx.ndim == 1):
-        for i in range(w_idx.shape[0]):
-            if not (w_idx[i] in v_idx):
-                w_idx[i] = oov_idx
+def catch_oov_words(w_keys, v_keys, oov_key):
+    """Set each entry in w_keys that is not in v_keys to oov_key.
+
+    Note: w_keys should be a 1d or 2d numpy array of np.int32, v_keys should
+          be a _set_ of np.int32, and oov_key should be a lone np.int32.
+    """
+    assert((w_keys.ndim == 1) or (w_keys.ndim == 2))
+    if (w_keys.ndim == 1):
+        for i in range(w_keys.shape[0]):
+            if not (w_keys[i] in v_keys):
+                w_keys[i] = oov_key
     else:
-        for i in range(w_idx.shape[0]):
-            for j in range(w_idx.shape[1]):
-                if not (w_idx[i,j] in v_idx):
-                    w_idx[i,j] = oov_idx
-    return w_idx
+        for i in range(w_keys.shape[0]):
+            for j in range(w_keys.shape[1]):
+                if not (w_keys[i,j] in v_keys):
+                    w_keys[i,j] = oov_key
+    return w_keys
 
 #######################
 # RANDOM KNICK-KNACKS #
 #######################
 
-def rand_word_seqs(phrase_list, seq_count, seq_len, non_idx):
-    """Sample random sequences of contiguous words from a list of phrases.
+def rand_word_seqs(phrase_list, seq_count, seq_len, null_key):
+    """Sample random n-grams from a list of phrases.
 
     Given a list of phrases, where each phrase is described by a list of
-    indices into a look-up-table, sample random subsequences of the phrases,
-    for use in training a forward prediction n-gram model (or whatever).
+    keys into a look-up-table, sample random n-grams of keys from the
+    sequences, where n is given by seq_len. The sampled n-grams are only
+    constrained to have their final item inside the source phrase. When any
+    of the first n-1 items in a sampled sequence are not in the source phrase,
+    they are assigned the key "null_key".
     """
     phrase_count = len(phrase_list)
-    seq_idx = np.zeros((seq_count, seq_len), dtype=np.int32)
-    phrase_idx = np.zeros((seq_count,), dtype=np.int32)
+    seq_keys = np.zeros((seq_count, seq_len), dtype=np.int32)
+    phrase_keys = np.zeros((seq_count,), dtype=np.int32)
     for i in range(seq_count):
-        phrase_idx[i] = npr.randint(0, phrase_count)
-        phrase = phrase_list[phrase_idx[i]]
+        phrase_keys[i] = npr.randint(0, phrase_count)
+        phrase = phrase_list[phrase_keys[i]]
         phrase_len = len(phrase)
-        predictee_idx = npr.randint(0, phrase_len)
-        seq_idx[i,-1] = predictee_idx
+        final_key = npr.randint(0, phrase_len)
+        seq_keys[i,-1] = phrase[final_key]
         for j in range(seq_len-1):
-            predictor_idx = predictee_idx - seq_len + j + 1
-            if (predictor_idx < 0):
-                seq_idx[i,j] = non_idx
+            preceding_key = final_key - seq_len + j + 1
+            if (preceding_key < 0):
+                seq_keys[i,j] = null_key
             else:
-                seq_idx[i,j] = phrase[predictor_idx]
-    return [seq_idx, phrase_idx]
+                seq_keys[i,j] = phrase[preceding_key]
+    return [seq_keys, phrase_keys]
 
 def rand_word_pairs(phrase_list, pair_count, context_size):
     """Sample random anchor/context pairs for skip-gram training.
