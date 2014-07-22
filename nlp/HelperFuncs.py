@@ -12,7 +12,7 @@ from ctypes import pythonapi, c_void_p
 # MULTITHREADING HELPER-FUNC AND DEFNS #
 ########################################
 
-THREAD_NUM = 4
+THREAD_NUM = 2
 
 savethread = pythonapi.PyEval_SaveThread
 savethread.argtypes = []
@@ -26,7 +26,7 @@ def make_multithread(inner_func, numthreads):
     def func_mt(*args):
         length = len(args[0])
         sp_idx = np.arange(0,length).astype(np.int32)
-        chunklen = (length + 1) // numthreads
+        chunklen = (length + (numthreads-1)) // numthreads
         chunkargs = [(sp_idx[i*chunklen:(i+1)*chunklen],)+args for i in range(numthreads)]
         # Start a thread for all but the last chunk of work
         threads = [threading.Thread(target=inner_func, args=cargs)

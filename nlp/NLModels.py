@@ -15,11 +15,10 @@ class PVModel:
     written to automatically add a "NULL" key that will be used when a sampled
     training n-gram extends beyond the scope of its source phrase. The model
     does _not_ deal with OOV words. It is up to the user to assign valid LUT
-    keys to words not seen in training. In particular, no phrase passed during
-    full training or test-time inference of new context vectors should contain
-    a LUT key greater than the parameter max_wv_key passed when the model was
-    initialized.
-    
+    keys to words not seen in training. In particular, no phrase passed to the
+    moel should contain a LUT key greater than the parameter max_wv_key passed
+    when the model was initialized.
+
     At present I've only implemented this with a "full softmax" at the output
     layer, which will work on the GPU if you have one. With a GPU the speed is
     tolerable, but without a GPU training is dreadfully slow. The updates are
@@ -32,15 +31,15 @@ class PVModel:
       cv_dim: dimension of the context (a.k.a. paragraph) LUT vectors
       max_wv_key: max key of a valid word in the word LUT
       max_cv_key: max key of a valid context in the context LUT
-      pre_words: # of previous context words to use in forward-prediction
+      pre_words: # of previous words to use in forward-prediction
       lam_wv: l2 regularization parameter for word vectors
       lam_cv: l2 regularization parameter for context vectors
       lam_sm: l2 regularization parameter for weights in softmax layer
 
     Note: This implementation also passes the word/context vectors through
           an extra "noise layer" prior to the softmax layer. The noise layer
-          adds the option of using dropout/masking noise and also Gaussian
-          "weight fuzzing" noise for stronger regularization.
+          adds the option of using dropout/masking noise and Gaussian "fuzzing"
+          noise for stronger regularization.
     """
     def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key, \
                  pre_words=5, lam_wv=1e-4, lam_cv=1e-4, lam_sm=1e-4):
@@ -108,7 +107,7 @@ class PVModel:
 
         # Backprop through the layers in reverse order
         dLdXn = self.softmax_layer.backprop(post_keys, return_on_gpu=True)
-        dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=True)
+        dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
         self.context_layer.backprop(dLdXb)
         if not context_only:
             # Apply gradients computed during backprop (to all parameters)
@@ -135,7 +134,7 @@ class PVModel:
             batch_count: number of minibatch updates to perform
         """
         L = 0.0
-        print("Training new context vectors:")
+        print("Training all parameters:")
         for b in range(batch_count):
             [seq_keys, phrase_keys] = hf.rand_word_seqs(phrase_list, batch_size, \
                                       self.pre_words+1, self.max_wv_key)
@@ -143,8 +142,8 @@ class PVModel:
             post_keys = seq_keys[:,-1]
             L += self.batch_update(pre_keys, post_keys, phrase_keys, 1e-3, \
                                    ada_smooth=1e-3, context_only=False)
-            if ((b % 100) == 0):
-                obs_count = 100.0 * batch_size
+            if ((b % 10) == 0):
+                obs_count = 10.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         return
@@ -179,12 +178,14 @@ class PVModel:
             post_keys = seq_keys[:,-1]
             L += self.batch_update(pre_keys, post_keys, phrase_keys, 1e-3, \
                                    ada_smooth=1e-3, context_only=True)
-            if ((b % 100) == 0):
-                obs_count = 100.0 * batch_size
+            if ((b % 10) == 0):
+                obs_count = 10.0 * batch_size
                 print("Test batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         # Set self.context_layer back to what it was prior to retraining
         self.context_layer = prev_context_layer
+        self.softmax_layer.reset_grads()
+        self.context_layer.reset_grads()
         return new_context_layer
 
 class CAModel:
@@ -235,7 +236,7 @@ class CAModel:
         return
 
     def init_params(self, weight_scale=0.05):
-        """Reset weights in the context LUT and softmax layers."""
+        """Reset weights in the word/context LUTs and the prediciton layer."""
         self.word_layer.init_params(weight_scale)
         self.context_layer.init_params(0.0 * weight_scale)
         self.class_layer.init_params(weight_scale)
@@ -334,7 +335,7 @@ class CAModel:
                 L = 0.0
         return
 
-    def infer_context_vectors(self, phrase_list, all_words, batch_size, batch_count, 
+    def infer_context_vectors(self, phrase_list, all_words, batch_size, batch_count, \
                               learn_rate=1e-3):
         """Train a new set of context layer parameters using the given phrases.
 
@@ -393,8 +394,8 @@ def stb_test_PVModel():
     max_cv_key = len(tr_phrases) - 1
 
     # Choose some simple hyperparameters for the model
-    pre_words = 5
-    wv_dim = 75
+    pre_words = 0
+    wv_dim = 50
     cv_dim = 50
     lam_l2 = 1e-3
 
@@ -449,8 +450,8 @@ def stb_test_CAModel():
     return [cl_train, cl_test, stb_data]
 
 if __name__ == '__main__':
-    #stb_test_PVModel()
-    cl_train, cl_test, stb_data = stb_test_CAModel()
+    stb_test_PVModel()
+    #cl_train, cl_test, stb_data = stb_test_CAModel()
 
 
 

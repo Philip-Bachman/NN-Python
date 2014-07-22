@@ -287,6 +287,14 @@ class ContextLayer:
         self.moms['C'] = (0.0 * self.moms['C']) + ada_init
         return
 
+    def reset_grads(self):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['W'] = (0.0 * self.grads['W'])
+        self.grads['C'] = (0.0 * self.grads['C'])
+        self.grad_idx_w = set()
+        self.grad_idx_c = set()
+        return
+
     def _cleanup(self):
         """Cleanup temp vars used in feedforward/backprop."""
         self.Iw = []
