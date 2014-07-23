@@ -538,20 +538,20 @@ def stb_test_CAModel():
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 250
-    cv_dim = 50
+    wv_dim = 256
+    cv_dim = 64
     lam_l2 = 1e-3
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
                   ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
-    cam.set_noise(drop_rate=0.0, fuzz_scale=0.00)
+    cam.set_noise(drop_rate=0.5, fuzz_scale=0.00)
 
     # Train all parameters using the training set phrases
-    cam.train_all_params(tr_phrases, tr_words, 256, 250001)
+    cam.train_all_params(tr_phrases, tr_words, 256, 500001)
     cl_train = cam.context_layer
 
     # Infer new context vectors for the test set phrases
-    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 256, 100001)
+    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 256, 200001)
     return [cl_train, cl_dev, stb_data]
 
 def stb_test_W2VModel():
@@ -588,13 +588,20 @@ def stb_test_W2VModel():
       w2v_model.test_all_params(te_phrases, tr_words, 2000)
       if ((i % 3) == 0):
         w2v_model.reset_moms()
-    return w2v_model
+    return [w2v_model, stb_data]
 
 if __name__ == '__main__':
-    #cl_train, cl_dev, stb_data = stb_test_PVModel()
-    #cl_train, cl_dev, stb_data = stb_test_CAModel()
-    w2v_model = stb_test_W2VModel()
-    pickle.dump(w2v_model, open('w2v_model.pkl','wb'))
+    # TEST PV MODEL
+    #pvm_result = stb_test_PVModel()
+    #pickle.dump(pvm_result, open('pvm_result.pkl','wb'))
+    
+    # TEST CA MODEL
+    #cam_result = stb_test_CAModel()
+    #pickle.dump(cam_result, open('cam_result.pkl','wb'))
+    
+    # TEST W2V MODEL
+    w2v_result = stb_test_W2VModel()
+    pickle.dump(w2v_result, open('w2v_result.pkl','wb'))
 
 
 
