@@ -3,6 +3,7 @@ import numpy.random as npr
 import Word2Vec as w2v
 import ParVec as pv
 import HelperFuncs as hf
+import cPickle as pickle
 
 class PVModel:
     """
@@ -125,13 +126,15 @@ class PVModel:
                                                       lam_c=self.lam_cv)
         return L
 
-    def train_all_params(self, phrase_list, batch_size, batch_count):
+    def train_all_params(self, phrase_list, batch_size, batch_count, \
+                        learn_rate=1e-3):
         """Train all parameters in the model using the given phrases.
 
         Parameters:
             phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
             batch_size: size of minibatches for each update
             batch_count: number of minibatch updates to perform
+            learn_rate: learning rate to use for updates
         """
         L = 0.0
         print("Training all parameters:")
@@ -140,15 +143,18 @@ class PVModel:
                                       self.pre_words+1, self.max_wv_key)
             pre_keys = seq_keys[:,0:-1]
             post_keys = seq_keys[:,-1]
-            L += self.batch_update(pre_keys, post_keys, phrase_keys, 1e-3, \
+            L += self.batch_update(pre_keys, post_keys, phrase_keys, learn_rate, \
                                    ada_smooth=1e-3, context_only=False)
-            if ((b % 10) == 0):
-                obs_count = 10.0 * batch_size
+            if ((b > 1) and ((b % 5000) == 0)):
+                self.reset_moms(ada_init=1e-3)
+            if ((b % 100) == 0):
+                obs_count = 100.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         return
 
-    def infer_context_vectors(self, phrase_list, batch_size, batch_count):
+    def infer_context_vectors(self, phrase_list, batch_size, batch_count, \
+                              learn_rate=1e-3):
         """Train context/paragraph vectors for each of the given phrases.
 
         Parameters:
@@ -176,10 +182,12 @@ class PVModel:
                                       self.pre_words+1, self.max_wv_key)
             pre_keys = seq_keys[:,0:-1]
             post_keys = seq_keys[:,-1]
-            L += self.batch_update(pre_keys, post_keys, phrase_keys, 1e-3, \
+            L += self.batch_update(pre_keys, post_keys, phrase_keys, learn_rate, \
                                    ada_smooth=1e-3, context_only=True)
-            if ((b % 10) == 0):
-                obs_count = 10.0 * batch_size
+            if ((b > 1) and ((b % 5000) == 0)):
+                self.reset_moms(ada_init=1e-3)
+            if ((b % 100) == 0):
+                obs_count = 100.0 * batch_size
                 print("Test batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         # Set self.context_layer back to what it was prior to retraining
@@ -378,6 +386,101 @@ class CAModel:
         self.context_layer = prev_context_layer
         return new_context_layer
 
+class W2VModel:
+    """
+    Word2Vec skip-gram model, trained with negative sampling. For more info
+    see: "Distributed Representations of Words and Phrases and their
+    Compositionality" by Mikolov et. al. (NIPS 2013).
+
+    Important Parameters (accessible via self.*):
+      wv_dim: dimension of the LUT word vectors
+      max_wv_key: max key of a valid word in the word LUT
+      sg_window: window size for sampling positive skip-gram examples
+      ns_count: number of negative samples for negative sampling
+      lam_l2: l2 regularization parameter for word vectors
+    """
+    def __init__(self, wv_dim, max_wv_key, sg_window=6, ns_count=10, \
+                 lam_l2=1e-4):
+        # Record options/parameters
+        self.wv_dim = wv_dim
+        self.max_wv_key = max_wv_key
+        self.sg_window = sg_window
+        self.ns_count = ns_count
+        self.lam_l2 = lam_l2
+        # Create the layer to use during training
+        self.w2v_layer = w2v.W2VLayer(max_word_key=self.max_wv_key, \
+                                      word_dim=self.wv_dim, \
+                                      lam_l2=self.lam_l2)
+        return
+
+    def init_params(self, weight_scale=0.05):
+        """Reset weights in the word/context LUTs and the prediciton layer."""
+        self.w2v_layer.init_params(weight_scale)
+        return
+
+    def reset_moms(self, ada_init=1e-3):
+        """Reset the adagrad "momentums" in each layer."""
+        self.w2v_layer.reset_moms(ada_init)
+        return
+
+    def batch_update(self, anc_keys, pos_keys, neg_keys, \
+                     learn_rate=1e-3, ada_smooth=1e-3):
+        """Perform a single "minibatch" update of the model parameters.
+
+        Parameters:
+            anc_keys: word LUT keys for the anchor words
+            pos_keys: word LUT keys for the positive examples to predict
+            neg_keys: word LUT keys for the negative examples to predict
+            learn_rate: learning rate for adagrad updates
+            ada_smooth: smoothing parameter for adagrad updates
+        """
+        # Update the W2VLayer using the given examples
+        L = self.w2v_layer.batch_train(anc_keys, pos_keys, neg_keys, \
+                                       learn_rate=learn_rate)
+        return L
+
+    def train_all_params(self, phrase_list, all_words, batch_size, batch_count, \
+                         learn_rate=1e-3):
+        """Train all parameters in the model using the given phrases.
+
+        Parameters:
+            phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
+            all_words: list of words to sample uniformly for negative examples
+            batch_size: size of minibatches for each update
+            batch_count: number of minibatch updates to perform
+            learn_rate: learning rate for adagrad updates
+        """
+        L = 0.0
+        print("Training all parameters:")
+        for b in range(batch_count):
+            [anc_keys, pos_keys, neg_keys, phrase_keys] = hf.rand_pos_neg( \
+                    phrase_list, all_words, batch_size, self.sg_window, \
+                    self.ns_count)
+            L += self.batch_update(anc_keys, pos_keys, neg_keys, \
+                                   learn_rate=learn_rate, ada_smooth=1e-3)
+            if ((b > 1) and ((b % 10000) == 0)):
+                self.reset_moms(ada_init=1e-3)
+            if ((b % 200) == 0):
+                obs_count = 200.0 * batch_size
+                print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
+                L = 0.0
+        return
+
+    def test_all_params(self, phrase_list, all_words, test_samples):
+        """Train all parameters in the model using the given phrases.
+
+        Parameters:
+            phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
+            all_words: list of words to sample uniformly for negative examples
+            test_samples: number of samples to use for testing
+        """
+        [a_idx, p_idx, n_idx, phrase_idx] = hf.rand_pos_neg(phrase_list, \
+                      all_words, test_samples, self.sg_window, self.ns_count)
+        L = self.w2v_layer.batch_test(a_idx, p_idx, n_idx)
+        print("Test loss: {0:.4f}".format(L / test_samples))
+        return L
+
+
 def stb_test_PVModel():
     """Hard-coded test on STB data, for development/debugging."""
     import StanfordTrees as st
@@ -396,19 +499,21 @@ def stb_test_PVModel():
     # Choose some simple hyperparameters for the model
     pre_words = 0
     wv_dim = 50
-    cv_dim = 50
-    lam_l2 = 1e-3
+    cv_dim = 200
+    lam_l2 = 1e-5
 
     pvm = PVModel(wv_dim, cv_dim, max_wv_key, max_cv_key, pre_words=pre_words, \
                   lam_wv=lam_l2, lam_cv=lam_l2, lam_sm=lam_l2)
     pvm.init_params(0.05)
 
     # Train all parameters using the training set phrases
-    pvm.train_all_params(tr_phrases, 256, 5001)
+    pvm.train_all_params(tr_phrases, 256, 25001)
+    cl_train = pvm.context_layer
 
     # Train new context vectors using the validation set phrases
-    pvm.infer_context_vectors(te_phrases, 256, 5001)
-    return
+    cl_dev = pvm.infer_context_vectors(te_phrases, 256, 25001)
+
+    return [cl_train, cl_dev, stb_data]
 
 def stb_test_CAModel():
     """Hard-coded test on STB data, for development/debugging."""
@@ -433,25 +538,63 @@ def stb_test_CAModel():
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 200
-    cv_dim = 100
+    wv_dim = 250
+    cv_dim = 50
     lam_l2 = 1e-3
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
                   ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
-    cam.set_noise(drop_rate=0.5, fuzz_scale=0.02)
+    cam.set_noise(drop_rate=0.0, fuzz_scale=0.00)
 
     # Train all parameters using the training set phrases
-    cam.train_all_params(tr_phrases, tr_words, 256, 200001)
+    cam.train_all_params(tr_phrases, tr_words, 256, 250001)
     cl_train = cam.context_layer
 
     # Infer new context vectors for the test set phrases
-    cl_test = cam.infer_context_vectors(te_phrases, tr_words, 256, 100001)
-    return [cl_train, cl_test, stb_data]
+    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 256, 100001)
+    return [cl_train, cl_dev, stb_data]
+
+def stb_test_W2VModel():
+    """Hard-coded test on STB data, for development/debugging."""
+    import StanfordTrees as st
+     # Load tree data
+    tree_dir = './trees'
+    stb_data = st.SimpleLoad(tree_dir)
+    # Get the lists of full train and test phrases
+    tr_phrases = stb_data['train_full_phrases']
+    te_phrases = stb_data['dev_full_phrases']
+    # Get the list of all word occurrences in the training phrases
+    tr_words = []
+    for phrase in tr_phrases:
+        tr_words.extend(phrase)
+    tr_words = np.asarray(tr_words).astype(np.int32)
+    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
+    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
+    # Record maximum required keys for the context layer's tables
+    max_wv_key = max(stb_data['words_to_keys'].values())
+    max_cv_key = len(tr_phrases) - 1
+
+    # Choose some simple hyperparameters for the model
+    sg_window = 5
+    ns_count = 10
+    wv_dim = 200
+    lam_l2 = 1e-3
+    w2v_model = W2VModel(wv_dim, max_wv_key, sg_window=sg_window, \
+                         ns_count=ns_count, lam_l2=lam_l2)
+
+    for i in range(200):
+      # Train all parameters using the training set phrases
+      w2v_model.train_all_params(tr_phrases, tr_words, 256, 5000, 1e-3)
+      w2v_model.test_all_params(te_phrases, tr_words, 2000)
+      if ((i % 3) == 0):
+        w2v_model.reset_moms()
+    return w2v_model
 
 if __name__ == '__main__':
-    stb_test_PVModel()
-    #cl_train, cl_test, stb_data = stb_test_CAModel()
+    #cl_train, cl_dev, stb_data = stb_test_PVModel()
+    #cl_train, cl_dev, stb_data = stb_test_CAModel()
+    w2v_model = stb_test_W2VModel()
+    pickle.dump(w2v_model, open('w2v_model.pkl','wb'))
 
 
 
