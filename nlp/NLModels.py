@@ -481,6 +481,30 @@ class W2VModel:
         return L
 
 
+
+def some_nearest_words(keys_to_words, sample_count, W1, W2):
+    W = np.hstack((W1, W2))
+    norms = np.sqrt(np.sum(W**2.0,axis=1,keepdims=1))
+    W = W / (norms + 1e-5)
+    # 
+    source_keys = np.zeros((sample_count,)).astype(np.int32)
+    neighbor_keys = np.zeros((sample_count, 10)).astype(np.int32)
+    all_keys = np.asarray(keys_to_words.keys()).astype(np.int32)
+    for s in range(sample_count):
+        i = npr.randint(0,all_keys.size)
+        source_k = all_keys[i]
+        neg_cos_sims = -1.0 * np.sum(W * W[source_k], axis=1)
+        sorted_k = np.argsort(neg_cos_sims)
+        source_keys[s] = source_k
+        neighbor_keys[s,:] = sorted_k[1:11]
+    source_words = []
+    neighbor_words = []
+    for s in range(sample_count):
+        source_words.append(keys_to_words[source_keys[s]])
+        neighbor_words.append([keys_to_words[k] for k in neighbor_keys[s]])
+    return [source_keys, neighbor_keys, source_words, neighbor_words]
+
+
 def stb_test_PVModel():
     """Hard-coded test on STB data, for development/debugging."""
     import StanfordTrees as st
@@ -513,7 +537,7 @@ def stb_test_PVModel():
     # Train new context vectors using the validation set phrases
     cl_dev = pvm.infer_context_vectors(te_phrases, 256, 25001)
 
-    return [cl_train, cl_dev, stb_data]
+    return [cl_train, cl_dev, stb_data, pvm]
 
 def stb_test_CAModel():
     """Hard-coded test on STB data, for development/debugging."""
@@ -538,21 +562,22 @@ def stb_test_CAModel():
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 256
-    cv_dim = 64
+    wv_dim = 100
+    cv_dim = 2
     lam_l2 = 1e-3
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
                   ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
-    cam.set_noise(drop_rate=0.5, fuzz_scale=0.00)
+    cam.set_noise(drop_rate=0.0, fuzz_scale=0.00)
 
     # Train all parameters using the training set phrases
-    cam.train_all_params(tr_phrases, tr_words, 256, 500001)
+    cam.train_all_params(tr_phrases, tr_words, 256, 200001, 1e-2)
     cl_train = cam.context_layer
 
     # Infer new context vectors for the test set phrases
-    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 256, 200001)
-    return [cl_train, cl_dev, stb_data]
+    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 256, 100001, 1e-2)
+    return [cl_train, cl_dev, stb_data, cam]
+
 
 def stb_test_W2VModel():
     """Hard-coded test on STB data, for development/debugging."""
@@ -584,8 +609,12 @@ def stb_test_W2VModel():
 
     for i in range(200):
       # Train all parameters using the training set phrases
-      w2v_model.train_all_params(tr_phrases, tr_words, 256, 5000, 1e-3)
+      w2v_model.train_all_params(tr_phrases, tr_words, 256, 5000, 5e-3)
       w2v_model.test_all_params(te_phrases, tr_words, 2000)
+      [s_keys, n_keys, s_words, n_words] = some_nearest_words( stb_data['keys_to_words'], \
+              10, w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
+      for w in range(10):
+          print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
       if ((i % 3) == 0):
         w2v_model.reset_moms()
     return [w2v_model, stb_data]
@@ -594,14 +623,14 @@ if __name__ == '__main__':
     # TEST PV MODEL
     #pvm_result = stb_test_PVModel()
     #pickle.dump(pvm_result, open('pvm_result.pkl','wb'))
-    
+
     # TEST CA MODEL
-    #cam_result = stb_test_CAModel()
-    #pickle.dump(cam_result, open('cam_result.pkl','wb'))
-    
+    cam_result = stb_test_CAModel()
+    pickle.dump(cam_result, open('cam_result.pkl','wb'))
+
     # TEST W2V MODEL
-    w2v_result = stb_test_W2VModel()
-    pickle.dump(w2v_result, open('w2v_result.pkl','wb'))
+    #w2v_result = stb_test_W2VModel()
+    #pickle.dump(w2v_result, open('w2v_result.pkl','wb'))
 
 
 
