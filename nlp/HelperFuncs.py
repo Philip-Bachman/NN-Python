@@ -12,7 +12,7 @@ from ctypes import pythonapi, c_void_p
 # MULTITHREADING HELPER-FUNC AND DEFNS #
 ########################################
 
-THREAD_NUM = 4
+THREAD_NUM = 2
 
 savethread = pythonapi.PyEval_SaveThread
 savethread.argtypes = []
@@ -277,6 +277,8 @@ def rand_pos_neg(phrase_list, all_words, samp_count, context_size, neg_count):
         phrase_keys: vector of np.int32 (samp_count,)
     """
     phrase_count = len(phrase_list)
+    max_len = np.max(np.asarray([p.size for p in phrase_list]))
+    phrase_probs = np.asarray([float(p.size) / max_len for p in phrase_list])
     word_count = len(all_words)
     anchor_keys = np.zeros((samp_count,), dtype=np.int32)
     pos_keys = np.zeros((samp_count,), dtype=np.int32)
@@ -284,6 +286,9 @@ def rand_pos_neg(phrase_list, all_words, samp_count, context_size, neg_count):
     phrase_keys = np.zeros((samp_count,), dtype=np.int32)
     for i in range(samp_count):
         phrase_keys[i] = npr.randint(0, high=phrase_count)
+        # rejection sample phrases in proprtion to their length
+        while (npr.rand() > phrase_probs[phrase_keys[i]]):
+            phrase_keys[i] = npr.randint(0, high=phrase_count)
         phrase = phrase_list[phrase_keys[i]]
         phrase_len = len(phrase)
         a_idx = npr.randint(0, high=phrase_len)
