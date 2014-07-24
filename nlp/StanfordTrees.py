@@ -26,6 +26,7 @@ class STBNode:
                 self.right_child = STBNode(child_tokens[1], True)
         else:
             self.word = token[3:-1]
+            self.word = self.word.lower()
         return
 
     def extract_child_tokens(self, token):
@@ -72,18 +73,18 @@ class STBNode:
             phrase = "{0:s}".format(self.word)
         return phrase
 
-    def get_tokens(self):
+    def get_all_tokens(self):
         """Get a list of all tokens in the phrase rooted at this node."""
         tokens = []
         if self.has_children:
-            tokens.extend(self.left_child.get_tokens())
-            tokens.extend(self.right_child.get_tokens())
+            tokens.extend(self.left_child.get_all_tokens())
+            tokens.extend(self.right_child.get_all_tokens())
         else:
             assert (not (self.word is None))
             tokens = [self.word]
         return tokens
 
-    def set_lut_keys(self, lut_keys):
+    def set_lut_keys(self, lut_keys, unk_word='*UNK*'):
         """Set numeric look-up-table indices for words in the subtree rooted
         at this node, based on the dict "lut_keys"."""
         if self.has_children:
@@ -96,7 +97,7 @@ class STBNode:
                 self.lut_key = lut_keys[self.word]
             else:
                 # The word here is not known by the dict
-                self.lut_key = lut_keys['*UNK*']
+                self.lut_key = lut_keys[unk_word]
         return
 
     def get_lutis_and_labels(self):
@@ -133,7 +134,7 @@ class STBParser:
 
     TODO: More docs.
     """
-    def __init__(self, tree_dir):
+    def __init__(self, tree_dir, freq_cutoff=2):
         # Get file names for train/dev/test trees
         train_file = "{0:s}/train.txt".format(tree_dir)
         dev_file = "{0:s}/dev.txt".format(tree_dir)
@@ -142,25 +143,21 @@ class STBParser:
         self.train_trees = self.parse_tree_file(train_file)
         self.dev_trees = self.parse_tree_file(dev_file)
         self.test_trees = self.parse_tree_file(test_file)
-        # Get a dict containing all tokens in the training trees
-        train_words = self.get_vocab(self.train_trees)
-        # Make a mapping from the training vocab to look-up-table indices
-        self.words_to_keys = {}
-        self.keys_to_words = {}
-        idx = 0
-        for word in train_words:
-            self.words_to_keys[word] = idx
-            self.keys_to_words[idx] = word
-            idx += 1
-        self.words_to_keys['*UNK*'] = idx
-        self.keys_to_words[idx] = '*UNK*'
+        # Get the set of all word occurrences in the training trees
+        train_words = self.get_all_words(self.train_trees)
+        # Compute maps from words to LUT keys and visa-versa, while discarding
+        # words that occur fewer than 'freq_cutoff' times.
+        w2k, k2w = self.make_key_dicts(train_words, freq_cutoff=freq_cutoff, \
+                                       unk_word='*UNK*')
+        self.words_to_keys = w2k
+        self.keys_to_words = k2w
         # Set the look-up-table indices for train/dev/test trees
         for tree in self.train_trees:
-            tree.set_lut_keys(self.words_to_keys)
+            tree.set_lut_keys(self.words_to_keys, unk_word='*UNK*')
         for tree in self.dev_trees:
-            tree.set_lut_keys(self.words_to_keys)
+            tree.set_lut_keys(self.words_to_keys, unk_word='*UNK*')
         for tree in self.test_trees:
-            tree.set_lut_keys(self.words_to_keys)
+            tree.set_lut_keys(self.words_to_keys, unk_word='*UNK*')
         return
 
     def parse_tree_file(self, f_name):
@@ -169,15 +166,33 @@ class STBParser:
         trees = [STBNode(token=rt, auto_spawn=True) for rt in root_tokens]
         return trees
 
-    def get_vocab(self, tree_list):
+    def get_all_words(self, tree_list):
         """Get the set of unique word tokens for the trees in "tree_list"."""
-        tl_vocab = []
+        all_words = []
         for tree in tree_list:
-            tl_vocab.extend(tree.get_tokens())
-        tl_vocab = set(tl_vocab)
-        return tl_vocab
+            all_words.extend(tree.get_all_tokens())
+        return all_words
 
-def SimpleLoad(tree_dir, keep_trees_grouped=True):
+    def make_key_dicts(self, word_list, freq_cutoff=2, unk_word='*UNK*'):
+        """Make word-to-key and key-to words dicts from word_list."""
+        word_hist = {}
+        for w in word_list:
+            if not w in word_hist:
+                word_hist[w] = 1
+            else:
+                word_hist[w] += 1
+        kept_words = [w for w in word_hist if (word_hist[w] >= freq_cutoff)]
+        w2k = {}
+        k2w = {}
+        for (i, w) in enumerate(kept_words):
+            w2k[w] = i
+            k2w[i] = w
+        unk_key = max(w2k.values()) + 1
+        w2k[unk_word] = unk_key
+        k2w[unk_key] = unk_word
+        return [w2k, k2w]
+
+def SimpleLoad(tree_dir, freq_cutoff=2, keep_trees_grouped=True):
     """Load Stanford Treebank train/dev/test trees in a minimal format.
 
     This converts all trees in the original train/validate/test files into
@@ -191,7 +206,7 @@ def SimpleLoad(tree_dir, keep_trees_grouped=True):
     particular "parent" full phrase are lumped together in a sublist.
     """
     # Parse the tree text files
-    stbp = STBParser(tree_dir)
+    stbp = STBParser(tree_dir, freq_cutoff=freq_cutoff)
     dataset = {}
     dataset['trees_are_grouped'] = keep_trees_grouped
     # Get the vocab list (and look-up-table index map)

@@ -806,6 +806,9 @@ class W2VLayer:
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
                self.params['Wc'], self.params['b'], self.grads['Wa'], \
                self.grads['Wc'], self.grads['b'], L)
+        self.grads['Wa'] = 0.0 * self.grads['Wa']
+        self.grads['Wc'] = 0.0 * self.grads['Wc']
+        self.grads['b'] = 0.0 * self.grads['b']
         L = L[0]
         return L
 

@@ -460,8 +460,8 @@ class W2VModel:
                                    learn_rate=learn_rate, ada_smooth=1e-3)
             if ((b > 1) and ((b % 10000) == 0)):
                 self.reset_moms(ada_init=1e-3)
-            if ((b % 200) == 0):
-                obs_count = 200.0 * batch_size
+            if ((b % 500) == 0):
+                obs_count = 500.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         return
@@ -510,7 +510,7 @@ def stb_test_PVModel():
     import StanfordTrees as st
      # Load tree data
     tree_dir = './trees'
-    stb_data = st.SimpleLoad(tree_dir)
+    stb_data = st.SimpleLoad(tree_dir, freq_cutoff=3)
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
     te_phrases = stb_data['dev_full_phrases']
@@ -544,7 +544,7 @@ def stb_test_CAModel():
     import StanfordTrees as st
      # Load tree data
     tree_dir = './trees'
-    stb_data = st.SimpleLoad(tree_dir)
+    stb_data = st.SimpleLoad(tree_dir, freq_cutoff=3)
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
     te_phrases = stb_data['dev_full_phrases']
@@ -584,7 +584,7 @@ def stb_test_W2VModel():
     import StanfordTrees as st
      # Load tree data
     tree_dir = './trees'
-    stb_data = st.SimpleLoad(tree_dir)
+    stb_data = st.SimpleLoad(tree_dir, freq_cutoff=3)
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
     te_phrases = stb_data['dev_full_phrases']
@@ -600,23 +600,25 @@ def stb_test_W2VModel():
     max_cv_key = len(tr_phrases) - 1
 
     # Choose some simple hyperparameters for the model
-    sg_window = 5
+    sg_window = 6
     ns_count = 10
-    wv_dim = 200
+    wv_dim = 100
     lam_l2 = 1e-3
     w2v_model = W2VModel(wv_dim, max_wv_key, sg_window=sg_window, \
                          ns_count=ns_count, lam_l2=lam_l2)
 
-    for i in range(200):
+    learn_rate = 0.1
+    for i in range(500):
       # Train all parameters using the training set phrases
-      w2v_model.train_all_params(tr_phrases, tr_words, 256, 5000, 5e-3)
+      w2v_model.train_all_params(tr_phrases, tr_words, 256, 10000, learn_rate)
       w2v_model.test_all_params(te_phrases, tr_words, 2000)
       [s_keys, n_keys, s_words, n_words] = some_nearest_words( stb_data['keys_to_words'], \
               10, w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
       for w in range(10):
           print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
-      if ((i % 3) == 0):
+      if ((i % 10) == 0):
         w2v_model.reset_moms()
+        learn_rate = learn_rate * 0.95
     return [w2v_model, stb_data]
 
 if __name__ == '__main__':
@@ -625,11 +627,11 @@ if __name__ == '__main__':
     #pickle.dump(pvm_result, open('pvm_result.pkl','wb'))
 
     # TEST CA MODEL
-    cam_result = stb_test_CAModel()
-    pickle.dump(cam_result, open('cam_result.pkl','wb'))
+    #cam_result = stb_test_CAModel()
+    #pickle.dump(cam_result, open('cam_result.pkl','wb'))
 
     # TEST W2V MODEL
-    #w2v_result = stb_test_W2VModel()
+    w2v_result = stb_test_W2VModel()
     #pickle.dump(w2v_result, open('w2v_result.pkl','wb'))
 
 
