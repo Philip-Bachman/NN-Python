@@ -369,10 +369,10 @@ class NoiseLayer:
 ###################################
 
 def run_test():
-    import StanfordTrees as st
+    import DataLoaders as dl
      # Load tree data
     tree_dir = './trees'
-    stb_data = st.SimpleLoad(tree_dir)
+    stb_data = dl.LoadSTB(tree_dir)
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
     te_phrases = stb_data['dev_full_phrases']
@@ -395,8 +395,8 @@ def run_test():
     batch_count = 5001
     batch_size = 200
     pre_words = 3
-    word_dim = 100
-    context_dim = 50
+    word_dim = 200
+    context_dim = 200
     lam_l2 = 1e-3
 
     # Create a lookup table for word representations

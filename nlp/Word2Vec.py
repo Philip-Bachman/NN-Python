@@ -779,7 +779,7 @@ class W2VLayer:
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
                 self.params['Wc'], self.params['b'], self.grads['Wa'], \
-                self.grads['Wc'], self.grads['b'], L)
+                self.grads['Wc'], self.grads['b'], L, 1)
         L = L[0]
         # Apply gradients to (touched only) look-up-table parameters
         a_mod_idx = np.unique(anc_idx.ravel())
@@ -805,7 +805,7 @@ class W2VLayer:
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
                self.params['Wc'], self.params['b'], self.grads['Wa'], \
-               self.grads['Wc'], self.grads['b'], L)
+               self.grads['Wc'], self.grads['b'], L, 0)
         self.grads['Wa'] = 0.0 * self.grads['Wa']
         self.grads['Wc'] = 0.0 * self.grads['Wc']
         self.grads['b'] = 0.0 * self.grads['b']
@@ -824,10 +824,10 @@ class W2VLayer:
 ###################################
 
 def run_stb_test():
-    import StanfordTrees as st
+    import DataLoaders as dl
      # Load tree data
     tree_dir = './trees'
-    stb_data = st.SimpleLoad(tree_dir)
+    stb_data = dl.LoadSTB(tree_dir)
 
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']

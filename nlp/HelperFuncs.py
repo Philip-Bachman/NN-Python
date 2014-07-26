@@ -12,7 +12,7 @@ from ctypes import pythonapi, c_void_p
 # MULTITHREADING HELPER-FUNC AND DEFNS #
 ########################################
 
-THREAD_NUM = 2
+THREAD_NUM = 4
 
 savethread = pythonapi.PyEval_SaveThread
 savethread.argtypes = []
@@ -44,7 +44,7 @@ def make_multithread(inner_func, numthreads):
 # NUMBA FUNCTION DEFINITIONS #
 ##############################
 
-def w2v_ff_bp_sp(sp_idx, anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L):
+def w2v_ff_bp_sp(sp_idx, anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L, do_grad):
     """Feedforward and backprop for unified (neg-sample) word-2-vec layer."""
     threadstate = savethread()
     sp_size = sp_idx.shape[0]
@@ -60,14 +60,15 @@ def w2v_ff_bp_sp(sp_idx, anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L):
                 y += (Wa[ai,k] * Wc[ci,k])
             exp_pns_y = exp(pn_sign[i,j] * y)
             L[0] += log(1.0 + exp_pns_y)
-            dLdy = pn_sign[i,j] * (exp_pns_y / (1.0 + exp_pns_y))
-            db[ci] = db[ci] + dLdy
-            for k in range(vec_dim):
-                dWa[ai,k] += (dLdy * Wc[ci,k])
-                dWc[ci,k] += (dLdy * Wa[ai,k])
+            if (do_grad == 1):
+                dLdy = pn_sign[i,j] * (exp_pns_y / (1.0 + exp_pns_y))
+                db[ci] = db[ci] + dLdy
+                for k in range(vec_dim):
+                    dWa[ai,k] += (dLdy * Wc[ci,k])
+                    dWc[ci,k] += (dLdy * Wa[ai,k])
     restorethread(threadstate)
     return
-fn_sig_1 = void(i4[:], i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:], f8[:,:], f8[:], f8[:])
+fn_sig_1 = void(i4[:], i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:], f8[:,:], f8[:], f8[:], i4)
 w2v_ff_bp_st = jit(fn_sig_1, nopython=True)(w2v_ff_bp_sp)
 w2v_ff_bp = make_multithread(w2v_ff_bp_st, THREAD_NUM)
 
@@ -277,8 +278,8 @@ def rand_pos_neg(phrase_list, all_words, samp_count, context_size, neg_count):
         phrase_keys: vector of np.int32 (samp_count,)
     """
     phrase_count = len(phrase_list)
-    max_len = np.max(np.asarray([p.size for p in phrase_list]))
-    phrase_probs = np.asarray([float(p.size) / max_len for p in phrase_list])
+    #max_len = np.max(np.asarray([p.size for p in phrase_list]))
+    #phrase_probs = np.asarray([float(p.size) / max_len for p in phrase_list])
     word_count = len(all_words)
     anchor_keys = np.zeros((samp_count,), dtype=np.int32)
     pos_keys = np.zeros((samp_count,), dtype=np.int32)
@@ -287,8 +288,8 @@ def rand_pos_neg(phrase_list, all_words, samp_count, context_size, neg_count):
     for i in range(samp_count):
         phrase_keys[i] = npr.randint(0, high=phrase_count)
         # rejection sample phrases in proprtion to their length
-        while (npr.rand() > phrase_probs[phrase_keys[i]]):
-            phrase_keys[i] = npr.randint(0, high=phrase_count)
+        #while (npr.rand() > phrase_probs[phrase_keys[i]]):
+        #    phrase_keys[i] = npr.randint(0, high=phrase_count)
         phrase = phrase_list[phrase_keys[i]]
         phrase_len = len(phrase)
         a_idx = npr.randint(0, high=phrase_len)
