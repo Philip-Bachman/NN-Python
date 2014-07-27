@@ -12,7 +12,7 @@ def make_key_dicts(word_list, freq_cutoff=2, unk_word='*UNK*'):
                     word_hist[w] = 1
                 else:
                     word_hist[w] += 1
-    else:    
+    else:
         word_hist = {}
         for w in word_list:
             if not w in word_hist:
@@ -259,7 +259,7 @@ def LoadSTB(tree_dir, freq_cutoff=2, keep_trees_grouped=True):
     dataset['test_labels'] = []
     dataset['test_full_phrases'] = []
     dataset['test_full_labels'] = []
-    for tree in stbp.train_trees:
+    for tree in stbp.test_trees:
         lutis_and_labels = tree.get_lutis_and_labels()
         dataset['test_full_phrases'].append(lutis_and_labels[0][-1])
         dataset['test_full_labels'].append(lutis_and_labels[1][-1])
@@ -311,7 +311,7 @@ def Load1BWords(data_dir='./training_text', file_count=100, min_freq=5):
 ###############################################################
 
 if __name__ == '__main__':
-    stb_data = load_stb('./trees', freq_cutoff=3, keep_trees_grouped=True)
+    dataset = LoadSTB('./trees', freq_cutoff=3, keep_trees_grouped=True)
 
 
 

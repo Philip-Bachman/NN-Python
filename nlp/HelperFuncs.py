@@ -5,7 +5,7 @@ import numpy.random as npr
 import threading
 import numba
 from math import exp, log, sqrt
-from numba import jit, void, i4, f8
+from numba import jit, void, i4, f4
 from ctypes import pythonapi, c_void_p
 
 ########################################
@@ -38,6 +38,16 @@ def make_multithread(inner_func, numthreads):
         for thread in threads:
             thread.join()
         return 1
+    def func_st(*args):
+        length = len(args[0])
+        sp_idx = np.arange(0,length).astype(np.int32)
+        sp_args = (sp_idx,) + args
+        inner_fun(*sp_args)
+    func = None
+    if numthreads == 1:
+        func = func_st
+    else:
+        func = func_mt
     return func_mt
 
 ##############################
@@ -68,7 +78,7 @@ def w2v_ff_bp_sp(sp_idx, anc_idx, pn_idx, pn_sign, Wa, Wc, b, dWa, dWc, db, L, d
                     dWc[ci,k] += (dLdy * Wa[ai,k])
     restorethread(threadstate)
     return
-fn_sig_1 = void(i4[:], i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:], f8[:,:], f8[:], f8[:], i4)
+fn_sig_1 = void(i4[:], i4[:], i4[:,:], f4[:,:], f4[:,:], f4[:,:], f4[:], f4[:,:], f4[:,:], f4[:], f4[:], i4)
 w2v_ff_bp_st = jit(fn_sig_1, nopython=True)(w2v_ff_bp_sp)
 w2v_ff_bp = make_multithread(w2v_ff_bp_st, THREAD_NUM)
 
@@ -89,7 +99,7 @@ def nsl_bp_sp(sp_idx, table_idx, X, W, dLdY, dLdX, dW, db):
                 dLdX[i,k] += dldy * W[idx,k]
     restorethread(threadstate)
     return
-fn_sig_2 = void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:,:], f8[:])
+fn_sig_2 = void(i4[:], i4[:,:], f4[:,:], f4[:,:], f4[:,:], f4[:,:], f4[:,:], f4[:])
 nsl_bp_st = jit(fn_sig_2, nopython=True)(nsl_bp_sp)
 nsl_bp = make_multithread(nsl_bp_st, THREAD_NUM)
 
@@ -108,7 +118,7 @@ def nsl_ff_sp(sp_idx, table_idx, X, W, b, Y):
                 Y[i,j] += X[i,k] * W[idx,k]
     restorethread(threadstate)
     return
-fn_sig_3 = void(i4[:], i4[:,:], f8[:,:], f8[:,:], f8[:], f8[:,:])
+fn_sig_3 = void(i4[:], i4[:,:], f4[:,:], f4[:,:], f4[:], f4[:,:])
 nsl_ff_st = jit(fn_sig_3, nopython=True)(nsl_ff_sp)
 nsl_ff = make_multithread(nsl_ff_st, THREAD_NUM)
 
@@ -127,16 +137,17 @@ def ag_update_2d_sp(sp_idx, row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
         idx = row_idx[sp_idx[spi]]
         for j in range(vec_dim):
             dW[idx,j] += (lam_l2 * W[idx,j])
+            #W[idx,j] -= learn_rate * dW[idx,j]
             mW[idx,j] += dW[idx,j] * dW[idx,j]
             W[idx,j] -= (learn_rate * (dW[idx,j] / (sqrt(mW[idx,j]) + ada_smooth)))
             dW[idx,j] = 0.0
     restorethread(threadstate)
     return
-fn_sig_4 = void(i4[:], i4[:], f8[:,:], f8[:,:], f8[:,:], f8, f8, f8)
+fn_sig_4 = void(i4[:], i4[:], f4[:,:], f4[:,:], f4[:,:], f4, f4, f4)
 ag_update_2d_st = jit(fn_sig_4, nopython=True)(ag_update_2d_sp)
 ag_update_2d = make_multithread(ag_update_2d_st, THREAD_NUM)
 
-@numba.jit("void(i4[:], f8[:], f8[:], f8[:], f8, f8, f8)")
+@numba.jit("void(i4[:], f4[:], f4[:], f4[:], f4, f4, f4)")
 def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
     """Element-wise partial update ala adagrad, with l2 regularization.
 
@@ -149,6 +160,7 @@ def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth, lam_l2):
     for i in range(row_count):
         idx = row_idx[i]
         dW[idx] += lam_l2 * W[idx]
+        #W[idx] -= learn_rate * dW[idx]
         mW[idx] += dW[idx] * dW[idx]
         W[idx] -= learn_rate * (dW[idx] / (sqrt(mW[idx]) + ada_smooth))
         dW[idx] = 0.0
@@ -168,9 +180,23 @@ def lut_sp(sp_idx, row_idx, dLdY, dW):
             dW[idx,j] += dLdY[i,j]
     restorethread(threadstate)
     return
-fn_sig_5 = void(i4[:], i4[:], f8[:,:], f8[:,:])
+fn_sig_5 = void(i4[:], i4[:], f4[:,:], f4[:,:])
 lut_st = jit(fn_sig_5, nopython=True)(lut_sp)
 lut_bp = make_multithread(lut_st, THREAD_NUM)
+
+###########################
+# GENERATE TYPED MATRICES #
+###########################
+
+def randn(shape, dtype=np.float32):
+    return npr.randn(shape[0], shape[1]).astype(dtype)
+
+def ones(shape, dtype=np.float32):
+    return np.ones(shape, dtype=dtype)
+
+def zeros(shape, dtype=np.float32):
+    return np.zeros(shape, dtype=dtype)
+
 
 ###########################################
 # WORD VALIDATION, FOR MANAGING OOV WORDS #
@@ -194,9 +220,9 @@ def catch_oov_words(w_keys, v_keys, oov_key):
                     w_keys[i,j] = oov_key
     return w_keys
 
-#######################
-# RANDOM KNICK-KNACKS #
-#######################
+################################
+# TRAINING DATA SAMPLING STUFF #
+################################
 
 def rand_word_seqs(phrase_list, seq_count, seq_len, null_key):
     """Sample LUT key n-grams from a list of phrases.

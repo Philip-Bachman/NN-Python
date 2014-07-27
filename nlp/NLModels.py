@@ -439,6 +439,7 @@ class W2VModel:
                                        learn_rate=learn_rate)
         return L
 
+    @profile
     def train_all_params(self, phrase_list, all_words, batch_size, batch_count, \
                          learn_rate=1e-3):
         """Train all parameters in the model using the given phrases.
@@ -458,7 +459,7 @@ class W2VModel:
                     self.ns_count)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, \
                                    learn_rate=learn_rate, ada_smooth=1e-3)
-            if ((b > 1) and ((b % 25000) == 0)):
+            if ((b > 1) and ((b % 10000) == 0)):
                 self.reset_moms(ada_init=1e-3)
             if ((b % 500) == 0):
                 obs_count = 500.0 * batch_size
@@ -585,37 +586,41 @@ def test_W2VModel_stb():
      # Load tree data
     tree_dir = './trees'
     stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
+    w2k = stb_data['words_to_keys']
+    k2w = stb_data['keys_to_words']
     # Get the lists of full train and test phrases
-    tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['dev_full_phrases']
+    tr_phrases = []
+    tr_phrases.extend(stb_data['train_full_phrases'])
+    tr_phrases.extend(stb_data['dev_full_phrases'])
+    tr_phrases.extend(stb_data['test_full_phrases'])
+    del stb_data
     # Get the list of all word occurrences in the training phrases
     tr_words = []
     for phrase in tr_phrases:
         tr_words.extend(phrase)
     tr_words = np.asarray(tr_words).astype(np.int32)
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
-    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
     # Record maximum required keys for the context layer's tables
-    max_wv_key = max(stb_data['words_to_keys'].values())
+    max_wv_key = max(w2k.values())
     max_cv_key = len(tr_phrases) - 1
 
     # Choose some simple hyperparameters for the model
-    sg_window = 6
+    sg_window = 5
     ns_count = 10
-    wv_dim = 100
-    lam_l2 = 1e-3
+    wv_dim = 200
+    lam_l2 = 1e-4
     w2v_model = W2VModel(wv_dim, max_wv_key, sg_window=sg_window, \
                          ns_count=ns_count, lam_l2=lam_l2)
 
-    for i in range(50):
+    for i in range(1):
         # Train all parameters using the training set phrases
-        w2v_model.train_all_params(tr_phrases, tr_words, 256, 100000, 5e-3)
-        w2v_model.test_all_params(te_phrases, tr_words, 2000)
-        [s_keys, n_keys, s_words, n_words] = some_nearest_words( stb_data['keys_to_words'], \
-                10, w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
+        w2v_model.reset_moms()
+        w2v_model.train_all_params(tr_phrases, tr_words, 250, 10000, 2e-2)
+        [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
+                w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
         for w in range(10):
             print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
-    return [w2v_model, stb_data]
+    return
 
 def test_W2VModel_1bw():
     """Hard-coded test on 1-billion words data, for development/debugging."""
@@ -665,10 +670,9 @@ if __name__ == '__main__':
     #pickle.dump(cam_result, open('cam_result.pkl','wb'))
 
     # TEST W2V MODEL
-    #w2v_result = test_W2VModel_stb()
-    w2v_result = test_W2VModel_1bw()
+    w2v_result = test_W2VModel_stb()
+    #w2v_result = test_W2VModel_1bw()
     #pickle.dump(w2v_result, open('w2v_result.pkl','wb'))
-    
 
 
 

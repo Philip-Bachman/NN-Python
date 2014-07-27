@@ -8,7 +8,9 @@ import gnumpy as gp
 # Imports of my stuff
 import HelperFuncs as hf
 from HelperFuncs import w2v_ff_bp, nsl_ff, nsl_bp, lut_bp, ag_update_2d, \
-                        ag_update_1d, lut_bp, catch_oov_words
+                        ag_update_1d, lut_bp, randn, ones, zeros
+
+FT = np.float32
 
 ###########################
 # NEGATIVE SAMPLING LAYER #
@@ -21,14 +23,14 @@ class NSLayer:
         self.dim_input = in_dim
         self.key_count = max_out_key + 1
         self.params = {}
-        self.params['W'] = 0.01 * npr.randn(self.key_count, in_dim)
-        self.params['b'] = np.zeros((self.key_count,))
+        self.params['W'] = 0.01 * randn((self.key_count, in_dim))
+        self.params['b'] = zeros((self.key_count,))
         self.grads = {}
-        self.grads['W'] = np.zeros((self.key_count, in_dim))
-        self.grads['b'] = np.zeros((self.key_count,))
+        self.grads['W'] = zeros((self.key_count, in_dim))
+        self.grads['b'] = zeros((self.key_count,))
         self.moms = {}
-        self.moms['W'] = np.zeros((self.key_count, in_dim))
-        self.moms['b'] = np.zeros((self.key_count,))
+        self.moms['W'] = zeros((self.key_count, in_dim))
+        self.moms['b'] = zeros((self.key_count,))
         # Set temp vars to use in feedforward/backprop
         self.X = []
         self.Y = []
@@ -40,10 +42,10 @@ class NSLayer:
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
         """Randomly initialize the weights in this layer."""
-        self.params['W'] = w_scale * npr.randn(self.key_count, self.dim_input)
-        self.grads['W'] = np.zeros((self.key_count, self.dim_input))
-        self.params['b'] = np.zeros((self.key_count,))
-        self.grads['b'] = np.zeros((self.key_count,))
+        self.params['W'] = w_scale * randn((self.key_count, self.dim_input))
+        self.grads['W'] = zeros((self.key_count, self.dim_input))
+        self.params['b'] = zeros((self.key_count,))
+        self.grads['b'] = zeros((self.key_count,))
         return
 
     def clip_params(self, max_norm=10.0):
@@ -78,12 +80,12 @@ class NSLayer:
         self.samp_keys = np.hstack((pos_samples, neg_samples))
         self.samp_keys = self.samp_keys.astype(np.int32)
         # Do the feedforward
-        self.Y = np.zeros((X.shape[0], self.samp_keys.shape[1]))
+        self.Y = zeros((X.shape[0], self.samp_keys.shape[1]))
         nsl_ff(self.samp_keys, self.X, self.params['W'], \
                self.params['b'], self.Y)
         # Using the outputs for these positive and negative samples, compute
         # loss and gradients for pseudo noise-contrastive training.
-        samp_sign = np.ones(self.samp_keys.shape)
+        samp_sign = ones(self.samp_keys.shape)
         samp_sign[:,0] = -1.0
         exp_ss_y = np.exp(samp_sign * self.Y)
         L = np.sum(np.log(1.0 + exp_ss_y))
@@ -93,7 +95,7 @@ class NSLayer:
     def backprop(self):
         """Backprop through this layer, based on most recent feedforward.
         """
-        self.dLdX = np.zeros(self.X.shape)
+        self.dLdX = zeros(self.X.shape)
         self.grad_idx.update(self.samp_keys.ravel())
         nsl_bp(self.samp_keys, self.X, self.params['W'], self.dLdY, \
                     self.dLdX, self.grads['W'], self.grads['b'])
@@ -141,14 +143,14 @@ class HSMLayer:
         self.code_vecs = code_vecs
         self.max_code_len = max_code_len
         self.params = {}
-        self.params['W'] = npr.randn(in_dim, code_vecs)
-        self.params['b'] = np.zeros((1, code_vecs))
+        self.params['W'] = randn((in_dim, code_vecs))
+        self.params['b'] = zeros((1, code_vecs))
         self.grads = {}
-        self.grads['W'] = np.zeros((in_dim, code_vecs))
-        self.grads['b'] = np.zeros((1, code_vecs))
+        self.grads['W'] = zeros((in_dim, code_vecs))
+        self.grads['b'] = zeros((1, code_vecs))
         self.moms = {}
-        self.moms['W'] = np.zeros((in_dim, code_vecs))
-        self.moms['b'] = np.zeros((1, code_vecs))
+        self.moms['W'] = zeros((in_dim, code_vecs))
+        self.moms['b'] = zeros((1, code_vecs))
         # Set common stuff for all types layers
         self.X = []
         self.code_idx = []
@@ -160,10 +162,10 @@ class HSMLayer:
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
         """Randomly initialize the weights in this layer."""
-        self.params['W'] = w_scale * npr.randn(self.dim_input, self.code_vecs)
-        self.grads['W'] = np.zeros((self.dim_input, self.code_vecs))
-        self.params['b'] = np.zeros((1, self.code_vecs))
-        self.grads['b'] = np.zeros((1, self.code_vecs))
+        self.params['W'] = w_scale * randn((self.dim_input, self.code_vecs))
+        self.grads['W'] = zeros((self.dim_input, self.code_vecs))
+        self.params['b'] = zeros((1, self.code_vecs))
+        self.grads['b'] = zeros((1, self.code_vecs))
         return
 
     def clip_params(self, max_norm=10.0):
@@ -193,7 +195,7 @@ class HSMLayer:
         self.trained_idx.update(self.code_idx.ravel())
         W = self.params['W']
         b = self.params['b']
-        Y = np.zeros((X.shape[0], code_idx.shape[1]))
+        Y = zeros((X.shape[0], code_idx.shape[1]))
         for i in range(code_idx.shape[1]):
             Y[:,i] = np.sum(X.T * W[:,code_idx[:,i]], axis=0) + b[0,code_idx[:,i]]
         self.Y = Y
@@ -209,7 +211,7 @@ class HSMLayer:
         dW = self.grads['W']
         db = self.grads['b']
         dLdY = np.log(1.0 + np.exp(-1.0 * (self.Y * self.code_sign)))
-        dLdX = np.zeros(self.X.shape)
+        dLdX = zeros(self.X.shape)
         for i in range(self.X.shape[0]):
             ci = code_idx[i,:]
             dW[:,ci] += np.outer(X[i,:], dLdY[i,:])
@@ -321,7 +323,7 @@ class FullLayer:
         Y_cat = Y_cat.astype(np.int32)
         self.Y_cat = Y_cat
         # Convert from categorical classes to "one-hot" vectors
-        Y_ind = np.zeros(self.Y.shape)
+        Y_ind = zeros(self.Y.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         # Compute gradient of cross-entropy objective, based on the given
         # target predictions and the most recent feedforward information.
@@ -361,7 +363,7 @@ class FullLayer:
     def cross_entropy_loss(self, Yh, Y_cat):
         """Cross-entropy loss for predictions Yh given targets Y_cat."""
         # Convert from categorical classes to "one-hot" target vectors
-        Y_ind = np.zeros(Yh.shape)
+        Y_ind = zeros(Yh.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         # Push one-hot targets vectors to the GPU
         Y_ind = gp.garray(Y_ind)
@@ -421,11 +423,11 @@ class LUTLayer:
         # Set stuff for managing this type of layer
         self.key_count = max_key + 1 # add 1 to accommodate 0 indexing
         self.params = {}
-        self.params['W'] = 0.01 * npr.randn(self.key_count, embed_dim)
+        self.params['W'] = 0.01 * randn((self.key_count, embed_dim))
         self.grads = {}
-        self.grads['W'] = np.zeros(self.params['W'].shape)
+        self.grads['W'] = zeros(self.params['W'].shape)
         self.moms = {}
-        self.moms['W'] = np.zeros(self.params['W'].shape)
+        self.moms['W'] = zeros(self.params['W'].shape)
         self.grad_idx = set()
         self.embed_dim = embed_dim
         self.X = []
@@ -434,8 +436,8 @@ class LUTLayer:
 
     def init_params(self, w_scale=0.01):
         """Randomly initialize the weights in this layer."""
-        self.params['W'] = w_scale * npr.randn(self.key_count, self.embed_dim)
-        self.grads['W'] = np.zeros((self.key_count, self.embed_dim))
+        self.params['W'] = w_scale * randn((self.key_count, self.embed_dim))
+        self.grads['W'] = zeros((self.key_count, self.embed_dim))
         return
 
     def clip_params(self, max_norm=10.0):
@@ -512,14 +514,14 @@ class CMLayer:
         self.bias_dim = bias_dim
         self.do_rescale = do_rescale # set to True for magical fun
         self.params = {}
-        self.params['W'] = np.zeros((self.key_count, source_dim))
-        self.params['b'] = np.zeros((self.key_count, bias_dim))
+        self.params['W'] = zeros((self.key_count, source_dim))
+        self.params['b'] = zeros((self.key_count, bias_dim))
         self.grads = {}
-        self.grads['W'] = np.zeros(self.params['W'].shape)
-        self.grads['b'] = np.zeros(self.params['b'].shape)
+        self.grads['W'] = zeros(self.params['W'].shape)
+        self.grads['b'] = zeros(self.params['b'].shape)
         self.moms = {}
-        self.moms['W'] = np.zeros(self.params['W'].shape)
-        self.moms['b'] = np.zeros(self.params['b'].shape)
+        self.moms['W'] = zeros(self.params['W'].shape)
+        self.moms['b'] = zeros(self.params['b'].shape)
         self.grad_idx = set()
         # Set common stuff for all types layers
         self.X = []
@@ -532,10 +534,10 @@ class CMLayer:
 
     def init_params(self, w_scale=0.01):
         """Randomly initialize the weights in this layer."""
-        self.params['W'] = w_scale * npr.randn(self.key_count, self.source_dim)
-        self.grads['W'] = np.zeros(self.params['W'].shape)
-        self.params['b'] = w_scale * npr.randn(self.key_count, self.bias_dim)
-        self.grads['b'] = np.zeros(self.params['b'].shape)
+        self.params['W'] = w_scale * randn((self.key_count, self.source_dim))
+        self.grads['W'] = zeros(self.params['W'].shape)
+        self.params['b'] = w_scale * randn((self.key_count, self.bias_dim))
+        self.grads['b'] = zeros(self.params['b'].shape)
         return
 
     def clip_params(self, max_norm=10.0):
@@ -574,7 +576,7 @@ class CMLayer:
             W_exp = np.exp(self.W)
             W_sig = W_exp / (1.0 + W_exp)
         else:
-            W_sig = np.ones(X.shape)
+            W_sig = ones(X.shape)
         # Modify X by scaling and augmenting
         self.Y = np.hstack((self.params['b'][C,:], (X * W_sig)))
         return self.Y
@@ -591,8 +593,8 @@ class CMLayer:
             W_sig = W_exp / (1.0 + W_exp)
             dLdW = (W_sig / W_exp) * self.X * dLdYw
         else:
-            W_sig = np.ones(dLdYw.shape)
-            dLdW = np.zeros(dLdYw.shape)
+            W_sig = ones(dLdYw.shape)
+            dLdW = zeros(dLdYw.shape)
         lut_bp(self.C, dLdW, self.grads['W'])
         lut_bp(self.C, dLdYb, self.grads['b'])
         dLdX = W_sig * dLdYw
@@ -660,12 +662,12 @@ class NoiseLayer:
             drop_mask = self.drop_scale * \
                     (npr.rand(self.X.shape[0], self.X.shape[1]) > self.drop_rate)
         else:
-            drop_mask = np.ones((self.X.shape[0], self.X.shape[1]))
+            drop_mask = ones((self.X.shape[0], self.X.shape[1]))
         self.dYdX = drop_mask
         # Add gaussian fuzz to the input and apply the dropout mask
         if (self.fuzz_scale > 1e-4):
             fuzz_bump = (self.fuzz_scale / self.drop_scale) * \
-                    npr.randn(self.X.shape[0], self.X.shape[1])
+                    randn((self.X.shape[0], self.X.shape[1]))
             Y = drop_mask * (self.X + fuzz_bump)
         else:
             Y = drop_mask * self.X
@@ -733,17 +735,17 @@ class W2VLayer:
         # Initialize arrays for tracking parameters, gradients, and
         # adagrad "momentums" (i.e. sums of squared gradients).
         self.params = {}
-        self.params['Wa'] = 0.01 * npr.randn(self.word_count, word_dim)
-        self.params['Wc'] = 0.01 * npr.randn(self.word_count, word_dim)
-        self.params['b'] = np.zeros((self.word_count,))
+        self.params['Wa'] = 0.01 * randn((self.word_count, word_dim))
+        self.params['Wc'] = 0.01 * randn((self.word_count, word_dim))
+        self.params['b'] = zeros((self.word_count,))
         self.grads = {}
-        self.grads['Wa'] = np.zeros((self.word_count, word_dim))
-        self.grads['Wc'] = np.zeros((self.word_count, word_dim))
-        self.grads['b'] = np.zeros((self.word_count,))
+        self.grads['Wa'] = zeros((self.word_count, word_dim))
+        self.grads['Wc'] = zeros((self.word_count, word_dim))
+        self.grads['b'] = zeros((self.word_count,))
         self.moms = {}
-        self.moms['Wa'] = np.zeros((self.word_count, word_dim))
-        self.moms['Wc'] = np.zeros((self.word_count, word_dim))
-        self.moms['b'] = np.zeros((self.word_count,))
+        self.moms['Wa'] = zeros((self.word_count, word_dim))
+        self.moms['Wc'] = zeros((self.word_count, word_dim))
+        self.moms['b'] = zeros((self.word_count,))
         # Set l2 regularization parameter
         self.lam_l2 = lam_l2
         # Initialize sets for tracking which words we have trained
@@ -753,17 +755,18 @@ class W2VLayer:
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
         """Randomly initialize the weights in this layer."""
-        self.params['Wa'] = w_scale * npr.randn(self.word_count, self.word_dim)
-        self.grads['Wa'] = np.zeros((self.word_count, self.word_dim))
-        self.moms['Wa'] = np.zeros((self.word_count, self.word_dim)) + 1e-3
-        self.params['Wc'] = w_scale * npr.randn(self.word_count, self.word_dim)
-        self.grads['Wc'] = np.zeros((self.word_count, self.word_dim))
-        self.moms['Wc'] = np.zeros((self.word_count, self.word_dim)) + 1e-3
-        self.params['b'] = np.zeros((self.word_count,))
-        self.grads['b'] = np.zeros((self.word_count,))
-        self.moms['b'] = np.zeros((self.word_count,)) + 1e-3
+        self.params['Wa'] = w_scale * randn((self.word_count, self.word_dim))
+        self.grads['Wa'] = zeros((self.word_count, self.word_dim))
+        self.moms['Wa'] = zeros((self.word_count, self.word_dim)) + 1e-3
+        self.params['Wc'] = w_scale * randn((self.word_count, self.word_dim))
+        self.grads['Wc'] = zeros((self.word_count, self.word_dim))
+        self.moms['Wc'] = zeros((self.word_count, self.word_dim)) + 1e-3
+        self.params['b'] = zeros((self.word_count,))
+        self.grads['b'] = zeros((self.word_count,))
+        self.moms['b'] = zeros((self.word_count,)) + 1e-3
         return
 
+    @profile
     def batch_train(self, anc_idx, pos_idx, neg_idx, learn_rate=1e-3):
         """Perform a batch update of all parameters based on the given sets
         of anchor/positive example/negative examples indices.
@@ -773,9 +776,9 @@ class W2VLayer:
         anc_idx = anc_idx.astype(np.int32)
         pos_idx = pos_idx[:,np.newaxis]
         pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
-        pn_sign = np.ones(pn_idx.shape)
+        pn_sign = ones(pn_idx.shape)
         pn_sign[:,0] = -1.0
-        L = np.zeros((1,))
+        L = zeros((1,))
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
                 self.params['Wc'], self.params['b'], self.grads['Wa'], \
@@ -799,9 +802,9 @@ class W2VLayer:
         anc_idx = anc_idx.astype(np.int32)
         pos_idx = pos_idx[:,np.newaxis]
         pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
-        pn_sign = np.ones(pn_idx.shape)
+        pn_sign = ones(pn_idx.shape)
         pn_sign[:,0] = -1.0
-        L = np.zeros((1,))
+        L = zeros((1,))
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
                self.params['Wc'], self.params['b'], self.grads['Wa'], \

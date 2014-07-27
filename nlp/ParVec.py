@@ -8,7 +8,7 @@ import numba
 
 # Imports of my stuff
 import HelperFuncs as hf
-from HelperFuncs import ag_update_2d, ag_update_1d, lut_bp, catch_oov_words
+from HelperFuncs import ag_update_2d, ag_update_1d, lut_bp, randn, ones, zeros
 
 #################################
 # FULLY-CONNECTED SOFTMAX LAYER #
@@ -71,7 +71,7 @@ class FullLayer:
         Y_cat = Y_cat.astype(np.int32)
         self.Y_cat = Y_cat
         # Convert from categorical classes to "one-hot" vectors
-        Y_ind = np.zeros(self.Y.shape)
+        Y_ind = zeros(self.Y.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         # Compute gradient of cross-entropy objective, based on the given
         # target predictions and the most recent feedforward information.
@@ -111,7 +111,7 @@ class FullLayer:
     def cross_entropy_loss(self, Yh, Y_cat):
         """Cross-entropy loss for predictions Yh given targets Y_cat."""
         # Convert from categorical classes to "one-hot" target vectors
-        Y_ind = np.zeros(Yh.shape)
+        Y_ind = zeros(Yh.shape)
         Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         # Push one-hot targets vectors to the GPU
         Y_ind = gp.garray(Y_ind)
@@ -176,14 +176,14 @@ class ContextLayer:
         # that trainable words/contexts are those with LUT keys referencing
         # rows up to (and including) the penultimate rows of their LUTs.
         self.params = {}
-        self.params['W'] = 0.01 * npr.randn(word_keys, word_dim)
-        self.params['C'] = 0.01 * npr.randn(context_keys, context_dim)
+        self.params['W'] = 0.01 * randn((word_keys, word_dim))
+        self.params['C'] = 0.01 * randn((context_keys, context_dim))
         self.grads = {}
-        self.grads['W'] = np.zeros(self.params['W'].shape)
-        self.grads['C'] = np.zeros(self.params['C'].shape)
+        self.grads['W'] = zeros(self.params['W'].shape)
+        self.grads['C'] = zeros(self.params['C'].shape)
         self.moms = {}
-        self.moms['W'] = np.zeros(self.params['W'].shape)
-        self.moms['C'] = np.zeros(self.params['C'].shape)
+        self.moms['W'] = zeros(self.params['W'].shape)
+        self.moms['C'] = zeros(self.params['C'].shape)
         # Record the sizes of our word and context LUTs
         self.word_keys = word_keys
         self.word_dim = word_dim
@@ -200,10 +200,10 @@ class ContextLayer:
 
     def init_params(self, w_scale=0.01):
         """Randomly initialize the weights in this layer."""
-        self.params['W'] = w_scale * npr.randn(self.word_keys, self.word_dim)
-        self.params['C'] = w_scale * npr.randn(self.cont_keys, self.cont_dim)
-        self.grads['W'] = np.zeros(self.params['W'].shape)
-        self.grads['C'] = np.zeros(self.params['C'].shape)
+        self.params['W'] = w_scale * randn((self.word_keys, self.word_dim))
+        self.params['C'] = w_scale * randn((self.cont_keys, self.cont_dim))
+        self.grads['W'] = zeros(self.params['W'].shape)
+        self.grads['C'] = zeros(self.params['C'].shape)
         return
 
     def clip_params(self, W_norm=10.0, C_norm=10.0):
@@ -229,7 +229,7 @@ class ContextLayer:
         self.Iw = Iw.astype(np.int32)
         self.Ic = Ic.astype(np.int32)
         # Construct the output of this layer using table look-ups
-        self.Y = np.zeros((obs_count,self.cont_dim+(pre_words*self.word_dim)))
+        self.Y = zeros((obs_count,self.cont_dim+(pre_words*self.word_dim)))
         self.Y[:,0:self.cont_dim] = self.params['C'][self.Ic,:]
         for i in range(pre_words):
             s_idx = self.cont_dim + (i * self.word_dim)
@@ -342,7 +342,7 @@ class NoiseLayer:
         self.dYdX = drop_mask
         if (self.fuzz_scale > 1e-4):
             fuzz_bump = (self.fuzz_scale / self.drop_scale) * \
-                    gp.randn(self.X.shape[0], self.X.shape[1])
+                    gp.randn((self.X.shape[0], self.X.shape[1]))
             self.Y = drop_mask * (self.X + fuzz_bump)
         else:
             self.Y = drop_mask * self.X
