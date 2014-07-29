@@ -10,9 +10,8 @@ import HelperFuncs as hf
 from HelperFuncs import randn, ones, zeros
 #from NumbaFuncs import w2v_ff_bp, ag_update_2d, ag_update_1d, lut_bp, \
 #                       nsl_ff, nsl_bp
-from NumbaFuncs import nsl_ff, nsl_bp
-from CythonFuncs import w2v_ff_bp, ag_update_2d, ag_update_1d, lut_bp, \
-                        nsl_ff_bp
+from NumbaFuncs import nsl_ff, nsl_bp, ag_update_2d, ag_update_1d
+from CythonFuncs import w2v_ff_bp, nsl_ff_bp, lut_bp
 
 
 
@@ -574,6 +573,7 @@ class CMLayer:
         info = {'mean': men_n, 'min': min_n, 'median': med_n, 'max': max_n}
         return info
 
+    @profile
     def feedforward(self, X, C):
         """Run feedforward for this layer.
         """

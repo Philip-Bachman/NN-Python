@@ -18,7 +18,7 @@ from ctypes import pythonapi, c_void_p
 # MULTITHREADING HELPER-FUNC AND DEFNS #
 ########################################
 
-THREAD_NUM = 2
+THREAD_NUM = 4
 
 savethread = pythonapi.PyEval_SaveThread
 savethread.argtypes = []

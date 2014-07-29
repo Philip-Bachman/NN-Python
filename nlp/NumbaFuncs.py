@@ -12,7 +12,7 @@ from ctypes import pythonapi, c_void_p
 # MULTITHREADING HELPER-FUNC AND DEFNS #
 ########################################
 
-THREAD_NUM = 2
+THREAD_NUM = 4
 
 savethread = pythonapi.PyEval_SaveThread
 savethread.argtypes = []
@@ -135,9 +135,9 @@ def ag_update_2d_sp(sp_idx, row_idx, W, dW, mW, learn_rate, ada_smooth):
     for spi in range(row_count):
         idx = row_idx[sp_idx[spi]]
         for j in range(vec_dim):
-            W[idx,j] -= learn_rate * dW[idx,j]
-            #mW[idx,j] += dW[idx,j] * dW[idx,j]
-            #W[idx,j] -= (learn_rate * (dW[idx,j] / (sqrt(mW[idx,j]) + ada_smooth)))
+            #W[idx,j] -= learn_rate * dW[idx,j]
+            mW[idx,j] += dW[idx,j] * dW[idx,j]
+            W[idx,j] -= (learn_rate * (dW[idx,j] / (sqrt(mW[idx,j]) + ada_smooth)))
             dW[idx,j] = 0.0
     restorethread(threadstate)
     return
@@ -156,9 +156,9 @@ def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth):
     row_count = row_idx.shape[0]
     for i in range(row_count):
         idx = row_idx[i]
-        W[idx] -= learn_rate * dW[idx]
-        #mW[idx] += dW[idx] * dW[idx]
-        #W[idx] -= learn_rate * (dW[idx] / (sqrt(mW[idx]) + ada_smooth))
+        #W[idx] -= learn_rate * dW[idx]
+        mW[idx] += dW[idx] * dW[idx]
+        W[idx] -= learn_rate * (dW[idx] / (sqrt(mW[idx]) + ada_smooth))
         dW[idx] = 0.0
     return
 
