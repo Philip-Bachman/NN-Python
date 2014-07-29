@@ -4,11 +4,12 @@ from __future__ import absolute_import
 import numpy as np
 import numpy.random as npr
 import gnumpy as gp
-import numba
 
 # Imports of my stuff
 import HelperFuncs as hf
-from HelperFuncs import ag_update_2d, ag_update_1d, lut_bp, randn, ones, zeros
+from HelperFuncs import randn, ones, zeros
+#from NumbaFuncs import ag_update_2d, ag_update_1d, lut_bp
+from CythonFuncs import ag_update_2d, ag_update_1d, lut_bp
 
 #################################
 # FULLY-CONNECTED SOFTMAX LAYER #
@@ -47,14 +48,12 @@ class FullLayer:
         return
 
     def clip_params(self, max_norm=10.0):
-        """Bound l2 (row-wise) norm of self.params['W'] by max_norm."""
-        W = self.params['W']
-        w_norms = gp.sqrt(gp.sum(W**2.0,axis=0) + 1e-5)
-        w_scales = max_norm / w_norms
-        mask = (w_scales < 1.0)
-        w_scales = (w_scales * mask) + (1.0 - mask)
-        w_scales = w_scales[gp.newaxis,:]
-        W = W * w_scales
+        """Bound L2 (row-wise) norm of W by max_norm."""
+        M = self.params['W']
+        m_scales = max_norm / gp.sqrt(gp.sum(M**2.0,axis=1) + 1e-5)
+        mask = (m_scales < 1.0) # with gnumpy, this already comes as float32
+        m_scales = (m_scales * mask) + (1.0 - mask)
+        self.params['W'] = M * m_scales[:,gp.newaxis]
         return
 
     def feedforward(self, X):
@@ -126,11 +125,8 @@ class FullLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return
 
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
+    def apply_grad(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
-        # Add l2 regularization effect to the gradients
-        self.grads['W'] += lam_l2 * self.params['W']
-        self.grads['b'] += lam_l2 * self.params['b']
         # Update the adagrad "momentums"
         self.moms['W'] += self.grads['W']**2.0
         self.moms['b'] += self.grads['b']**2.0
@@ -207,16 +203,14 @@ class ContextLayer:
         return
 
     def clip_params(self, W_norm=10.0, C_norm=10.0):
-        """Bound L2 (row-wise) norm of self.params['W'] by wt_bnd."""
+        """Bound L2 (row-wise) norm of W & C by W_norm & C_norm."""
         for (param, max_norm) in zip(['W', 'C'], [W_norm, C_norm]):
-            W = self.params[param]
-            w_norms = np.sqrt(np.sum(W**2.0,axis=1) + 1e-5)
-            w_scales = max_norm / w_norms
-            mask = (w_scales < 1.0)
-            w_scales = (w_scales * mask) + (1.0 - mask)
-            w_scales = w_scales[:,np.newaxis]
-            W = W * w_scales
-            self.params[param] = W
+            M = self.params[param]
+            m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
+            mask = (m_scales < 1.0)
+            mask = mask.astype(np.float32) # why is explicit cast needed?
+            m_scales = (m_scales * mask) + (1.0 - mask)
+            self.params[param] = M * m_scales[:,np.newaxis]
         return
 
     def feedforward(self, Iw, Ic):
@@ -252,26 +246,26 @@ class ContextLayer:
             lut_bp(self.Iw[:,i], dLdY[:,s_idx:e_idx], self.grads['W'])
         return
 
-    def apply_grad_reg(self, learn_rate=1e-3, ada_smooth=1e-3, lam_w=0.0, lam_c=0.0):
+    def apply_grad(self, learn_rate=1e-3, ada_smooth=1e-3):
         """Apply the current accumulated gradients, adagrad style."""
         # Find which LUT keys point to params with pending updates
         nz_idx_w = np.asarray([i for i in self.grad_idx_w]).astype(np.int32)
         nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
         # Update the params for words/contexts with pending updates
         ag_update_2d(nz_idx_w, self.params['W'], self.grads['W'], \
-                     self.moms['W'], learn_rate, ada_smooth, lam_w)
+                     self.moms['W'], learn_rate, ada_smooth)
         ag_update_2d(nz_idx_c, self.params['C'], self.grads['C'], \
-                     self.moms['C'], learn_rate, ada_smooth, lam_c)
+                     self.moms['C'], learn_rate, ada_smooth)
         # Reset the sets of LUT keys for parameters with pending updates
         self.grad_idx_w = set()
         self.grad_idx_c = set()
         return
 
-    def update_context_vectors(self, learn_rate=1e-3, ada_smooth=1e-3, lam_c=0.0):
+    def update_context_vectors(self, learn_rate=1e-3, ada_smooth=1e-3):
         """Apply only the context-vector gradients, adagrad style."""
         nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
         ag_update_2d(nz_idx_c, self.params['C'], self.grads['C'], \
-                     self.moms['C'], learn_rate, ada_smooth, lam_c)
+                     self.moms['C'], learn_rate, ada_smooth)
         self.grad_idx_c = set()
         return
 
@@ -431,8 +425,8 @@ def run_test():
         context_layer.backprop(dLdXb)
 
         # Apply gradients computed during backprop
-        class_layer.apply_grad_reg(learn_rate=4e-4, ada_smooth=1e-3, lam_l2=lam_l2)
-        context_layer.apply_grad_reg(learn_rate=4e-4, ada_smooth=1e-3, lam_w=lam_l2, lam_c=lam_l2)
+        class_layer.apply_grad(learn_rate=4e-4, ada_smooth=1e-3)
+        context_layer.apply_grad(learn_rate=4e-4, ada_smooth=1e-3)
 
         # Compute and display loss from time-to-time (for diagnostics)
         if ((b % 50) == 0):

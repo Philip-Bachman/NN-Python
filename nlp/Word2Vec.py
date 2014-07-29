@@ -7,10 +7,14 @@ import gnumpy as gp
 
 # Imports of my stuff
 import HelperFuncs as hf
-from HelperFuncs import w2v_ff_bp, nsl_ff, nsl_bp, lut_bp, ag_update_2d, \
-                        ag_update_1d, lut_bp, randn, ones, zeros
+from HelperFuncs import randn, ones, zeros
+#from NumbaFuncs import w2v_ff_bp, ag_update_2d, ag_update_1d, lut_bp, \
+#                       nsl_ff, nsl_bp
+from NumbaFuncs import nsl_ff, nsl_bp
+from CythonFuncs import w2v_ff_bp, ag_update_2d, ag_update_1d, lut_bp, \
+                        nsl_ff_bp
 
-FT = np.float32
+
 
 ###########################
 # NEGATIVE SAMPLING LAYER #
@@ -49,18 +53,37 @@ class NSLayer:
         return
 
     def clip_params(self, max_norm=10.0):
-        """Bound L2 (column-wise) norm of self.params['W'] by wt_bnd."""
-        W = self.params['W']
-        # Compute L2 norm of weights inbound to each node in this layer
-        w_norms = np.sqrt(np.sum(W**2.0,axis=1) + 1e-5)
-        # Compute scales based on norms and the upperbound set by wt_bnd
-        w_scales = max_norm / w_norms
-        mask = (w_scales < 1.0)
-        w_scales = (w_scales * mask) + (1.0 - mask)
-        w_scales = w_scales[:,np.newaxis]
-        # Rescale weights to meet the bound set by wt_bnd
-        W = W * w_scales
+        """Bound L2 (row-wise) norm of W by max_norm."""
+        M = self.params['W']
+        m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+        mask = (m_scales < 1.0)
+        mask = mask.astype(np.float32) # why is explicit cast needed?
+        m_scales = (m_scales * mask) + (1.0 - mask)
+        self.params['W'] = M * m_scales[:,np.newaxis]
         return
+
+    def ff_bp(self, X, pos_samples, neg_samples):
+        """Perform feedforward and then backprop for this layer."""
+        assert(X.shape[1] == self.params['W'].shape[1])
+        assert(pos_samples.shape[0] == X.shape[0])
+        assert(neg_samples.shape[0] == X.shape[0])
+        # Cleanup debris from any previous feedforward
+        self._cleanup()
+        # Record inputs and keys for positive/negative sample examples
+        pos_samples = pos_samples[:,np.newaxis]
+        samp_keys = np.hstack((pos_samples, neg_samples)).astype(np.int32)
+        samp_sign = ones(samp_keys.shape)
+        samp_sign[:,0] = -1.0
+        # Do feedforward and backprop all in one go
+        L = zeros((1,))
+        dLdX = zeros(X.shape)
+        nsl_ff_bp(samp_keys, samp_sign, X, self.params['W'], self.params['b'], \
+                  dLdX, self.grads['W'], self.grads['b'], L)
+        # Derp dorp
+        L = L[0]
+        self.grad_idx.update(samp_keys.ravel())
+        return [dLdX, L]
+
 
     def feedforward(self, X, pos_samples, neg_samples):
         """Run feedforward for this layer.
@@ -98,7 +121,7 @@ class NSLayer:
         self.dLdX = zeros(self.X.shape)
         self.grad_idx.update(self.samp_keys.ravel())
         nsl_bp(self.samp_keys, self.X, self.params['W'], self.dLdY, \
-                    self.dLdX, self.grads['W'], self.grads['b'])
+               self.dLdX, self.grads['W'], self.grads['b'])
         return self.dLdX
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -107,13 +130,13 @@ class NSLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return 1
 
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
+    def apply_grad(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
-                     self.moms['W'], learn_rate, ada_smooth, lam_l2)
+                     self.moms['W'], learn_rate, ada_smooth)
         ag_update_1d(nz_idx, self.params['b'], self.grads['b'], \
-                     self.moms['b'], learn_rate, ada_smooth, lam_l2)
+                     self.moms['b'], learn_rate, ada_smooth)
         self.grad_idx = set()
         return
 
@@ -169,18 +192,13 @@ class HSMLayer:
         return
 
     def clip_params(self, max_norm=10.0):
-        """Bound L2 (column-wise) norm of self.params['W'] by wt_bnd."""
-        EPS = 1e-5
-        W = self.params['W']
-        # Compute L2 norm of weights inbound to each node in this layer
-        w_norms = np.sqrt(np.sum(W**2.0,axis=0) + EPS)
-        # Compute scales based on norms and the upperbound set by wt_bnd
-        w_scales = max_norm / w_norms
-        mask = (w_scales < 1.0)
-        w_scales = (w_scales * mask) + (1.0 - mask)
-        w_scales = w_scales[np.newaxis,:]
-        # Rescale weights to meet the bound set by wt_bnd
-        W = W * w_scales
+        """Bound L2 (row-wise) norm of W by max_norm."""
+        M = self.params['W']
+        m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+        mask = (m_scales < 1.0)
+        mask = mask.astype(np.float32) # why is explicit cast needed?
+        m_scales = (m_scales * mask) + (1.0 - mask)
+        self.params['W'] = M * m_scales[:,np.newaxis]
         return
 
     def feedforward(self, X, code_idx, code_sign):
@@ -227,7 +245,7 @@ class HSMLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return 1
 
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
+    def apply_grad(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
         self.grads['W'] += lam_l2 * self.params['W']
         self.grads['b'] += lam_l2 * self.params['b']
@@ -299,14 +317,13 @@ class FullLayer:
         return
 
     def clip_params(self, max_norm=10.0):
-        """Bound l2 (row-wise) norm of self.params['W'] by max_norm."""
-        W = self.params['W']
-        w_norms = gp.sqrt(gp.sum(W**2.0,axis=0) + 1e-5)
-        w_scales = max_norm / w_norms
-        mask = (w_scales < 1.0)
-        w_scales = (w_scales * mask) + (1.0 - mask)
-        w_scales = w_scales[gp.newaxis,:]
-        W = W * w_scales
+        """Bound l2 (row-wise) norm of W by max_norm."""
+        M = self.params['W']
+        m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+        mask = (m_scales < 1.0)
+        mask = mask.astype(np.float32) # why is explicit cast needed?
+        m_scales = (m_scales * mask) + (1.0 - mask)
+        self.params['W'] = M * m_scales[:,np.newaxis]
         return
 
     def feedforward(self, X):
@@ -378,7 +395,7 @@ class FullLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return
 
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
+    def apply_grad(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
         # Add l2 regularization effect to the gradients
         self.grads['W'] += lam_l2 * self.params['W']
@@ -441,19 +458,13 @@ class LUTLayer:
         return
 
     def clip_params(self, max_norm=10.0):
-        """Bound L2 (row-wise) norm of self.params['W'] by wt_bnd."""
-        W = self.params['W']
-        # Compute L2 norm of weights inbound to each node in this layer
-        w_norms = np.sqrt(np.sum(W**2.0,axis=1) + 1e-5)
-        # Compute scales based on norms and the upperbound set by wt_bnd
-        w_scales = max_norm / w_norms
-        mask = (w_scales < 1.0)
-        w_scales = (w_scales * mask) + (1.0 - mask)
-        w_scales = w_scales[:,np.newaxis]
-        # Rescale weights to meet the bound set by wt_bnd
-        W = W * w_scales
-        # Store clipped parameters
-        self.params['W'] = W
+        """Bound L2 (row-wise) norm of W by max_norm."""
+        M = self.params['W']
+        m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+        mask = (m_scales < 1.0)
+        mask = mask.astype(np.float32) # why is explicit cast needed?
+        m_scales = (m_scales * mask) + (1.0 - mask)
+        self.params['W'] = M * m_scales[:,np.newaxis]
         return
 
     def feedforward(self, X):
@@ -483,11 +494,11 @@ class LUTLayer:
         self.params['W'] -= lam_l2 * self.params['W']
         return 1
 
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
+    def apply_grad(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
-                     self.moms['W'], learn_rate, ada_smooth, lam_l2)
+                     self.moms['W'], learn_rate, ada_smooth)
         self.grad_idx = set()
         return
 
@@ -514,19 +525,20 @@ class CMLayer:
         self.bias_dim = bias_dim
         self.do_rescale = do_rescale # set to True for magical fun
         self.params = {}
-        self.params['W'] = zeros((self.key_count, source_dim))
-        self.params['b'] = zeros((self.key_count, bias_dim))
+        self.params['Wm'] = zeros((self.key_count, source_dim))
+        self.params['Wb'] = zeros((self.key_count, bias_dim))
         self.grads = {}
-        self.grads['W'] = zeros(self.params['W'].shape)
-        self.grads['b'] = zeros(self.params['b'].shape)
+        self.grads['Wm'] = zeros(self.params['Wm'].shape)
+        self.grads['Wb'] = zeros(self.params['Wb'].shape)
         self.moms = {}
-        self.moms['W'] = zeros(self.params['W'].shape)
-        self.moms['b'] = zeros(self.params['b'].shape)
+        self.moms['Wm'] = zeros(self.params['Wm'].shape)
+        self.moms['Wb'] = zeros(self.params['Wb'].shape)
         self.grad_idx = set()
         # Set common stuff for all types layers
         self.X = []
         self.C = []
-        self.W = []
+        self.Wm_exp = []
+        self.Wm_sig = []
         self.Y = []
         self.dLdX = []
         self.dLdY = []
@@ -534,24 +546,24 @@ class CMLayer:
 
     def init_params(self, w_scale=0.01):
         """Randomly initialize the weights in this layer."""
-        self.params['W'] = w_scale * randn((self.key_count, self.source_dim))
-        self.grads['W'] = zeros(self.params['W'].shape)
-        self.params['b'] = w_scale * randn((self.key_count, self.bias_dim))
-        self.grads['b'] = zeros(self.params['b'].shape)
+        self.params['Wm'] = w_scale * randn((self.key_count, self.source_dim))
+        self.grads['Wm'] = zeros(self.params['Wm'].shape)
+        self.params['Wb'] = w_scale * randn((self.key_count, self.bias_dim))
+        self.grads['Wb'] = zeros(self.params['Wb'].shape)
         return
 
     def clip_params(self, max_norm=10.0):
-        """Bound L2 (row-wise) norm of W and b by wt_bnd."""
-        # Rescale some parameters to unit norm
-        for param in ['W', 'b']:
+        """Bound L2 (row-wise) norm of W and b by max_norm."""
+        for param in ['Wm','Wb']:
             M = self.params[param]
-            m_scales = self.max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
+            m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
             mask = (m_scales < 1.0)
+            mask = mask.astype(np.float32) # why is explicit cast needed?
             m_scales = (m_scales * mask) + (1.0 - mask)
             self.params[param] = M * m_scales[:,np.newaxis]
         return
 
-    def norm_info(self, param_name='W'):
+    def norm_info(self, param_name='Wm'):
         """Diagnostic info about norms of W's rows."""
         M = self.params[param_name]
         row_norms = np.sqrt(np.sum(M**2.0, axis=1))
@@ -571,14 +583,14 @@ class CMLayer:
         self.X = X
         self.C = C.astype(np.int32)
         # Get the feature re-weighting and bias adjustment parameters
-        self.W = self.params['W'][C,:]
         if self.do_rescale:
-            W_exp = np.exp(self.W)
-            W_sig = W_exp / (1.0 + W_exp)
+            self.Wm_exp = np.exp(self.params['Wm'][C,:])
+            self.Wm_sig = self.Wm_exp / (1.0 + self.Wm_exp)
         else:
-            W_sig = ones(X.shape)
-        # Modify X by scaling and augmenting
-        self.Y = np.hstack((self.params['b'][C,:], (X * W_sig)))
+            self.Wm_sig = ones(X.shape)
+        # Modify X by scaling and augmenting a multi-dimensional bias
+        Y_stack = np.hstack((self.params['Wb'][C,:], (X * self.Wm_sig)))
+        self.Y = Y_stack.copy()
         return self.Y
 
     def backprop(self, dLdY):
@@ -588,43 +600,47 @@ class CMLayer:
         self.grad_idx.update(self.C.ravel())
         self.dLdY = dLdY
         dLdYb, dLdYw = np.hsplit(dLdY, [self.bias_dim])
+        dLdYb = dLdYb.copy() # copy, because hsplit leaves the new arrays in
+                             # the same memory as the split array, which is
+                             # not good for the BLAS calls used by the Cython
+                             # version of lut_bp, which expect input arrays
+                             # that are in contiguous memory
         if self.do_rescale:
-            W_exp = np.exp(self.W)
-            W_sig = W_exp / (1.0 + W_exp)
-            dLdW = (W_sig / W_exp) * self.X * dLdYw
+            dLdW = (self.Wm_sig / self.Wm_exp) * self.X * dLdYw
+            lut_bp(self.C, dLdW, self.grads['Wm'])
         else:
-            W_sig = ones(dLdYw.shape)
             dLdW = zeros(dLdYw.shape)
-        lut_bp(self.C, dLdW, self.grads['W'])
-        lut_bp(self.C, dLdYb, self.grads['b'])
-        dLdX = W_sig * dLdYw
+        lut_bp(self.C, dLdYb, self.grads['Wb'])
+        dLdX = self.Wm_sig * dLdYw
         return dLdX
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
-        self.params['W'] -= lam_l2 * self.params['W']
+        self.params['Wm'] -= lam_l2 * self.params['Wm']
         return 1
 
-    def apply_grad_reg(self, learn_rate=1e-2, ada_smooth=1e-3, lam_l2=0.0):
+    def apply_grad(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
-        ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
-                     self.moms['W'], learn_rate, ada_smooth, lam_l2)
-        ag_update_2d(nz_idx, self.params['b'], self.grads['b'], \
-                     self.moms['b'], learn_rate, ada_smooth, lam_l2)
+        ag_update_2d(nz_idx, self.params['Wm'], self.grads['Wm'], \
+                     self.moms['Wm'], learn_rate, ada_smooth)
+        ag_update_2d(nz_idx, self.params['Wb'], self.grads['Wb'], \
+                     self.moms['Wb'], learn_rate, ada_smooth)
         self.grad_idx = set()
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
-        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
-        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+        self.moms['Wm'] = (0.0 * self.moms['Wm']) + ada_init
+        self.moms['Wb'] = (0.0 * self.moms['Wb']) + ada_init
         return
 
     def _cleanup(self):
         """Cleanup temporary feedforward/backprop stuff."""
         self.X = []
         self.Y = []
+        self.Wm_exp = []
+        self.Wm_sig = []
         self.dLdX = []
         self.dLdY = []
         return
@@ -766,7 +782,17 @@ class W2VLayer:
         self.moms['b'] = zeros((self.word_count,)) + 1e-3
         return
 
-    @profile
+    def clip_params(self, max_norm=10.0):
+        """Bound L2 (row-wise) norm of Wa and Wc by max_norm."""
+        for param in ['Wa', 'Wc']:
+            M = self.params[param]
+            m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+            mask = (m_scales < 1.0)
+            mask = mask.astype(np.float32) # why is explicit cast needed?
+            m_scales = (m_scales * mask) + (1.0 - mask)
+            self.params[param] = M * m_scales[:,np.newaxis]
+        return
+
     def batch_train(self, anc_idx, pos_idx, neg_idx, learn_rate=1e-3):
         """Perform a batch update of all parameters based on the given sets
         of anchor/positive example/negative examples indices.
@@ -781,18 +807,18 @@ class W2VLayer:
         L = zeros((1,))
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
-                self.params['Wc'], self.params['b'], self.grads['Wa'], \
-                self.grads['Wc'], self.grads['b'], L, 1)
+                  self.params['Wc'], self.params['b'], self.grads['Wa'], \
+                  self.grads['Wc'], self.grads['b'], L, 1)
         L = L[0]
         # Apply gradients to (touched only) look-up-table parameters
         a_mod_idx = np.unique(anc_idx.ravel())
         c_mod_idx = np.unique(pn_idx.ravel())
         ag_update_2d(a_mod_idx, self.params['Wa'], self.grads['Wa'], \
-                self.moms['Wa'], learn_rate, ada_smooth, self.lam_l2)
+                self.moms['Wa'], learn_rate, ada_smooth)
         ag_update_2d(c_mod_idx, self.params['Wc'], self.grads['Wc'], \
-                self.moms['Wc'], learn_rate, ada_smooth, self.lam_l2)
+                self.moms['Wc'], learn_rate, ada_smooth)
         ag_update_1d(c_mod_idx, self.params['b'], self.grads['b'], \
-                self.moms['b'], learn_rate, ada_smooth, self.lam_l2)
+                self.moms['b'], learn_rate, ada_smooth)
         return L
 
     def batch_test(self, anc_idx, pos_idx, neg_idx):

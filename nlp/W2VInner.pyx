@@ -17,7 +17,7 @@ from libc.string cimport memset
 cdef extern from "voidptr.h":
     void* PyCObject_AsVoidPtr(object obj)
 
-from scipy.linalg.blas import fblas
+from scipy.linalg import blas
 
 REAL = np.float32
 ctypedef np.float32_t REAL_t
@@ -54,12 +54,12 @@ ctypedef unsigned long long (*fast_sentence_cbow_neg_ptr) (
     np.uint32_t indexes[MAX_SENTENCE_LEN], const REAL_t alpha, REAL_t *work,
     int i, int j, int k, int cbow_mean, unsigned long long next_random) nogil
 
-cdef scopy_ptr scopy=<scopy_ptr>PyCObject_AsVoidPtr(fblas.scopy._cpointer)  # y = x
-cdef saxpy_ptr saxpy=<saxpy_ptr>PyCObject_AsVoidPtr(fblas.saxpy._cpointer)  # y += alpha * x
-cdef sdot_ptr sdot=<sdot_ptr>PyCObject_AsVoidPtr(fblas.sdot._cpointer)  # float = dot(x, y)
-cdef dsdot_ptr dsdot=<dsdot_ptr>PyCObject_AsVoidPtr(fblas.sdot._cpointer)  # double = dot(x, y)
-cdef snrm2_ptr snrm2=<snrm2_ptr>PyCObject_AsVoidPtr(fblas.snrm2._cpointer)  # sqrt(x^2)
-cdef sscal_ptr sscal=<sscal_ptr>PyCObject_AsVoidPtr(fblas.sscal._cpointer) # x = alpha * x
+cdef scopy_ptr scopy=<scopy_ptr>PyCObject_AsVoidPtr(blas.scopy._cpointer)  # y = x
+cdef saxpy_ptr saxpy=<saxpy_ptr>PyCObject_AsVoidPtr(blas.saxpy._cpointer)  # y += alpha * x
+cdef sdot_ptr sdot=<sdot_ptr>PyCObject_AsVoidPtr(blas.sdot._cpointer)  # float = dot(x, y)
+cdef dsdot_ptr dsdot=<dsdot_ptr>PyCObject_AsVoidPtr(blas.sdot._cpointer)  # double = dot(x, y)
+cdef snrm2_ptr snrm2=<snrm2_ptr>PyCObject_AsVoidPtr(blas.snrm2._cpointer)  # sqrt(x^2)
+cdef sscal_ptr sscal=<sscal_ptr>PyCObject_AsVoidPtr(blas.sscal._cpointer) # x = alpha * x
 cdef fast_sentence_sg_hs_ptr fast_sentence_sg_hs
 cdef fast_sentence_sg_neg_ptr fast_sentence_sg_neg
 cdef fast_sentence_cbow_hs_ptr fast_sentence_cbow_hs
@@ -768,12 +768,14 @@ def init():
     d_res = dsdot(&size, x, &ONE, y, &ONE)
     p_res = <float *>&d_res
     if (abs(d_res - expected) < 0.0001):
+        print("dsdot returns double precision")
         fast_sentence_sg_hs = fast_sentence0_sg_hs
         fast_sentence_sg_neg = fast_sentence0_sg_neg
         fast_sentence_cbow_hs = fast_sentence0_cbow_hs
         fast_sentence_cbow_neg = fast_sentence0_cbow_neg
         return 0  # double
     elif (abs(p_res[0] - expected) < 0.0001):
+        print("dsdot returns single precision")
         fast_sentence_sg_hs = fast_sentence1_sg_hs
         fast_sentence_sg_neg = fast_sentence1_sg_neg
         fast_sentence_cbow_hs = fast_sentence1_cbow_hs

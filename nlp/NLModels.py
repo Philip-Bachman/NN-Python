@@ -112,18 +112,14 @@ class PVModel:
         self.context_layer.backprop(dLdXb)
         if not context_only:
             # Apply gradients computed during backprop (to all parameters)
-            self.softmax_layer.apply_grad_reg(learn_rate=learn_rate, \
-                                              ada_smooth=ada_smooth, \
-                                              lam_l2=self.lam_sm)
-            self.context_layer.apply_grad_reg(learn_rate=learn_rate, \
-                                              ada_smooth=ada_smooth, \
-                                              lam_w=self.lam_wv, \
-                                              lam_c=self.lam_cv)
+            self.softmax_layer.apply_grad(learn_rate=learn_rate, \
+                                          ada_smooth=ada_smooth)
+            self.context_layer.apply_grad(learn_rate=learn_rate, \
+                                          ada_smooth=ada_smooth)
         else:
             # Apply gradients only to the context vectors (for test-time)
             self.context_layer.update_context_vectors(learn_rate=learn_rate, \
-                                                      ada_smooth=ada_smooth, \
-                                                      lam_c=self.lam_cv)
+                                                      ada_smooth=ada_smooth)
         return L
 
     def train_all_params(self, phrase_list, batch_size, batch_count, \
@@ -145,8 +141,6 @@ class PVModel:
             post_keys = seq_keys[:,-1]
             L += self.batch_update(pre_keys, post_keys, phrase_keys, learn_rate, \
                                    ada_smooth=1e-3, context_only=False)
-            if ((b > 1) and ((b % 5000) == 0)):
-                self.reset_moms(ada_init=1e-3)
             if ((b % 100) == 0):
                 obs_count = 100.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
@@ -184,8 +178,6 @@ class PVModel:
             post_keys = seq_keys[:,-1]
             L += self.batch_update(pre_keys, post_keys, phrase_keys, learn_rate, \
                                    ada_smooth=1e-3, context_only=True)
-            if ((b > 1) and ((b % 5000) == 0)):
-                self.reset_moms(ada_init=1e-3)
             if ((b % 100) == 0):
                 obs_count = 100.0 * batch_size
                 print("Test batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
@@ -265,6 +257,7 @@ class CAModel:
         self.fuzz_scale = fuzz_scale
         return
 
+    @profile
     def batch_update(self, anc_keys, pos_keys, neg_keys, phrase_keys, \
                      learn_rate=1e-3, ada_smooth=1e-3, context_only=False):
         """Perform a single "minibatch" update of the model parameters.
@@ -284,10 +277,13 @@ class CAModel:
         Xb = self.word_layer.feedforward(anc_keys)
         Xc = self.context_layer.feedforward(Xb, phrase_keys)
         Xn = self.noise_layer.feedforward(Xc)
-        L = self.class_layer.feedforward(Xn, pos_keys, neg_keys)
+
+        # Turan the corner with feedforward and backprop at class layer
+        dLdXn, L = self.class_layer.ff_bp(Xn, pos_keys, neg_keys)
+        #L = self.class_layer.feedforward(Xn, pos_keys, neg_keys)
+        #dLdXn = self.class_layer.backprop()
 
         # Backprop through layers based on feedforward result
-        dLdXn = self.class_layer.backprop()
         dLdXc = self.noise_layer.backprop(dLdXn)
         dLdXb = self.context_layer.backprop(dLdXc)
         self.word_layer.backprop(dLdXb)
@@ -295,20 +291,16 @@ class CAModel:
         # Update parameters based on the gradients computed in backprop
         if not context_only:
             # Update all parameters in this model
-            self.word_layer.apply_grad_reg(learn_rate=learn_rate, \
-                                           ada_smooth=ada_smooth, \
-                                           lam_l2=self.lam_wv)
-            self.context_layer.apply_grad_reg(learn_rate=learn_rate, \
-                                              ada_smooth=ada_smooth, \
-                                              lam_l2=self.lam_cv)
-            self.class_layer.apply_grad_reg(learn_rate=learn_rate, \
-                                            ada_smooth=ada_smooth, \
-                                            lam_l2=self.lam_ns)
+            self.word_layer.apply_grad(learn_rate=learn_rate, \
+                                       ada_smooth=ada_smooth)
+            self.context_layer.apply_grad(learn_rate=learn_rate, \
+                                          ada_smooth=ada_smooth)
+            self.class_layer.apply_grad(learn_rate=learn_rate, \
+                                        ada_smooth=ada_smooth)
         else:
             # Update only the context vectors (for inference at test-time)
-            self.context_layer.apply_grad_reg(learn_rate=learn_rate, \
-                                              ada_smooth=ada_smooth, \
-                                              lam_l2=self.lam_cv)
+            self.context_layer.apply_grad(learn_rate=learn_rate, \
+                                          ada_smooth=ada_smooth)
         return L
 
     def train_all_params(self, phrase_list, all_words, batch_size, batch_count, \
@@ -322,23 +314,20 @@ class CAModel:
             batch_count: number of minibatch updates to perform
             learn_rate: learning rate for adagrad updates
         """
-        L = 0.0
+        sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
         print("Training all parameters:")
+        L = 0.0
         for b in range(batch_count):
-            [anc_keys, pos_keys, neg_keys, phrase_keys] = hf.rand_pos_neg( \
-                    phrase_list, all_words, batch_size, self.sg_window, \
-                    self.ns_count)
+            anc_keys, pos_keys, neg_keys, phrase_keys = sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
                                    learn_rate=learn_rate, ada_smooth=1e-3, \
                                    context_only=False)
             if ((b > 1) and ((b % 1000) == 0)):
-                W_info = self.context_layer.norm_info('W')
-                b_info = self.context_layer.norm_info('b')
-                print("-- mean norms: W = {0:.4f}, b = {1:.4f}".format(W_info['mean'],b_info['mean']))
-            if ((b > 1) and ((b % 10000) == 0)):
-                self.reset_moms(ada_init=1e-3)
-            if ((b % 100) == 0):
-                obs_count = 100.0 * batch_size
+                Wm_info = self.context_layer.norm_info('Wm')
+                Wb_info = self.context_layer.norm_info('Wb')
+                print("-- mean norms: Wm = {0:.4f}, Wb = {1:.4f}".format(Wm_info['mean'],Wb_info['mean']))
+            if ((b % 500) == 0):
+                obs_count = 500.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         return
@@ -363,23 +352,21 @@ class CAModel:
         new_context_layer.init_params(0.0)
         prev_context_layer = self.context_layer
         self.context_layer = new_context_layer
-        L = 0.0
+        # train the new context layer
+        sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
         print("Training new context vectors:")
+        L = 0.0
         for b in range(batch_count):
-            [anc_keys, pos_keys, neg_keys, phrase_keys] = hf.rand_pos_neg( \
-                    phrase_list, all_words, batch_size, self.sg_window, \
-                    self.ns_count)
+            anc_keys, pos_keys, neg_keys, phrase_keys = sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
                                    learn_rate=learn_rate, ada_smooth=1e-3, \
                                    context_only=True)
             if ((b > 1) and ((b % 1000) == 0)):
-                W_info = self.context_layer.norm_info('W')
-                b_info = self.context_layer.norm_info('b')
-                print("-- mean norms: W = {0:.4f}, b = {1:.4f}".format(W_info['mean'],b_info['mean']))
-            if ((b > 1) and ((b % 10000) == 0)):
-                self.reset_moms(ada_init=1e-3)
-            if ((b % 100) == 0):
-                obs_count = 100.0 * batch_size
+                Wm_info = self.context_layer.norm_info('Wm')
+                Wb_info = self.context_layer.norm_info('Wb')
+                print("-- mean norms: Wm = {0:.4f}, Wb = {1:.4f}".format(Wm_info['mean'],Wb_info['mean']))
+            if ((b % 500) == 0):
+                obs_count = 500.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         # Set self.context_layer back to what it was prior to retraining
@@ -439,7 +426,7 @@ class W2VModel:
                                        learn_rate=learn_rate)
         return L
 
-    @profile
+    #@profile
     def train_all_params(self, phrase_list, all_words, batch_size, batch_count, \
                          learn_rate=1e-3):
         """Train all parameters in the model using the given phrases.
@@ -452,19 +439,17 @@ class W2VModel:
             learn_rate: learning rate for adagrad updates
         """
         L = 0.0
+        sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
         print("Training all parameters:")
         for b in range(batch_count):
-            [anc_keys, pos_keys, neg_keys, phrase_keys] = hf.rand_pos_neg( \
-                    phrase_list, all_words, batch_size, self.sg_window, \
-                    self.ns_count)
+            anc_keys, pos_keys, neg_keys, phrase_keys = sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, \
                                    learn_rate=learn_rate, ada_smooth=1e-3)
-            if ((b > 1) and ((b % 10000) == 0)):
-                self.reset_moms(ada_init=1e-3)
-            if ((b % 500) == 0):
-                obs_count = 500.0 * batch_size
+            if ((b % 1000) == 0):
+                obs_count = 1000.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
+                self.w2v_layer.clip_params(2.0)
         return
 
     def test_all_params(self, phrase_list, all_words, test_samples):
@@ -563,8 +548,8 @@ def test_CAModel_stb():
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 100
-    cv_dim = 2
+    wv_dim = 200
+    cv_dim = 50
     lam_l2 = 1e-3
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
                   ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
@@ -572,11 +557,12 @@ def test_CAModel_stb():
     cam.set_noise(drop_rate=0.0, fuzz_scale=0.00)
 
     # Train all parameters using the training set phrases
-    cam.train_all_params(tr_phrases, tr_words, 256, 200001, 1e-2)
+    cam.train_all_params(tr_phrases, tr_words, 300, 20001, 1e-3)
     cl_train = cam.context_layer
 
     # Infer new context vectors for the test set phrases
-    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 256, 100001, 1e-2)
+    #cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 300, 10001, 1e-3)
+    cl_dev = []
     return [cl_train, cl_dev, stb_data, cam]
 
 
@@ -605,17 +591,18 @@ def test_W2VModel_stb():
     max_cv_key = len(tr_phrases) - 1
 
     # Choose some simple hyperparameters for the model
-    sg_window = 5
+    sg_window = 6
     ns_count = 10
     wv_dim = 200
     lam_l2 = 1e-4
     w2v_model = W2VModel(wv_dim, max_wv_key, sg_window=sg_window, \
                          ns_count=ns_count, lam_l2=lam_l2)
 
-    for i in range(1):
+    alpha = 1e-2
+    for i in range(15):
         # Train all parameters using the training set phrases
-        w2v_model.reset_moms()
-        w2v_model.train_all_params(tr_phrases, tr_words, 250, 10000, 2e-2)
+        w2v_model.train_all_params(tr_phrases, tr_words, 300, 25001, alpha)
+        alpha = alpha * 0.8
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
                 w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
         for w in range(10):
@@ -642,7 +629,7 @@ def test_W2VModel_1bw():
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 300
+    wv_dim = 200
     lam_l2 = 1e-4
     w2v_model = W2VModel(wv_dim, max_wv_key, sg_window=sg_window, \
                          ns_count=ns_count, lam_l2=lam_l2)
@@ -666,11 +653,11 @@ if __name__ == '__main__':
     #pickle.dump(pvm_result, open('pvm_result.pkl','wb'))
 
     # TEST CA MODEL
-    #cam_result = test_CAModel_stb()
+    cam_result = test_CAModel_stb()
     #pickle.dump(cam_result, open('cam_result.pkl','wb'))
 
     # TEST W2V MODEL
-    w2v_result = test_W2VModel_stb()
+    #w2v_result = test_W2VModel_stb()
     #w2v_result = test_W2VModel_1bw()
     #pickle.dump(w2v_result, open('w2v_result.pkl','wb'))
 
