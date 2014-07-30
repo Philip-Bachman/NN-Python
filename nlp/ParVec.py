@@ -8,7 +8,7 @@ import gnumpy as gp
 # Imports of my stuff
 import HelperFuncs as hf
 from HelperFuncs import randn, ones, zeros
-#from NumbaFuncs import ag_update_2d, ag_update_1d, lut_bp
+from NumbaFuncs import ag_update_2d, ag_update_1d, lut_bp
 from CythonFuncs import ag_update_2d, ag_update_1d, lut_bp
 
 #################################
@@ -65,16 +65,11 @@ class FullLayer:
         self.Y = gp.dot(self.X, self.params['W']) + self.params['b']
         return self.Y
 
-    def backprop(self, Y_cat, return_on_gpu=False):
+    def backprop(self, Y_cat, L_ary=None, return_on_gpu=False):
         """Backprop through softmax using the given target predictions."""
-        Y_cat = Y_cat.astype(np.int32)
-        self.Y_cat = Y_cat
-        # Convert from categorical classes to "one-hot" vectors
-        Y_ind = zeros(self.Y.shape)
-        Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         # Compute gradient of cross-entropy objective, based on the given
         # target predictions and the most recent feedforward information.
-        dLdY = self.cross_entropy_grad(self.Y, Y_ind)
+        L, dLdY = self.xent_loss_and_grad(self.Y, Y_cat.astype(np.int32))
         # Backprop cross-ent grads to get grads w.r.t. layer parameters
         dLdW = gp.dot(self.X.T, dLdY)
         dLdb = gp.sum(dLdY, axis=0)
@@ -85,7 +80,9 @@ class FullLayer:
         dLdX = gp.dot(dLdY, self.params['W'].T)
         # Return gradients w.r.t. to input, either on or off the GPU
         if not return_on_gpu:
-            dLdX = gp.as_numpy_array(dLdX)
+            dLdX = gp.as_numpy_array(dLdX).astype(np.float32)
+        # Write loss into L_ary if it was given
+        L_ary[0] = L
         return dLdX
 
     def safe_softmax(self, Y):
@@ -98,16 +95,7 @@ class FullLayer:
         Y_sm = Y_exp / Y_sum
         return Y_sm
 
-    def cross_entropy_grad(self, Yh, Y_ind):
-        """Cross-entropy gradient for predictions Yh given targets Y_ind."""
-        # Push one-hot target vectors to GPU if not already there
-        Y_ind = gp.garray(Y_ind)
-        # Compute softmax and cross-entropy gradients
-        Yh_sm = self.safe_softmax(Yh)
-        dLdYh = Yh_sm - Y_ind
-        return dLdYh
-
-    def cross_entropy_loss(self, Yh, Y_cat):
+    def xent_loss_and_grad(self, Yh, Y_cat):
         """Cross-entropy loss for predictions Yh given targets Y_cat."""
         # Convert from categorical classes to "one-hot" target vectors
         Y_ind = zeros(Yh.shape)
@@ -117,7 +105,8 @@ class FullLayer:
         # Compute softmax and then cross-entropy loss
         Yh_sm = self.safe_softmax(Yh)
         L = -gp.sum((Y_ind * gp.log(Yh_sm)))
-        return L
+        dLdYh = Yh_sm - Y_ind
+        return [L, dLdYh]
 
     def l2_regularize(self, lam_l2=1e-5):
         """Apply some amount of l2 "shrinkage" to weights and biases."""
@@ -202,7 +191,7 @@ class ContextLayer:
         self.grads['C'] = zeros(self.params['C'].shape)
         return
 
-    def clip_params(self, W_norm=10.0, C_norm=10.0):
+    def clip_params(self, W_norm=5.0, C_norm=5.0):
         """Bound L2 (row-wise) norm of W & C by W_norm & C_norm."""
         for (param, max_norm) in zip(['W', 'C'], [W_norm, C_norm]):
             M = self.params[param]
@@ -246,26 +235,24 @@ class ContextLayer:
             lut_bp(self.Iw[:,i], dLdY[:,s_idx:e_idx], self.grads['W'])
         return
 
-    def apply_grad(self, learn_rate=1e-3, ada_smooth=1e-3):
+    def apply_grad(self, learn_rate=1e-3, train_context=False, \
+                   train_other=False, ada_smooth=1e-3):
         """Apply the current accumulated gradients, adagrad style."""
         # Find which LUT keys point to params with pending updates
         nz_idx_w = np.asarray([i for i in self.grad_idx_w]).astype(np.int32)
         nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
         # Update the params for words/contexts with pending updates
+        other_rate = 0.0
+        context_rate = 0.0
+        if train_other:
+            other_rate = learn_rate
+        if train_context:
+            context_rate = learn_rate
         ag_update_2d(nz_idx_w, self.params['W'], self.grads['W'], \
-                     self.moms['W'], learn_rate, ada_smooth)
+                     self.moms['W'], other_rate, ada_smooth)
         ag_update_2d(nz_idx_c, self.params['C'], self.grads['C'], \
-                     self.moms['C'], learn_rate, ada_smooth)
-        # Reset the sets of LUT keys for parameters with pending updates
+                     self.moms['C'], context_rate, ada_smooth)
         self.grad_idx_w = set()
-        self.grad_idx_c = set()
-        return
-
-    def update_context_vectors(self, learn_rate=1e-3, ada_smooth=1e-3):
-        """Apply only the context-vector gradients, adagrad style."""
-        nz_idx_c = np.asarray([i for i in self.grad_idx_c]).astype(np.int32)
-        ag_update_2d(nz_idx_c, self.params['C'], self.grads['C'], \
-                     self.moms['C'], learn_rate, ada_smooth)
         self.grad_idx_c = set()
         return
 
@@ -348,7 +335,7 @@ class NoiseLayer:
         # Backprop is just multiplication by the mask from feedforward
         dLdX = gp.garray(dLdY) * self.dYdX
         if not return_on_gpu:
-            dLdX = gp.as_numpy_array(dLdX)
+            dLdX = gp.as_numpy_array(dLdX).astype(np.float32)
         return dLdX
 
     def _cleanup(self):
@@ -363,81 +350,10 @@ class NoiseLayer:
 ###################################
 
 def run_test():
-    import DataLoaders as dl
-     # Load tree data
-    tree_dir = './trees'
-    stb_data = dl.LoadSTB(tree_dir)
-    # Get the lists of full train and test phrases
-    tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['dev_full_phrases']
-    # Get the list of all word occurrences in the training phrases
-    tr_words = []
-    for phrase in tr_phrases:
-        tr_words.extend(phrase)
-    tr_words = np.asarray(tr_words).astype(np.int32)
-    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
-    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
-    # Add a NULL token, to use in n-gram sampling
-    max_word_key = max(stb_data['words_to_keys'].values()) + 1
-    stb_data['words_to_keys']['*NULL*'] = max_word_key
-    stb_data['keys_to_words'][max_word_key] = '*NULL*'
-
-    max_context_key = len(tr_phrases) - 1
-
-    # Set some simple hyperparameters for training
-    null_key = max_word_key
-    batch_count = 5001
-    batch_size = 200
-    pre_words = 3
-    word_dim = 200
-    context_dim = 200
-    lam_l2 = 1e-3
-
-    # Create a lookup table for word representations
-    context_layer = ContextLayer(max_word_key, word_dim, max_context_key, context_dim)
-    noise_layer = NoiseLayer(drop_rate=0.0, fuzz_scale=0.0)
-    class_layer = FullLayer(in_dim=(pre_words*word_dim + context_dim), \
-                            max_out_key=max_word_key)
-
-    # Initialize params for the LUT and softmax classifier
-    context_layer.init_params(0.05)
-    class_layer.init_params(0.05)
-
-    print("Processing batches:")
-    L = 0.0
-    for b in range(batch_count):
-        # Sample a batch of random anchor/context prediction pairs for
-        # training a skip-gram model.
-        [seq_keys, phrase_keys] = \
-            hf.rand_word_seqs(tr_phrases, batch_size, pre_words+1, null_key)
-        pre_keys = seq_keys[:,:-1]
-        post_keys = seq_keys[:,-1]
-
-        # Feedforward through look-up-table and classifier layers
-        Xb = context_layer.feedforward(pre_keys, phrase_keys)
-        Xn = noise_layer.feedforward(Xb)
-        Yn = class_layer.feedforward(Xn)
-        L += class_layer.cross_entropy_loss(Yn, post_keys)
-
-        # Backprop through classifier and look-up-table layers
-        dLdXn = class_layer.backprop(post_keys, return_on_gpu=True)
-        dLdXb = noise_layer.backprop(dLdXn, return_on_gpu=False)
-        context_layer.backprop(dLdXb)
-
-        # Apply gradients computed during backprop
-        class_layer.apply_grad(learn_rate=4e-4, ada_smooth=1e-3)
-        context_layer.apply_grad(learn_rate=4e-4, ada_smooth=1e-3)
-
-        # Compute and display loss from time-to-time (for diagnostics)
-        if ((b % 50) == 0):
-            obs_count = 50.0 * batch_size
-            print("Batch {0:d}, loss {1:.4f}".format(b, (L / obs_count)))
-            L = 0.0
-
-        # Reset adagrad smoothing factors from time-to-time
-        if ((b > 1) and ((b % 10000) == 0)):
-            class_layer.reset_moms()
-            context_layer.reset_moms()
+    #########################################################
+    # TODO: write new tests that don't depend on STB files. #
+    #########################################################
+    print("TODO: WRITE TEST FOR ParVec.py")
 
 if __name__ == '__main__':
     run_test()

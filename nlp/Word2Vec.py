@@ -4,6 +4,7 @@ from __future__ import absolute_import
 import numpy as np
 import numpy.random as npr
 import gnumpy as gp
+import numexpr as ne
 
 # Imports of my stuff
 import HelperFuncs as hf
@@ -11,7 +12,7 @@ from HelperFuncs import randn, ones, zeros
 #from NumbaFuncs import w2v_ff_bp, ag_update_2d, ag_update_1d, lut_bp, \
 #                       nsl_ff, nsl_bp
 from NumbaFuncs import nsl_ff, nsl_bp, ag_update_2d, ag_update_1d
-from CythonFuncs import w2v_ff_bp, nsl_ff_bp, lut_bp
+from CythonFuncs import w2v_ff_bp, nsl_ff_bp, lut_bp #, ag_update_2d, ag_update_1d
 
 
 
@@ -477,7 +478,7 @@ class LUTLayer:
         # Record the incoming list of row indices to extract
         self.X = X.astype(np.int32)
         # Use look-up table to generate the desired sequences
-        self.Y = self.params['W'][self.X,:]
+        self.Y = self.params['W'].take(self.X, axis=0)
         return self.Y
 
     def backprop(self, dLdY):
@@ -573,7 +574,6 @@ class CMLayer:
         info = {'mean': men_n, 'min': min_n, 'median': med_n, 'max': max_n}
         return info
 
-    @profile
     def feedforward(self, X, C):
         """Run feedforward for this layer.
         """
@@ -582,15 +582,17 @@ class CMLayer:
         # Record the incoming list of row indices to extract
         self.X = X
         self.C = C.astype(np.int32)
+        # Extract the relevant bias parameter rows
+        Wb = self.params['Wb'].take(C, axis=0)
         # Get the feature re-weighting and bias adjustment parameters
         if self.do_rescale:
-            self.Wm_exp = np.exp(self.params['Wm'][C,:])
+            Wm = self.params['Wm'].take(C, axis=0)
+            self.Wm_exp = ne.evaluate('exp(Wm)', optimization='aggressive')
             self.Wm_sig = self.Wm_exp / (1.0 + self.Wm_exp)
         else:
             self.Wm_sig = ones(X.shape)
-        # Modify X by scaling and augmenting a multi-dimensional bias
-        Y_stack = np.hstack((self.params['Wb'][C,:], (X * self.Wm_sig)))
-        self.Y = Y_stack.copy()
+        # Modify X by augmenting a multi-dimensional bias and rescaling
+        self.Y = np.hstack((Wb, (X * self.Wm_sig)))
         return self.Y
 
     def backprop(self, dLdY):

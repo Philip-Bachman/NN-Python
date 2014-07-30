@@ -4,6 +4,7 @@ import Word2Vec as w2v
 import ParVec as pv
 import HelperFuncs as hf
 import cPickle as pickle
+from HelperFuncs import zeros, ones, randn
 
 class PVModel:
     """
@@ -88,7 +89,7 @@ class PVModel:
         return
 
     def batch_update(self, pre_keys, post_keys, phrase_keys, learn_rate=1e-3, \
-                     ada_smooth=1e-3, context_only=False):
+                     train_context=False, train_other=False):
         """Perform a single "minibatch" update of the model parameters.
 
         Parameters:
@@ -96,31 +97,23 @@ class PVModel:
             post_keys: the n^th item in each n-gram to be predicted
             phrase_keys: key for the phrase from which each n-gram was taken
             learn_rate: learning rate to use in parameter updates
-            ada_smooth: smoothing parameter for adagrad
-            context_only: whether to update only the context layer params
+            train_context: train bias and modulator params in context layer
+            train_other: train the basic word and classification params
         """
+        L = zeros((1,))
         # Feedforward through look-up-table, noise, and softmax layers
         Xb = self.context_layer.feedforward(pre_keys, phrase_keys)
         Xn = self.noise_layer.feedforward(Xb)
         Yn = self.softmax_layer.feedforward(Xn)
-        # Compute loss at softmax layer
-        L = self.softmax_layer.cross_entropy_loss(Yn, post_keys)
-
         # Backprop through the layers in reverse order
-        dLdXn = self.softmax_layer.backprop(post_keys, return_on_gpu=True)
+        dLdXn = self.softmax_layer.backprop(post_keys, L_ary=L, return_on_gpu=True)
         dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
         self.context_layer.backprop(dLdXb)
-        if not context_only:
-            # Apply gradients computed during backprop (to all parameters)
-            self.softmax_layer.apply_grad(learn_rate=learn_rate, \
-                                          ada_smooth=ada_smooth)
-            self.context_layer.apply_grad(learn_rate=learn_rate, \
-                                          ada_smooth=ada_smooth)
-        else:
-            # Apply gradients only to the context vectors (for test-time)
-            self.context_layer.update_context_vectors(learn_rate=learn_rate, \
-                                                      ada_smooth=ada_smooth)
-        return L
+        if train_other:
+            self.softmax_layer.apply_grad(learn_rate=learn_rate)
+        self.context_layer.apply_grad(learn_rate=learn_rate, train_other=train_other, \
+                                      train_context=train_context)
+        return L[0]
 
     def train_all_params(self, phrase_list, batch_size, batch_count, \
                         learn_rate=1e-3):
@@ -140,11 +133,13 @@ class PVModel:
             pre_keys = seq_keys[:,0:-1]
             post_keys = seq_keys[:,-1]
             L += self.batch_update(pre_keys, post_keys, phrase_keys, learn_rate, \
-                                   ada_smooth=1e-3, context_only=False)
-            if ((b % 100) == 0):
-                obs_count = 100.0 * batch_size
+                                   train_context=True, train_other=True)
+            if ((b % 200) == 0):
+                obs_count = 200.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
+                self.softmax_layer.clip_params(max_norm=8.0)
+                self.context_layer.clip_params(W_norm=2.0, C_norm=2.0)
         return
 
     def infer_context_vectors(self, phrase_list, batch_size, batch_count, \
@@ -155,6 +150,7 @@ class PVModel:
             phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
             batch_size: batch size for minibatch updates
             batch_count: number of minibatch updates to perform
+            learn_rate: learning rate for parameter updates
         """
         # Put a new context layer in place of self.context_layer, but keep
         # a pointer to self.context_layer around to restore later...
@@ -177,11 +173,12 @@ class PVModel:
             pre_keys = seq_keys[:,0:-1]
             post_keys = seq_keys[:,-1]
             L += self.batch_update(pre_keys, post_keys, phrase_keys, learn_rate, \
-                                   ada_smooth=1e-3, context_only=True)
-            if ((b % 100) == 0):
-                obs_count = 100.0 * batch_size
+                                   train_context=True, train_other=False)
+            if ((b % 200) == 0):
+                obs_count = 200.0 * batch_size
                 print("Test batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
+                self.context_layer.clip_params(W_norm=2.0, C_norm=2.0)
         # Set self.context_layer back to what it was prior to retraining
         self.context_layer = prev_context_layer
         self.softmax_layer.reset_grads()
@@ -257,7 +254,6 @@ class CAModel:
         self.fuzz_scale = fuzz_scale
         return
 
-    @profile
     def batch_update(self, anc_keys, pos_keys, neg_keys, phrase_keys, \
                      learn_rate=1e-3, ada_smooth=1e-3, context_only=False):
         """Perform a single "minibatch" update of the model parameters.
@@ -426,7 +422,6 @@ class W2VModel:
                                        learn_rate=learn_rate)
         return L
 
-    #@profile
     def train_all_params(self, phrase_list, all_words, batch_size, batch_count, \
                          learn_rate=1e-3):
         """Train all parameters in the model using the given phrases.
@@ -494,6 +489,7 @@ def some_nearest_words(keys_to_words, sample_count, W1, W2):
 def test_PVModel_stb():
     """Hard-coded test on STB data, for development/debugging."""
     import DataLoaders as dl
+    from sklearn import linear_model
      # Load tree data
     tree_dir = './trees'
     stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
@@ -507,21 +503,27 @@ def test_PVModel_stb():
     max_cv_key = len(tr_phrases) - 1
 
     # Choose some simple hyperparameters for the model
-    pre_words = 0
-    wv_dim = 50
-    cv_dim = 200
+    pre_words = 6
+    wv_dim = 300
+    cv_dim = 300
     lam_l2 = 1e-5
 
     pvm = PVModel(wv_dim, cv_dim, max_wv_key, max_cv_key, pre_words=pre_words, \
-            lam_wv=lam_l2, lam_cv=lam_l2, lam_sm=lam_l2)
+                  lam_wv=lam_l2, lam_cv=lam_l2, lam_sm=lam_l2)
     pvm.init_params(0.05)
+    pvm.set_noise(drop_rate=0.5, fuzz_scale=0.025)
 
     # Train all parameters using the training set phrases
-    pvm.train_all_params(tr_phrases, 256, 25001)
+    pvm.train_all_params(tr_phrases, 256, 200001)
     cl_train = pvm.context_layer
 
     # Train new context vectors using the validation set phrases
-    cl_dev = pvm.infer_context_vectors(te_phrases, 256, 25001)
+    cl_dev = pvm.infer_context_vectors(te_phrases, 256, 200001)
+
+    X_train = cl_train.params['C'].copy()
+    X_dev = cl_dev.params['C'].copy()
+    Y_train = np.asarray([label for label in stb_data['train_full_labels']]).astype(np.int32)
+    Y_dev = np.asarray([label for label in stb_data['dev_full_labels']]).astype(np.int32)
 
     return [cl_train, cl_dev, stb_data, pvm]
 
@@ -648,18 +650,42 @@ def test_W2VModel_1bw():
     return [w2v_model, dataset]
 
 if __name__ == '__main__':
-    # TEST PV MODEL
-    #pvm_result = test_PVModel_stb()
-    #pickle.dump(pvm_result, open('pvm_result.pkl','wb'))
+    import DataLoaders as dl
+    from sklearn import linear_model
+     # Load tree data
+    tree_dir = './trees'
+    stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
+    # Get the lists of full train and test phrases
+    tr_phrases = stb_data['train_full_phrases']
+    te_phrases = stb_data['dev_full_phrases']
+    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
+    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
+    # Record maximum required keys for the context layer's tables
+    max_wv_key = max(stb_data['words_to_keys'].values())
+    max_cv_key = len(tr_phrases) - 1
 
-    # TEST CA MODEL
-    cam_result = test_CAModel_stb()
-    #pickle.dump(cam_result, open('cam_result.pkl','wb'))
+    # Choose some simple hyperparameters for the model
+    pre_words = 6
+    wv_dim = 250
+    cv_dim = 250
+    lam_l2 = 1e-5
 
-    # TEST W2V MODEL
-    #w2v_result = test_W2VModel_stb()
-    #w2v_result = test_W2VModel_1bw()
-    #pickle.dump(w2v_result, open('w2v_result.pkl','wb'))
+    pvm = PVModel(wv_dim, cv_dim, max_wv_key, max_cv_key, pre_words=pre_words, \
+                  lam_wv=lam_l2, lam_cv=lam_l2, lam_sm=lam_l2)
+    pvm.init_params(0.05)
+    pvm.set_noise(drop_rate=0.5, fuzz_scale=0.025)
+
+    # Train all parameters using the training set phrases
+    pvm.train_all_params(tr_phrases, 256, 200001)
+    cl_train = pvm.context_layer
+
+    # Train new context vectors using the validation set phrases
+    cl_dev = pvm.infer_context_vectors(te_phrases, 256, 200001)
+
+    X_train = cl_train.params['C'].copy()
+    X_dev = cl_dev.params['C'].copy()
+    Y_train = np.asarray([label for label in stb_data['train_full_labels']]).astype(np.int32)
+    Y_dev = np.asarray([label for label in stb_data['dev_full_labels']]).astype(np.int32)
 
 
 
