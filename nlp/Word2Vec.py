@@ -52,10 +52,10 @@ class NSLayer:
         self.grads['b'] = zeros((self.key_count,))
         return
 
-    def clip_params(self, max_norm=10.0):
+    def clip_params(self, max_norm=5.0):
         """Bound L2 (row-wise) norm of W by max_norm."""
         M = self.params['W']
-        m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+        m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
         mask = (m_scales < 1.0)
         mask = mask.astype(np.float32) # why is explicit cast needed?
         m_scales = (m_scales * mask) + (1.0 - mask)
@@ -146,6 +146,14 @@ class NSLayer:
         self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
+    def reset_grads_and_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['W'] = (0.0 * self.grads['W'])
+        self.grads['b'] = (0.0 * self.grads['b'])
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+        return
+
     def _cleanup(self):
         """Cleanup temporary feedforward/backprop stuff."""
         self.X = []
@@ -191,10 +199,10 @@ class HSMLayer:
         self.grads['b'] = zeros((1, self.code_vecs))
         return
 
-    def clip_params(self, max_norm=10.0):
+    def clip_params(self, max_norm=5.0):
         """Bound L2 (row-wise) norm of W by max_norm."""
         M = self.params['W']
-        m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+        m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
         mask = (m_scales < 1.0)
         mask = mask.astype(np.float32) # why is explicit cast needed?
         m_scales = (m_scales * mask) + (1.0 - mask)
@@ -258,14 +266,16 @@ class HSMLayer:
         self.reset_grads()
         return
 
-    def reset_grads(self):
-        """Reset the gradient accumulators for this layer."""
-        self.grads['W'] = 0.0 * self.grads['W']
-        self.grads['b'] = 0.0 * self.grads['b']
-        return
-
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+        return
+
+    def reset_grads_and_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['W'] = (0.0 * self.grads['W'])
+        self.grads['b'] = (0.0 * self.grads['b'])
         self.moms['W'] = (0.0 * self.moms['W']) + ada_init
         self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
@@ -316,10 +326,10 @@ class FullLayer:
         self.grads['b'] = gp.zeros((1, self.dim_output))
         return
 
-    def clip_params(self, max_norm=10.0):
+    def clip_params(self, max_norm=5.0):
         """Bound l2 (row-wise) norm of W by max_norm."""
         M = self.params['W']
-        m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+        m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
         mask = (m_scales < 1.0)
         mask = mask.astype(np.float32) # why is explicit cast needed?
         m_scales = (m_scales * mask) + (1.0 - mask)
@@ -412,14 +422,16 @@ class FullLayer:
         self.reset_grads()
         return
 
-    def reset_grads(self):
-        """Reset the gradient accumulators for this layer."""
-        self.grads['W'] = 0.0 * self.grads['W']
-        self.grads['b'] = 0.0 * self.grads['b']
-        return
-
     def reset_moms(self, ada_init=1e-3):
         """Reset the adagrad "momentums" for this layer."""
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+        return
+
+    def reset_grads_and_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['W'] = (0.0 * self.grads['W'])
+        self.grads['b'] = (0.0 * self.grads['b'])
         self.moms['W'] = (0.0 * self.moms['W']) + ada_init
         self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
@@ -457,10 +469,10 @@ class LUTLayer:
         self.grads['W'] = zeros((self.key_count, self.embed_dim))
         return
 
-    def clip_params(self, max_norm=10.0):
+    def clip_params(self, max_norm=5.0):
         """Bound L2 (row-wise) norm of W by max_norm."""
         M = self.params['W']
-        m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+        m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
         mask = (m_scales < 1.0)
         mask = mask.astype(np.float32) # why is explicit cast needed?
         m_scales = (m_scales * mask) + (1.0 - mask)
@@ -504,6 +516,12 @@ class LUTLayer:
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        return
+
+    def reset_grads_and_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['W'] = (0.0 * self.grads['W'])
         self.moms['W'] = (0.0 * self.moms['W']) + ada_init
         return
 
@@ -552,11 +570,11 @@ class CMLayer:
         self.grads['Wb'] = zeros(self.params['Wb'].shape)
         return
 
-    def clip_params(self, max_norm=10.0):
-        """Bound L2 (row-wise) norm of W and b by max_norm."""
-        for param in ['Wm','Wb']:
+    def clip_params(self, Wm_norm=5.0, Wb_norm=5.0):
+        """Bound L2 (row-wise) norm of Wm and Wb by max_norm."""
+        for (param, max_norm) in zip(['Wm','Wb'],[Wm_norm, Wb_norm]):
             M = self.params[param]
-            m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+            m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
             mask = (m_scales < 1.0)
             mask = mask.astype(np.float32) # why is explicit cast needed?
             m_scales = (m_scales * mask) + (1.0 - mask)
@@ -579,16 +597,28 @@ class CMLayer:
         """
         # Cleanup debris from any previous feedforward
         self._cleanup()
+        assert ((self.bias_dim >= 5) or (self.source_dim >= 5))
         # Record the incoming list of row indices to extract
         self.X = X
         self.C = C.astype(np.int32)
         # Extract the relevant bias parameter rows
         Wb = self.params['Wb'].take(C, axis=0)
+        if (self.bias_dim < 5):
+            # No context-adaptive bias term should be applied if self.bias_dim
+            # is < 5. I.e. only information coming up from the word LUT, and
+            # possibly rescaled by this layer, should be used in prediction.
+            Wb = zeros(Wb.shape)
         # Get the feature re-weighting and bias adjustment parameters
         if self.do_rescale:
             Wm = self.params['Wm'].take(C, axis=0)
             self.Wm_exp = ne.evaluate('exp(Wm)', optimization='aggressive')
             self.Wm_sig = self.Wm_exp / (1.0 + self.Wm_exp)
+            if (self.source_dim < 5):
+                # Information from the word LUT should not pass through this
+                # layer. When source_dim < 5, we assume that we are meant to
+                # do prediction using only the context-adaptive biases.
+                self.Wm_exp = ones(Wm.shape)
+                self.Wm_sig = zeros(Wm.shape)
         else:
             self.Wm_sig = ones(X.shape)
         # Modify X by augmenting a multi-dimensional bias and rescaling
@@ -610,8 +640,6 @@ class CMLayer:
         if self.do_rescale:
             dLdW = (self.Wm_sig / self.Wm_exp) * self.X * dLdYw
             lut_bp(self.C, dLdW, self.grads['Wm'])
-        else:
-            dLdW = zeros(dLdYw.shape)
         lut_bp(self.C, dLdYb, self.grads['Wb'])
         dLdX = self.Wm_sig * dLdYw
         return dLdX
@@ -619,20 +647,37 @@ class CMLayer:
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
         self.params['Wm'] -= lam_l2 * self.params['Wm']
+        self.params['Wb'] -= lam_l2 * self.params['Wb']
         return 1
 
     def apply_grad(self, learn_rate=1e-2, ada_smooth=1e-3):
         """Apply the current accumulated gradients, with adagrad."""
         nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
+        # Information from the word LUT should not pass through this
+        # layer when source_dim < 5. In this case, we assume that we
+        # will do prediction using only the context-adaptive biases.
+        m_rate = learn_rate if (self.source_dim >= 5) else 0.0
         ag_update_2d(nz_idx, self.params['Wm'], self.grads['Wm'], \
-                     self.moms['Wm'], learn_rate, ada_smooth)
+                     self.moms['Wm'], m_rate, ada_smooth)
+        # No context-adaptive bias term should be applied if self.bias_dim
+        # is < 5. I.e. only information coming up from the word LUT, and
+        # possibly rescaled by this layer, should be used in prediction.
+        b_rate = learn_rate if (self.bias_dim >= 5) else 0.0
         ag_update_2d(nz_idx, self.params['Wb'], self.grads['Wb'], \
-                     self.moms['Wb'], learn_rate, ada_smooth)
+                     self.moms['Wb'], b_rate, ada_smooth)
         self.grad_idx = set()
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
+        self.moms['Wm'] = (0.0 * self.moms['Wm']) + ada_init
+        self.moms['Wb'] = (0.0 * self.moms['Wb']) + ada_init
+        return
+
+    def reset_grads_and_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['Wm'] = (0.0 * self.grads['Wm'])
+        self.grads['Wb'] = (0.0 * self.grads['Wb'])
         self.moms['Wm'] = (0.0 * self.moms['Wm']) + ada_init
         self.moms['Wb'] = (0.0 * self.moms['Wb']) + ada_init
         return
@@ -679,6 +724,7 @@ class NoiseLayer:
         if (self.drop_rate > 1e-4):
             drop_mask = self.drop_scale * \
                     (npr.rand(self.X.shape[0], self.X.shape[1]) > self.drop_rate)
+            drop_mask = drop_mask.astype(np.float32)
         else:
             drop_mask = ones((self.X.shape[0], self.X.shape[1]))
         self.dYdX = drop_mask
@@ -784,11 +830,11 @@ class W2VLayer:
         self.moms['b'] = zeros((self.word_count,)) + 1e-3
         return
 
-    def clip_params(self, max_norm=10.0):
+    def clip_params(self, max_norm=5.0):
         """Bound L2 (row-wise) norm of Wa and Wc by max_norm."""
         for param in ['Wa', 'Wc']:
             M = self.params[param]
-            m_scales = max_norm / np.sqrt(np.sum(np.square(M),axis=1) + 1e-5)
+            m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
             mask = (m_scales < 1.0)
             mask = mask.astype(np.float32) # why is explicit cast needed?
             m_scales = (m_scales * mask) + (1.0 - mask)
@@ -850,70 +896,29 @@ class W2VLayer:
         self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
 
+    def reset_grads_and_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['Wa'] = (0.0 * self.grads['Wa']) + ada_init
+        self.grads['Wc'] = (0.0 * self.grads['Wc']) + ada_init
+        self.grads['b'] = (0.0 * self.grads['b']) + ada_init
+        self.moms['Wa'] = (0.0 * self.moms['Wa']) + ada_init
+        self.moms['Wc'] = (0.0 * self.moms['Wc']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+        return
+
 ###################################
 # TEST BASIC MODULE FUNCTIONALITY #
 ###################################
 
-def run_stb_test():
-    import DataLoaders as dl
-     # Load tree data
-    tree_dir = './trees'
-    stb_data = dl.LoadSTB(tree_dir)
-
-    # Get the lists of full train and test phrases
-    tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['dev_full_phrases']
-    # Get the list of all word occurrences in the training phrases
-    tr_words = []
-    for phrase in tr_phrases:
-        tr_words.extend(phrase)
-    tr_words = np.asarray(tr_words).astype(np.int32)
-    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
-    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
-
-    max_word_key = max(stb_data['words_to_keys'].values())
-    batch_count = 100001
-    batch_size = 256
-    context_size = 5
-    embed_dim = 200
-    lam_l2 = 1e-3
-
-    # Create a lookup table for word representations
-    w2v_layer = W2VLayer(max_word_key, embed_dim)
-
-    # Initialize params for the LUT and softmax classifier
-    w2v_layer.init_params(0.05)
-
-    print("Processing batches:")
-    L = 0.0
-    for b in range(batch_count):
-        # Sample a batch of random anchor/context prediction pairs for
-        # training a skip-gram model.
-        [a_idx, p_idx, n_idx, phrase_idx] = \
-            hf.rand_pos_neg(tr_phrases, tr_words, batch_size, context_size, 8)
-
-        # Compute and apply the updates for this batch
-        L += w2v_layer.batch_train(a_idx, p_idx, n_idx, learn_rate=2e-4)
-
-        # Reset adagrad smoothing factors from time-to-time
-        if ((b > 1) and ((b % 10000) == 0)):
-            w2v_layer.reset_moms()
-        # Display loss on the training set from time-to-time
-        if ((b % 200) == 0):
-            obs_count = batch_size * 200.0
-            print("Batch {0:d}, loss {1:.4f}".format(b, (L / obs_count)))
-            L = 0.0
-        # Occasionally compute loss on the validation set
-        if ((b > 1) and ((b % 1000) == 0)):
-            obs_count = 1000
-            [a_idx, p_idx, n_idx, phrase_idx] = \
-                hf.rand_pos_neg(te_phrases, tr_words, obs_count, context_size, 8)
-            Lv = w2v_layer.batch_test(a_idx, p_idx, n_idx)
-            print("    test loss: {0:.4f}".format(Lv / obs_count))
+def run_test():
+    #########################################################
+    # TODO: write new tests that don't depend on STB files. #
+    #########################################################
+    print("TODO: WRITE TEST FOR Word2Vec.py")
 
 
 if __name__ == '__main__':
-    run_stb_test()
+    run_test()
 
 
 

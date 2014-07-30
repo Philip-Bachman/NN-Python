@@ -152,9 +152,56 @@ def w2v_ff_bp_pyx(sp_idx_p, anc_keys_p, pn_keys_p, pn_sign_p, Wa_p, Wc_p, b_p,
                      Wa, Wc, b, dWa, dWc, db, L, do_grad, vec_dim)
     return
 
+
+(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p, dX_p, dW_p, db_p, L_p)
+
 #############
 # NSL_FF_BP #
-#############
+################################################################################
+# NOTE: This function is used by both the NSLayer and HSMLayer classes, i.e.   #
+#       the classes implementing negative sampling and hierarchial softmax.    #
+#       This "overloading" is reasonable because negative sampling and         #
+#       hierarchical softmax are both based on combining an "anchor" vector,   #
+#       fed-forward by some previous layer in the model, with a sequence of    #
+#       binary logistic regressions, whose parameters are to-be-learned by the #
+#       current NSLayer/HSMLayer.                                              #
+#                                                                              #
+#       Parameters passed to nsl_ff_bp_pyx:                                    #
+#         sp_idx_p: Numpy array of int32 keys into the rows of pn_keys_p,      #
+#                   pn_sign_p, X_p and dX_p. This param is used by the calling #
+#                   Python code to divvy up subproblems for multithreading.    #
+#         pn_keys_p: Numpy matrix of int32 keys into W_p, b_p, dW_p, and db_p. #
+#                    Each row of pn_keys gives keys for a set of +/- targets   #
+#                    generated for either training via negative sampling or a  #
+#                    hierarchical softmax code vector sequence.                #
+#         pn_sign_p: Numpy matrix of float32 in {+1, -1}, giving the desired   #
+#                    outcome of each prediction to-be-performed.               #
+#         X_p: Numpy matrix of float32 "anchor" vectors, to be used as inputs  #
+#              to each prediction. *same number of rows as pn_keys_p/pn_sign_p #
+#         W_p: Numpy matrix of float32 params for this NSLayer/HSMLayer.       #
+#              *same number of columns as X_p                                  #
+#         b_p: Numpy array of float32 giving a bias for each row of W_p.       #
+#         L_p: Numpy array with one element -- to accumulate loss information  #
+#         dX_p, dW_p, db_p: np.float32 gradient accumulators for X_p/W_p/b_p   #
+#                                                                              #
+#                                                                              #
+#       1. When used by NSLayer, pn_keys gives the (NSLayer) LUT keys for the  #
+#       various positive/negative prediction targets to train on for a given   #
+#       anchor vector. The desired outcome of each prediction is given by the  #
+#       corresponding entries of pn_sign.                                      #
+#                                                                              #
+#       2. When used by HSMLayer, pn_keys gives the (HSMLayer) LUT keys for    #
+#       each code vector used by hierarchical softmax to represent a given     #
+#       prediction target for a given anchor vector. For each given anchor     #
+#       vector / prediction target pair multiple code vectors are required,    #
+#       but each anchor/target pair may use different numbers of code vectors. #
+#       When processing the row of pn_keys which gives the code vector keys    #
+#       for a given anchor/target pair, a key < 0 indicates that no more code  #
+#       vectors need be processed for this pair. For each code vector key >= 0 #
+#       there is an associated target class in {+1, -1}, stored in the same    #
+#       element in pn_sign as the code vector key was in pn_keys.              #
+#                                                                              #
+################################################################################
 
 cdef void cy_nsl_ff_bp0(
     const int sp_size, const I32_t *sp_idx,
@@ -175,6 +222,10 @@ cdef void cy_nsl_ff_bp0(
         row1 = X_key * vec_dim # get the starting index of input row (in X)
         for j in range(pn_size):
             W_key = pn_keys[X_key*pn_size + j] # get the LUT key for target word
+            if (W_key < 0):
+                break # W_key < 0 is used by hierarchical softmax to indicate
+                      # that no more code vectors need to be processed for a
+                      # given anchor/target key pair.
             row2 = W_key * vec_dim # get the starting index of target row (in W)
             label = pn_sign[X_key*pn_size + j] # get the +1/-1 label for target
             # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]

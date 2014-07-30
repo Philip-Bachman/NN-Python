@@ -255,7 +255,7 @@ class CAModel:
         return
 
     def batch_update(self, anc_keys, pos_keys, neg_keys, phrase_keys, \
-                     learn_rate=1e-3, ada_smooth=1e-3, context_only=False):
+                     train_words=True, train_context=True, learn_rate=1e-3):
         """Perform a single "minibatch" update of the model parameters.
 
         Parameters:
@@ -265,9 +265,9 @@ class CAModel:
             phrase_keys: phrase/context LUT keys for the phrases from which
                          the words to predict with (in anc_keys and pos_keys)
                          were sampled.
+            train_words: set to True to update word LUT and prediction layers
+            train_context: set to True to update context layer
             learn_rate: learning rate for adagrad updates
-            ada_smooth: smoothing parameter for adagrad updates
-            context_only: set to True to only the train the context params
         """
         # Feedforward through the various layers of this model
         Xb = self.word_layer.feedforward(anc_keys)
@@ -285,22 +285,17 @@ class CAModel:
         self.word_layer.backprop(dLdXb)
 
         # Update parameters based on the gradients computed in backprop
-        if not context_only:
-            # Update all parameters in this model
-            self.word_layer.apply_grad(learn_rate=learn_rate, \
-                                       ada_smooth=ada_smooth)
-            self.context_layer.apply_grad(learn_rate=learn_rate, \
-                                          ada_smooth=ada_smooth)
-            self.class_layer.apply_grad(learn_rate=learn_rate, \
-                                        ada_smooth=ada_smooth)
-        else:
-            # Update only the context vectors (for inference at test-time)
-            self.context_layer.apply_grad(learn_rate=learn_rate, \
-                                          ada_smooth=ada_smooth)
+        if train_words:
+            # Update parameters that directly represent words
+            self.word_layer.apply_grad(learn_rate=learn_rate)
+            self.class_layer.apply_grad(learn_rate=learn_rate)
+        if train_context:
+            # Update parameters that control context-adaptivity
+            self.context_layer.apply_grad(learn_rate=learn_rate)
         return L
 
-    def train_all_params(self, phrase_list, all_words, batch_size, batch_count, \
-                         learn_rate=1e-3):
+    def train(self, phrase_list, all_words, batch_size, batch_count, \
+              train_words=True, train_context=True, learn_rate=1e-3):
         """Train all parameters in the model using the given phrases.
 
         Parameters:
@@ -308,6 +303,9 @@ class CAModel:
             all_words: list of words to sample uniformly for negative examples
             batch_size: size of minibatches for each update
             batch_count: number of minibatch updates to perform
+            train_words: whether or not to do updates for the word LUT and
+                         classification layers
+            train_context: whether or not to do updates for the context layer
             learn_rate: learning rate for adagrad updates
         """
         sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
@@ -316,8 +314,16 @@ class CAModel:
         for b in range(batch_count):
             anc_keys, pos_keys, neg_keys, phrase_keys = sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
-                                   learn_rate=learn_rate, ada_smooth=1e-3, \
-                                   context_only=False)
+                                   train_words=train_words, train_context=train_context, \
+                                   learn_rate=learn_rate)
+            if ((b % 200) == 0):
+                self.word_layer.clip_params(max_norm=2.0)
+                self.context_layer.clip_params(Wm_norm=1.0, Wb_norm=1.0)
+                self.class_layer.clip_params(max_norm=2.0)
+            if ((b % 20000) == 0):
+                self.word_layer.reset_moms()
+                self.context_layer.reset_moms()
+                self.class_layer.reset_moms()
             if ((b > 1) and ((b % 1000) == 0)):
                 Wm_info = self.context_layer.norm_info('Wm')
                 Wb_info = self.context_layer.norm_info('Wb')
@@ -355,8 +361,14 @@ class CAModel:
         for b in range(batch_count):
             anc_keys, pos_keys, neg_keys, phrase_keys = sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
-                                   learn_rate=learn_rate, ada_smooth=1e-3, \
-                                   context_only=True)
+                                   train_words=False, train_context=True, \
+                                   learn_rate=learn_rate)
+            if ((b % 200) == 0):
+                self.word_layer.clip_params(max_norm=2.0)
+                self.context_layer.clip_params(Wm_norm=1.0, Wb_norm=1.0)
+                self.class_layer.clip_params(max_norm=2.0)
+            if ((b % 20000) == 0):
+                self.context_layer.reset_moms()
             if ((b > 1) and ((b % 1000) == 0)):
                 Wm_info = self.context_layer.norm_info('Wm')
                 Wb_info = self.context_layer.norm_info('Wb')
@@ -367,6 +379,10 @@ class CAModel:
                 L = 0.0
         # Set self.context_layer back to what it was prior to retraining
         self.context_layer = prev_context_layer
+        # Reset gradients in all layers
+        self.word_layer.reset_grads_and_moms()
+        self.context_layer.reset_grads_and_moms()
+        self.class_layer.reset_grads_and_moms()
         return new_context_layer
 
 class W2VModel:
@@ -406,8 +422,7 @@ class W2VModel:
         self.w2v_layer.reset_moms(ada_init)
         return
 
-    def batch_update(self, anc_keys, pos_keys, neg_keys, \
-                     learn_rate=1e-3, ada_smooth=1e-3):
+    def batch_update(self, anc_keys, pos_keys, neg_keys, learn_rate=1e-3):
         """Perform a single "minibatch" update of the model parameters.
 
         Parameters:
@@ -415,7 +430,6 @@ class W2VModel:
             pos_keys: word LUT keys for the positive examples to predict
             neg_keys: word LUT keys for the negative examples to predict
             learn_rate: learning rate for adagrad updates
-            ada_smooth: smoothing parameter for adagrad updates
         """
         # Update the W2VLayer using the given examples
         L = self.w2v_layer.batch_train(anc_keys, pos_keys, neg_keys, \
@@ -651,13 +665,17 @@ def test_W2VModel_1bw():
 
 if __name__ == '__main__':
     import DataLoaders as dl
-    from sklearn import linear_model
      # Load tree data
     tree_dir = './trees'
     stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
     te_phrases = stb_data['dev_full_phrases']
+    # Get the list of all word occurrences in the training phrases
+    tr_words = []
+    for phrase in tr_phrases:
+        tr_words.extend(phrase)
+    tr_words = np.asarray(tr_words).astype(np.int32)
     tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
     te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
     # Record maximum required keys for the context layer's tables
@@ -665,27 +683,29 @@ if __name__ == '__main__':
     max_cv_key = len(tr_phrases) - 1
 
     # Choose some simple hyperparameters for the model
-    pre_words = 6
-    wv_dim = 250
-    cv_dim = 250
-    lam_l2 = 1e-5
+    sg_window = 6
+    ns_count = 10
+    wv_dim = 100
+    cv_dim = 3
+    lam_l2 = 1e-3
+    cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
+                  ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
+    cam.init_params(0.05)
+    cam.set_noise(drop_rate=0.5, fuzz_scale=0.00)
 
-    pvm = PVModel(wv_dim, cv_dim, max_wv_key, max_cv_key, pre_words=pre_words, \
-                  lam_wv=lam_l2, lam_cv=lam_l2, lam_sm=lam_l2)
-    pvm.init_params(0.05)
-    pvm.set_noise(drop_rate=0.5, fuzz_scale=0.025)
+    # Train parameters in the word LUT and word prediction layers
+    cam.train(tr_phrases, tr_words, 300, 100001, train_words=True, \
+              train_context=False, learn_rate=1e-3)
+    # Train all layers' parameters (i.e. including context-adaptive layer)
+    cam.train(tr_phrases, tr_words, 300, 100001, train_words=True, \
+              train_context=True, learn_rate=1e-3)
 
-    # Train all parameters using the training set phrases
-    pvm.train_all_params(tr_phrases, 256, 200001)
-    cl_train = pvm.context_layer
+    # Keep a pointer to the current context layer
+    cl_train = cam.context_layer
 
-    # Train new context vectors using the validation set phrases
-    cl_dev = pvm.infer_context_vectors(te_phrases, 256, 200001)
-
-    X_train = cl_train.params['C'].copy()
-    X_dev = cl_dev.params['C'].copy()
-    Y_train = np.asarray([label for label in stb_data['train_full_labels']]).astype(np.int32)
-    Y_dev = np.asarray([label for label in stb_data['dev_full_labels']]).astype(np.int32)
+    # Infer context-adaptive layer parameters for the dev set
+    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 300, 100001, \
+                                       learn_rate=1e-3)
 
 
 
