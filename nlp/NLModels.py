@@ -64,7 +64,7 @@ class PVModel:
                                              self.max_cv_key, cv_dim)
         self.noise_layer = pv.NoiseLayer(drop_rate=self.drop_rate,
                                          fuzz_scale=self.fuzz_scale)
-        self.softmax_layer = pv.FullLayer(in_dim=(cv_dim + pre_words*wv_dim), \
+        self.class_layer = pv.FullLayer(in_dim=(cv_dim + pre_words*wv_dim), \
                                           max_out_key=self.max_wv_key)
         return
 
@@ -79,13 +79,13 @@ class PVModel:
     def init_params(self, weight_scale=0.05):
         """Reset weights in the context LUT and softmax layers."""
         self.context_layer.init_params(weight_scale)
-        self.softmax_layer.init_params(weight_scale)
+        self.class_layer.init_params(weight_scale)
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the adagrad "momentums" in each layer."""
         self.context_layer.reset_moms(ada_init)
-        self.softmax_layer.reset_moms(ada_init)
+        self.class_layer.reset_moms(ada_init)
         return
 
     def batch_update(self, pre_keys, post_keys, phrase_keys, learn_rate=1e-3, \
@@ -104,13 +104,13 @@ class PVModel:
         # Feedforward through look-up-table, noise, and softmax layers
         Xb = self.context_layer.feedforward(pre_keys, phrase_keys)
         Xn = self.noise_layer.feedforward(Xb)
-        Yn = self.softmax_layer.feedforward(Xn)
+        Yn = self.class_layer.feedforward(Xn)
         # Backprop through the layers in reverse order
-        dLdXn = self.softmax_layer.backprop(post_keys, L_ary=L, return_on_gpu=True)
+        dLdXn = self.class_layer.backprop(post_keys, L_ary=L, return_on_gpu=True)
         dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
         self.context_layer.backprop(dLdXb)
         if train_other:
-            self.softmax_layer.apply_grad(learn_rate=learn_rate)
+            self.class_layer.apply_grad(learn_rate=learn_rate)
         self.context_layer.apply_grad(learn_rate=learn_rate, train_other=train_other, \
                                       train_context=train_context)
         return L[0]
@@ -126,6 +126,8 @@ class PVModel:
             learn_rate: learning rate to use for updates
         """
         L = 0.0
+        self.context_layer.reset_moms(ada_init=1.0)
+        self.class_layer.reset_moms(ada_init=1.0)
         print("Training all parameters:")
         for b in range(batch_count):
             [seq_keys, phrase_keys] = hf.rand_word_seqs(phrase_list, batch_size, \
@@ -138,7 +140,7 @@ class PVModel:
                 obs_count = 200.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
-                self.softmax_layer.clip_params(max_norm=8.0)
+                self.class_layer.clip_params(max_norm=8.0)
                 self.context_layer.clip_params(W_norm=2.0, C_norm=2.0)
         return
 
@@ -181,7 +183,7 @@ class PVModel:
                 self.context_layer.clip_params(W_norm=2.0, C_norm=2.0)
         # Set self.context_layer back to what it was prior to retraining
         self.context_layer = prev_context_layer
-        self.softmax_layer.reset_grads()
+        self.class_layer.reset_grads()
         self.context_layer.reset_grads()
         return new_context_layer
 
@@ -311,6 +313,9 @@ class CAModel:
         sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
         print("Training all parameters:")
         L = 0.0
+        self.word_layer.reset_moms(1.0)
+        self.context_layer.reset_moms(1.0)
+        self.class_layer.reset_moms(1.0)
         for b in range(batch_count):
             anc_keys, pos_keys, neg_keys, phrase_keys = sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
@@ -320,10 +325,6 @@ class CAModel:
                 self.word_layer.clip_params(max_norm=2.0)
                 self.context_layer.clip_params(Wm_norm=1.0, Wb_norm=1.0)
                 self.class_layer.clip_params(max_norm=2.0)
-            if ((b % 20000) == 0):
-                self.word_layer.reset_moms()
-                self.context_layer.reset_moms()
-                self.class_layer.reset_moms()
             if ((b > 1) and ((b % 1000) == 0)):
                 Wm_info = self.context_layer.norm_info('Wm')
                 Wb_info = self.context_layer.norm_info('Wb')
@@ -354,6 +355,7 @@ class CAModel:
         new_context_layer.init_params(0.0)
         prev_context_layer = self.context_layer
         self.context_layer = new_context_layer
+        self.context_layer.reset_moms(1.0)
         # train the new context layer
         sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
         print("Training new context vectors:")
@@ -367,8 +369,6 @@ class CAModel:
                 self.word_layer.clip_params(max_norm=2.0)
                 self.context_layer.clip_params(Wm_norm=1.0, Wb_norm=1.0)
                 self.class_layer.clip_params(max_norm=2.0)
-            if ((b % 20000) == 0):
-                self.context_layer.reset_moms()
             if ((b > 1) and ((b % 1000) == 0)):
                 Wm_info = self.context_layer.norm_info('Wm')
                 Wb_info = self.context_layer.norm_info('Wb')
@@ -452,8 +452,7 @@ class W2VModel:
         print("Training all parameters:")
         for b in range(batch_count):
             anc_keys, pos_keys, neg_keys, phrase_keys = sampler.sample(batch_size)
-            L += self.batch_update(anc_keys, pos_keys, neg_keys, \
-                                   learn_rate=learn_rate, ada_smooth=1e-3)
+            L += self.batch_update(anc_keys, pos_keys, neg_keys, learn_rate=learn_rate)
             if ((b % 1000) == 0):
                 obs_count = 1000.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
@@ -685,27 +684,21 @@ if __name__ == '__main__':
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 100
-    cv_dim = 3
+    wv_dim = 200
+    cv_dim = 50
     lam_l2 = 1e-3
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
                   ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
-    cam.set_noise(drop_rate=0.5, fuzz_scale=0.00)
+    cam.set_noise(drop_rate=0.0, fuzz_scale=0.00)
 
-    # Train parameters in the word LUT and word prediction layers
-    cam.train(tr_phrases, tr_words, 300, 100001, train_words=True, \
-              train_context=False, learn_rate=1e-3)
-    # Train all layers' parameters (i.e. including context-adaptive layer)
-    cam.train(tr_phrases, tr_words, 300, 100001, train_words=True, \
+    # Train all parameters using the training set phrases
+    cam.train(tr_phrases, tr_words, 300, 20001, train_words=True, \
               train_context=True, learn_rate=1e-3)
-
-    # Keep a pointer to the current context layer
     cl_train = cam.context_layer
 
-    # Infer context-adaptive layer parameters for the dev set
-    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 300, 100001, \
-                                       learn_rate=1e-3)
+    # Infer new context vectors for the test set phrases
+    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 300, 10001, 1e-3)
 
 
 

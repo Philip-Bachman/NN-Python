@@ -9,7 +9,9 @@ import gnumpy as gp
 import HelperFuncs as hf
 from HelperFuncs import randn, ones, zeros
 from NumbaFuncs import ag_update_2d, ag_update_1d, lut_bp
-from CythonFuncs import ag_update_2d, ag_update_1d, lut_bp
+#from CythonFuncs import ag_update_2d, ag_update_1d, lut_bp
+
+ADA_EPS = 1e-3
 
 #################################
 # FULLY-CONNECTED SOFTMAX LAYER #
@@ -114,16 +116,16 @@ class FullLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return
 
-    def apply_grad(self, learn_rate=1e-2, ada_smooth=1e-3):
+    def apply_grad(self, learn_rate=1e-2,):
         """Apply the current accumulated gradients, with adagrad."""
         # Update the adagrad "momentums"
-        self.moms['W'] += self.grads['W']**2.0
-        self.moms['b'] += self.grads['b']**2.0
+        self.moms['W'] = (0.95 * self.moms['W']) + (0.05 * self.grads['W']**2.0)
+        self.moms['b'] = (0.95 * self.moms['b']) + (0.05 * self.grads['b']**2.0)
         # Apply adagrad-style updates using current grads and moms
         self.params['W'] -= learn_rate * (self.grads['W'] / \
-                (gp.sqrt(self.moms['W']) + ada_smooth))
+                (gp.sqrt(self.moms['W']) + ADA_EPS))
         self.params['b'] -= learn_rate * (self.grads['b'] / \
-                (gp.sqrt(self.moms['b']) + ada_smooth))
+                (gp.sqrt(self.moms['b']) + ADA_EPS))
         # Reset gradient accumulators
         self.reset_grads()
         return
@@ -236,7 +238,7 @@ class ContextLayer:
         return
 
     def apply_grad(self, learn_rate=1e-3, train_context=False, \
-                   train_other=False, ada_smooth=1e-3):
+                   train_other=False):
         """Apply the current accumulated gradients, adagrad style."""
         # Find which LUT keys point to params with pending updates
         nz_idx_w = np.asarray([i for i in self.grad_idx_w]).astype(np.int32)
@@ -249,9 +251,9 @@ class ContextLayer:
         if train_context:
             context_rate = learn_rate
         ag_update_2d(nz_idx_w, self.params['W'], self.grads['W'], \
-                     self.moms['W'], other_rate, ada_smooth)
+                     self.moms['W'], other_rate)
         ag_update_2d(nz_idx_c, self.params['C'], self.grads['C'], \
-                     self.moms['C'], context_rate, ada_smooth)
+                     self.moms['C'], context_rate)
         self.grad_idx_w = set()
         self.grad_idx_c = set()
         return

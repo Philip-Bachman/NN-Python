@@ -57,6 +57,7 @@ cdef cy_nsl_ff_bp_ptr cy_nsl_ff_bp
 # define some useful constants
 cdef int ONE = 1
 cdef REAL_t ONEF = <REAL_t>1.0
+cdef REAL_t ADA_EPS = <REAL_t>0.001
 
 #############
 # W2V_FF_BP #
@@ -152,8 +153,6 @@ def w2v_ff_bp_pyx(sp_idx_p, anc_keys_p, pn_keys_p, pn_sign_p, Wa_p, Wc_p, b_p,
                      Wa, Wc, b, dWa, dWc, db, L, do_grad, vec_dim)
     return
 
-
-(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p, dX_p, dW_p, db_p, L_p)
 
 #############
 # NSL_FF_BP #
@@ -300,7 +299,7 @@ def nsl_ff_bp_pyx(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p,
 
 cdef void cy_ag_update_2d(
     const int sp_size, const I32_t *sp_idx, const I32_t *row_idx,
-    REAL_t *W, REAL_t *dW, REAL_t *mW, REAL_t alpha, REAL_t ada_eps,
+    REAL_t *W, REAL_t *dW, REAL_t *mW, REAL_t alpha,
     const int vec_dim) nogil:
 
     # declarations
@@ -318,7 +317,7 @@ cdef void cy_ag_update_2d(
         memset(&dW[row_ptr], 0, vec_bytes)
     return
 
-def ag_update_2d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p, ada_eps_p):
+def ag_update_2d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
     # Define and cast minibatch problem parameters
     cdef int sp_size = <int>sp_idx_p.shape[0]
     cdef int vec_dim = <int>W_p.shape[1]
@@ -328,10 +327,9 @@ def ag_update_2d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p, ada_eps_p):
     cdef REAL_t *dW = <REAL_t *>(np.PyArray_DATA(dW_p))
     cdef REAL_t *mW = <REAL_t *>(np.PyArray_DATA(mW_p))
     cdef REAL_t alpha = <REAL_t>(-1.0 * alpha_p)
-    cdef REAL_t ada_eps = <REAL_t>ada_eps_p
 
     with nogil:
-        cy_ag_update_2d(sp_size, sp_idx, row_idx, W, dW, mW, alpha, ada_eps, vec_dim)
+        cy_ag_update_2d(sp_size, sp_idx, row_idx, W, dW, mW, alpha, vec_dim)
     return
 
 ################
@@ -340,7 +338,7 @@ def ag_update_2d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p, ada_eps_p):
 
 cdef void cy_ag_update_1d(
     const int sp_size, const I32_t *sp_idx, const I32_t *row_idx, REAL_t *W,
-    REAL_t *dW, REAL_t *mW, REAL_t alpha, REAL_t ada_eps) nogil:
+    REAL_t *dW, REAL_t *mW, REAL_t alpha) nogil:
 
     # declarations
     cdef int sp_i
@@ -354,7 +352,7 @@ cdef void cy_ag_update_1d(
         dW[row_key] = 0.0
     return
 
-def ag_update_1d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p, ada_eps_p):
+def ag_update_1d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
     # Define and cast minibatch problem parameters
     cdef int sp_size = <int>sp_idx_p.shape[0]
     cdef I32_t *sp_idx = <I32_t *>(np.PyArray_DATA(sp_idx_p))
@@ -363,10 +361,9 @@ def ag_update_1d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p, ada_eps_p):
     cdef REAL_t *dW = <REAL_t *>(np.PyArray_DATA(dW_p))
     cdef REAL_t *mW = <REAL_t *>(np.PyArray_DATA(mW_p))
     cdef REAL_t alpha = <REAL_t>(-1.0 * alpha_p)
-    cdef REAL_t ada_eps = <REAL_t>ada_eps_p
 
     with nogil:
-        cy_ag_update_1d(sp_size, sp_idx, row_idx, W, dW, mW, alpha, ada_eps)
+        cy_ag_update_1d(sp_size, sp_idx, row_idx, W, dW, mW, alpha)
     return
 
 ##########

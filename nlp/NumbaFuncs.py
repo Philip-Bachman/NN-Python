@@ -8,6 +8,8 @@ from math import exp, log, sqrt
 from numba import jit, void, i4, f4
 from ctypes import pythonapi, c_void_p
 
+ADA_EPS = 0.001
+
 ########################################
 # MULTITHREADING HELPER-FUNC AND DEFNS #
 ########################################
@@ -122,7 +124,7 @@ fn_sig_3 = void(i4[:], i4[:,:], f4[:,:], f4[:,:], f4[:], f4[:,:])
 nsl_ff_st = jit(fn_sig_3, nopython=True)(nsl_ff_sp)
 nsl_ff = make_multithread(nsl_ff_st, THREAD_NUM)
 
-def ag_update_2d_sp(sp_idx, row_idx, W, dW, mW, learn_rate, ada_smooth):
+def ag_update_2d_sp(sp_idx, row_idx, W, dW, mW, learn_rate):
     """Element-wise partial update ala adagrad.
 
     For the entries indicated by row_idx, this first updates the adagrad sums
@@ -135,18 +137,17 @@ def ag_update_2d_sp(sp_idx, row_idx, W, dW, mW, learn_rate, ada_smooth):
     for spi in range(row_count):
         idx = row_idx[sp_idx[spi]]
         for j in range(vec_dim):
-            #W[idx,j] -= learn_rate * dW[idx,j]
-            mW[idx,j] += dW[idx,j] * dW[idx,j]
-            W[idx,j] -= (learn_rate * (dW[idx,j] / (sqrt(mW[idx,j]) + ada_smooth)))
+            mW[idx,j] = (0.95 * mW[idx,j]) + (0.05 * dW[idx,j] * dW[idx,j])
+            W[idx,j] -= (learn_rate * (dW[idx,j] / (sqrt(mW[idx,j]) + ADA_EPS)))
             dW[idx,j] = 0.0
     restorethread(threadstate)
     return
-fn_sig_4 = void(i4[:], i4[:], f4[:,:], f4[:,:], f4[:,:], f4, f4)
+fn_sig_4 = void(i4[:], i4[:], f4[:,:], f4[:,:], f4[:,:], f4)
 ag_update_2d_st = jit(fn_sig_4, nopython=True)(ag_update_2d_sp)
 ag_update_2d = make_multithread(ag_update_2d_st, THREAD_NUM)
 
-@numba.jit("void(i4[:], f4[:], f4[:], f4[:], f4, f4)")
-def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth):
+@numba.jit("void(i4[:], f4[:], f4[:], f4[:], f4)")
+def ag_update_1d(row_idx, W, dW, mW, learn_rate):
     """Element-wise partial update ala adagrad.
 
     For the entries indicated by row_idx, this first updates the adagrad sums
@@ -156,9 +157,8 @@ def ag_update_1d(row_idx, W, dW, mW, learn_rate, ada_smooth):
     row_count = row_idx.shape[0]
     for i in range(row_count):
         idx = row_idx[i]
-        #W[idx] -= learn_rate * dW[idx]
-        mW[idx] += dW[idx] * dW[idx]
-        W[idx] -= learn_rate * (dW[idx] / (sqrt(mW[idx]) + ada_smooth))
+        mW[idx] = (0.95 * mW[idx]) + (0.05 * dW[idx] * dW[idx])
+        W[idx] -= learn_rate * (dW[idx] / (sqrt(mW[idx]) + ADA_EPS))
         dW[idx] = 0.0
     return
 
