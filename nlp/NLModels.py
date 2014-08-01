@@ -1,6 +1,6 @@
 import numpy as np
 import numpy.random as npr
-import Word2Vec as w2v
+import NLMLayers as nlml
 import ParVec as pv
 import HelperFuncs as hf
 import cPickle as pickle
@@ -43,7 +43,7 @@ class PVModel:
           adds the option of using dropout/masking noise and Gaussian "fuzzing"
           noise for stronger regularization.
     """
-    def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key, \
+    def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key,
                  pre_words=5, lam_wv=1e-4, lam_cv=1e-4, lam_sm=1e-4):
         # Record options/parameters
         self.wv_dim = wv_dim
@@ -60,11 +60,15 @@ class PVModel:
         self.drop_rate = 0.0
         self.fuzz_scale = 0.0
         # Create layers to use during training
-        self.context_layer = pv.ContextLayer(self.max_wv_key, wv_dim, \
-                                             self.max_cv_key, cv_dim)
-        self.noise_layer = pv.NoiseLayer(drop_rate=self.drop_rate,
-                                         fuzz_scale=self.fuzz_scale)
-        self.class_layer = pv.FullLayer(in_dim=(cv_dim + pre_words*wv_dim), \
+        self.word_layer = nlml.LUTLayer(self.max_wv_key, wv_dim, 
+                                        n_gram=self.pre_words)
+        self.context_layer = nlml.CMLayer(max_key=max_cv_key,
+                                          source_dim=wv_dim,
+                                          bias_dim=cv_dim,
+                                          do_rescale=False)
+        self.noise_layer = nlml.GPUNoiseLayer(drop_rate=self.drop_rate,
+                                              fuzz_scale=self.fuzz_scale)
+        self.class_layer = nlml.FullLayer(in_dim=(cv_dim + pre_words*wv_dim),
                                           max_out_key=self.max_wv_key)
         return
 
@@ -78,12 +82,14 @@ class PVModel:
 
     def init_params(self, weight_scale=0.05):
         """Reset weights in the context LUT and softmax layers."""
+        self.word_layer.init_params(weight_scale)
         self.context_layer.init_params(weight_scale)
         self.class_layer.init_params(weight_scale)
         return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the adagrad "momentums" in each layer."""
+        self.word_layer.reset_moms(ada_init)
         self.context_layer.reset_moms(ada_init)
         self.class_layer.reset_moms(ada_init)
         return
@@ -101,18 +107,22 @@ class PVModel:
             train_other: train the basic word and classification params
         """
         L = zeros((1,))
-        # Feedforward through look-up-table, noise, and softmax layers
-        Xb = self.context_layer.feedforward(pre_keys, phrase_keys)
-        Xn = self.noise_layer.feedforward(Xb)
+        # Feedforward through look-up-table, noise, and prediction layers
+        Xw = self.word_layer.feedforward(pre_keys)
+        Xc = self.context_layer.feedforward(Xw, phrase_keys)
+        Xn = self.noise_layer.feedforward(Xc)
         Yn = self.class_layer.feedforward(Xn)
         # Backprop through the layers in reverse order
         dLdXn = self.class_layer.backprop(post_keys, L_ary=L, return_on_gpu=True)
-        dLdXb = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
-        self.context_layer.backprop(dLdXb)
+        dLdXc = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
+        dLdXw = self.context_layer.backprop(dLdXc)
+        self.word_layer.backprop(dLdXw)
+        # Apply the gradient updates computed during backprop
         if train_other:
             self.class_layer.apply_grad(learn_rate=learn_rate)
-        self.context_layer.apply_grad(learn_rate=learn_rate, train_other=train_other, \
-                                      train_context=train_context)
+            self.word_layer.apply_grad(learn_rate=learn_rate)
+        if train_context:
+            self.context_layer.apply_grad(learn_rate=learn_rate)
         return L[0]
 
     def train_all_params(self, phrase_list, batch_size, batch_count, \
@@ -126,6 +136,7 @@ class PVModel:
             learn_rate: learning rate to use for updates
         """
         L = 0.0
+        self.word_layer.reset_moms(ada_init=1.0)
         self.context_layer.reset_moms(ada_init=1.0)
         self.class_layer.reset_moms(ada_init=1.0)
         print("Training all parameters:")
@@ -140,8 +151,9 @@ class PVModel:
                 obs_count = 200.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
-                self.class_layer.clip_params(max_norm=8.0)
-                self.context_layer.clip_params(W_norm=2.0, C_norm=2.0)
+                self.word_layer.clip_params(max_norm=3.0)
+                self.context_layer.clip_params(Wb_norm=3.0)
+                self.class_layer.clip_params(max_norm=6.0)
         return
 
     def infer_context_vectors(self, phrase_list, batch_size, batch_count, \
@@ -157,12 +169,11 @@ class PVModel:
         # Put a new context layer in place of self.context_layer, but keep
         # a pointer to self.context_layer around to restore later...
         max_cv_key = len(phrase_list) - 1
-        new_context_layer = pv.ContextLayer(self.max_wv_key, self.wv_dim, \
-                                            max_cv_key, self.cv_dim)
+        new_context_layer = nlml.CMLayer(max_key=self.max_cv_key,
+                                         source_dim=self.wv_dim,
+                                         bias_dim=self.cv_dim,
+                                         do_rescale=False)
         new_context_layer.init_params(0.0)
-        # The new context layer will use the same word weights as the existing
-        # context layer. Only the context weights will be re-estimated
-        new_context_layer.params['W'] = self.context_layer.params['W'].copy()
         prev_context_layer = self.context_layer
         self.context_layer = new_context_layer
         # Update the context vectors in the new context layer for some number
@@ -180,11 +191,11 @@ class PVModel:
                 obs_count = 200.0 * batch_size
                 print("Test batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
-                self.context_layer.clip_params(W_norm=2.0, C_norm=2.0)
+                self.context_layer.clip_params(max_norm=3.0)
         # Set self.context_layer back to what it was prior to retraining
+        self.word_layer.reset_grads()
         self.context_layer = prev_context_layer
         self.class_layer.reset_grads()
-        self.context_layer.reset_grads()
         return new_context_layer
 
 class CAModel:
@@ -223,15 +234,15 @@ class CAModel:
         self.drop_rate = 0.0
         self.fuzz_scale = 0.0
         # Create layers to use during training
-        self.word_layer = w2v.LUTLayer(max_wv_key, wv_dim)
-        self.context_layer = w2v.CMLayer(max_key=max_cv_key, \
-                                         source_dim=wv_dim, \
-                                         bias_dim=cv_dim, \
-                                         do_rescale=True)
-        self.noise_layer = w2v.NoiseLayer(drop_rate=self.drop_rate, \
-                                          fuzz_scale=self.fuzz_scale)
-        self.class_layer = w2v.NSLayer(in_dim=(self.cv_dim + self.wv_dim), \
-                                       max_out_key=self.max_wv_key)
+        self.word_layer = nlml.LUTLayer(max_wv_key, wv_dim)
+        self.context_layer = nlml.CMLayer(max_key=max_cv_key, \
+                                          source_dim=wv_dim, \
+                                          bias_dim=cv_dim, \
+                                          do_rescale=True)
+        self.noise_layer = nlml.NoiseLayer(drop_rate=self.drop_rate, \
+                                           fuzz_scale=self.fuzz_scale)
+        self.class_layer = nlml.NSLayer(in_dim=(self.cv_dim + self.wv_dim), \
+                                        max_out_key=self.max_wv_key)
         return
 
     def init_params(self, weight_scale=0.05):
@@ -348,10 +359,10 @@ class CAModel:
         # Put a new context layer in place of self.context_layer, but keep
         # a pointer to self.context_layer around to restore later...
         max_cv_key = len(phrase_list) - 1
-        new_context_layer = w2v.CMLayer(max_key=max_cv_key, \
-                                        source_dim=self.wv_dim, \
-                                        bias_dim=self.cv_dim, \
-                                        do_rescale=True)
+        new_context_layer = nlml.CMLayer(max_key=max_cv_key, \
+                                         source_dim=self.wv_dim, \
+                                         bias_dim=self.cv_dim, \
+                                         do_rescale=True)
         new_context_layer.init_params(0.0)
         prev_context_layer = self.context_layer
         self.context_layer = new_context_layer
@@ -407,9 +418,9 @@ class W2VModel:
         self.ns_count = ns_count
         self.lam_l2 = lam_l2
         # Create the layer to use during training
-        self.w2v_layer = w2v.W2VLayer(max_word_key=self.max_wv_key, \
-                                      word_dim=self.wv_dim, \
-                                      lam_l2=self.lam_l2)
+        self.w2v_layer = nlml.W2VLayer(max_word_key=self.max_wv_key, \
+                                       word_dim=self.wv_dim, \
+                                       lam_l2=self.lam_l2)
         return
 
     def init_params(self, weight_scale=0.05):
@@ -436,8 +447,8 @@ class W2VModel:
                                        learn_rate=learn_rate)
         return L
 
-    def train_all_params(self, phrase_list, all_words, batch_size, batch_count, \
-                         learn_rate=1e-3):
+    def train(self, phrase_list, all_words, batch_size, batch_count, \
+              learn_rate=1e-3):
         """Train all parameters in the model using the given phrases.
 
         Parameters:
@@ -457,10 +468,10 @@ class W2VModel:
                 obs_count = 1000.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
-                self.w2v_layer.clip_params(2.0)
+                self.w2v_layer.clip_params(5.0)
         return
 
-    def test_all_params(self, phrase_list, all_words, test_samples):
+    def test(self, phrase_list, all_words, test_samples):
         """Train all parameters in the model using the given phrases.
 
         Parameters:
@@ -533,8 +544,8 @@ def test_PVModel_stb():
     # Train new context vectors using the validation set phrases
     cl_dev = pvm.infer_context_vectors(te_phrases, 256, 200001)
 
-    X_train = cl_train.params['C'].copy()
-    X_dev = cl_dev.params['C'].copy()
+    X_train = cl_train.params['Wb'].copy()
+    X_dev = cl_dev.params['Wb'].copy()
     Y_train = np.asarray([label for label in stb_data['train_full_labels']]).astype(np.int32)
     Y_dev = np.asarray([label for label in stb_data['dev_full_labels']]).astype(np.int32)
 
@@ -569,15 +580,15 @@ def test_CAModel_stb():
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
                   ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
-    cam.set_noise(drop_rate=0.0, fuzz_scale=0.00)
+    cam.set_noise(drop_rate=0.5, fuzz_scale=0.02)
 
     # Train all parameters using the training set phrases
-    cam.train_all_params(tr_phrases, tr_words, 300, 20001, 1e-3)
+    cam.train(tr_phrases, tr_words, 300, 20001, train_words=True, \
+              train_context=True, learn_rate=1e-3)
     cl_train = cam.context_layer
 
     # Infer new context vectors for the test set phrases
     #cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 300, 10001, 1e-3)
-    cl_dev = []
     return [cl_train, cl_dev, stb_data, cam]
 
 
@@ -616,7 +627,7 @@ def test_W2VModel_stb():
     alpha = 1e-2
     for i in range(15):
         # Train all parameters using the training set phrases
-        w2v_model.train_all_params(tr_phrases, tr_words, 300, 25001, alpha)
+        w2v_model.train(tr_phrases, tr_words, 300, 25001, alpha)
         alpha = alpha * 0.8
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
                 w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
@@ -654,8 +665,8 @@ def test_W2VModel_1bw():
     print("Vector dimension: {0:d}".format(wv_dim))
     for i in range(50):
         # Train all parameters using the training set phrases
-        w2v_model.train_all_params(tr_phrases, tr_words, 256, 100001, 1e-2)
-        w2v_model.test_all_params(te_phrases, tr_words, 2000)
+        w2v_model.train(tr_phrases, tr_words, 256, 100001, 1e-2)
+        w2v_model.test(te_phrases, tr_words, 2000)
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( dataset['keys_to_words'], \
                 10, w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
         for w in range(10):
@@ -690,7 +701,7 @@ if __name__ == '__main__':
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
                   ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
-    cam.set_noise(drop_rate=0.0, fuzz_scale=0.00)
+    cam.set_noise(drop_rate=0.5, fuzz_scale=0.02)
 
     # Train all parameters using the training set phrases
     cam.train(tr_phrases, tr_words, 300, 20001, train_words=True, \
@@ -698,8 +709,7 @@ if __name__ == '__main__':
     cl_train = cam.context_layer
 
     # Infer new context vectors for the test set phrases
-    cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 300, 10001, 1e-3)
-
+    #cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 300, 10001, 1e-3)
 
 
 

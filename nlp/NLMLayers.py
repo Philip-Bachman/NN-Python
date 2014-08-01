@@ -9,10 +9,8 @@ import numexpr as ne
 # Imports of my stuff
 import HelperFuncs as hf
 from HelperFuncs import randn, ones, zeros
-#from NumbaFuncs import w2v_ff_bp, ag_update_2d, ag_update_1d, lut_bp, \
-#                       nsl_ff, nsl_bp
-from NumbaFuncs import nsl_ff, nsl_bp, ag_update_2d, ag_update_1d
-from CythonFuncs import w2v_ff_bp, nsl_ff_bp, lut_bp #, ag_update_2d, ag_update_1d
+from NumbaFuncs import nsl_ff, nsl_bp
+from CythonFuncs import w2v_ff_bp, nsl_ff_bp, lut_bp, ag_update_2d, ag_update_1d
 
 ADA_EPS = 1e-3
 
@@ -207,14 +205,13 @@ class FullLayer:
         self.grads['b'] = gp.zeros((1, self.dim_output))
         return
 
-    def clip_params(self, max_norm=5.0):
-        """Bound l2 (row-wise) norm of W by max_norm."""
+    def clip_params(self, max_norm=10.0):
+        """Bound L2 (row-wise) norm of W by max_norm."""
         M = self.params['W']
-        m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
-        mask = (m_scales < 1.0)
-        mask = mask.astype(np.float32) # why is explicit cast needed?
+        m_scales = max_norm / gp.sqrt(gp.sum(M**2.0,axis=1) + 1e-5)
+        mask = (m_scales < 1.0) # with gnumpy, this already comes as float32
         m_scales = (m_scales * mask) + (1.0 - mask)
-        self.params['W'] = M * m_scales[:,np.newaxis]
+        self.params['W'] = M * m_scales[:,gp.newaxis]
         return
 
     def feedforward(self, X):
@@ -226,16 +223,11 @@ class FullLayer:
         self.Y = gp.dot(self.X, self.params['W']) + self.params['b']
         return self.Y
 
-    def backprop(self, Y_cat, return_on_gpu=False):
+    def backprop(self, Y_cat, L_ary=None, return_on_gpu=False):
         """Backprop through softmax using the given target predictions."""
-        Y_cat = Y_cat.astype(np.int32)
-        self.Y_cat = Y_cat
-        # Convert from categorical classes to "one-hot" vectors
-        Y_ind = zeros(self.Y.shape)
-        Y_ind[np.arange(Y_ind.shape[0]), Y_cat] = 1.0
         # Compute gradient of cross-entropy objective, based on the given
         # target predictions and the most recent feedforward information.
-        dLdY = self.cross_entropy_grad(self.Y, Y_ind)
+        L, dLdY = self.xent_loss_and_grad(self.Y, Y_cat.astype(np.int32))
         # Backprop cross-ent grads to get grads w.r.t. layer parameters
         dLdW = gp.dot(self.X.T, dLdY)
         dLdb = gp.sum(dLdY, axis=0)
@@ -246,7 +238,9 @@ class FullLayer:
         dLdX = gp.dot(dLdY, self.params['W'].T)
         # Return gradients w.r.t. to input, either on or off the GPU
         if not return_on_gpu:
-            dLdX = gp.as_numpy_array(dLdX)
+            dLdX = gp.as_numpy_array(dLdX).astype(np.float32)
+        # Write loss into L_ary if it was given
+        L_ary[0] = L
         return dLdX
 
     def safe_softmax(self, Y):
@@ -259,16 +253,7 @@ class FullLayer:
         Y_sm = Y_exp / Y_sum
         return Y_sm
 
-    def cross_entropy_grad(self, Yh, Y_ind):
-        """Cross-entropy gradient for predictions Yh given targets Y_ind."""
-        # Push one-hot target vectors to GPU if not already there
-        Y_ind = gp.garray(Y_ind)
-        # Compute softmax and cross-entropy gradients
-        Yh_sm = self.safe_softmax(Yh)
-        dLdYh = Yh_sm - Y_ind
-        return dLdYh
-
-    def cross_entropy_loss(self, Yh, Y_cat):
+    def xent_loss_and_grad(self, Yh, Y_cat):
         """Cross-entropy loss for predictions Yh given targets Y_cat."""
         # Convert from categorical classes to "one-hot" target vectors
         Y_ind = zeros(Yh.shape)
@@ -278,7 +263,8 @@ class FullLayer:
         # Compute softmax and then cross-entropy loss
         Yh_sm = self.safe_softmax(Yh)
         L = -gp.sum((Y_ind * gp.log(Yh_sm)))
-        return L
+        dLdYh = Yh_sm - Y_ind
+        return [L, dLdYh]
 
     def l2_regularize(self, lam_l2=1e-5):
         """Apply some amount of l2 "shrinkage" to weights and biases."""
@@ -286,14 +272,11 @@ class FullLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return
 
-    def apply_grad(self, learn_rate=1e-2):
+    def apply_grad(self, learn_rate=1e-2,):
         """Apply the current accumulated gradients, with adagrad."""
-        # Add l2 regularization effect to the gradients
-        self.grads['W'] += lam_l2 * self.params['W']
-        self.grads['b'] += lam_l2 * self.params['b']
         # Update the adagrad "momentums"
-        self.moms['W'] += self.grads['W']**2.0
-        self.moms['b'] += self.grads['b']**2.0
+        self.moms['W'] = (0.95 * self.moms['W']) + (0.05 * self.grads['W']**2.0)
+        self.moms['b'] = (0.95 * self.moms['b']) + (0.05 * self.grads['b']**2.0)
         # Apply adagrad-style updates using current grads and moms
         self.params['W'] -= learn_rate * (self.grads['W'] / \
                 (gp.sqrt(self.moms['W']) + ADA_EPS))
@@ -303,16 +286,14 @@ class FullLayer:
         self.reset_grads()
         return
 
-    def reset_moms(self, ada_init=1e-3):
-        """Reset the adagrad "momentums" for this layer."""
-        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
-        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+    def reset_grads(self):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['W'] = 0.0 * self.grads['W']
+        self.grads['b'] = 0.0 * self.grads['b']
         return
 
-    def reset_grads_and_moms(self, ada_init=1e-3):
-        """Reset the gradient accumulators for this layer."""
-        self.grads['W'] = (0.0 * self.grads['W'])
-        self.grads['b'] = (0.0 * self.grads['b'])
+    def reset_moms(self, ada_init=1e-3):
+        """Reset the adagrad "momentums" for this layer."""
         self.moms['W'] = (0.0 * self.moms['W']) + ada_init
         self.moms['b'] = (0.0 * self.moms['b']) + ada_init
         return
@@ -329,7 +310,7 @@ class FullLayer:
 #######################
 
 class LUTLayer:
-    def __init__(self, max_key, embed_dim):
+    def __init__(self, max_key, embed_dim, n_gram=1):
         # Set stuff for managing this type of layer
         self.key_count = max_key + 1 # add 1 to accommodate 0 indexing
         self.params = {}
@@ -340,6 +321,7 @@ class LUTLayer:
         self.moms['W'] = zeros(self.params['W'].shape)
         self.grad_idx = set()
         self.embed_dim = embed_dim
+        self.n_gram = n_gram
         self.X = []
         self.Y = []
         return
@@ -371,7 +353,14 @@ class LUTLayer:
         # Record the incoming list of row indices to extract
         self.X = X.astype(np.int32)
         # Use look-up table to generate the desired sequences
-        self.Y = self.params['W'].take(self.X, axis=0)
+        if (self.n_gram == 1):
+            self.Y = self.params['W'].take(self.X, axis=0)
+        else:
+            self.Y = zeros((self.X.shape[0], (self.n_gram * self.embed_dim)))
+            for i in range(self.n_gram):
+                s_idx = i * self.embed_dim
+                e_idx = s_idx + self.embed_dim
+                self.Y[:,s_idx:e_idx] = self.params['W'].take(self.X[:,i], axis=0)
         return self.Y
 
     def backprop(self, dLdY):
@@ -379,7 +368,14 @@ class LUTLayer:
         """
         self.grad_idx.update(self.X.ravel())
         # Add the gradients to the gradient accumulator
-        lut_bp(self.X, dLdY, self.grads['W'])
+        if (self.n_gram == 1):
+            lut_bp(self.X, dLdY, self.grads['W'])
+        else:
+            # Backprop for each of the predictor words
+            for i in range(self.n_gram):
+                s_idx = i * self.embed_dim
+                e_idx = s_idx + self.embed_dim
+                lut_bp(self.X[:,i], dLdY[:,s_idx:e_idx], self.grads['W'])
         return 1
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -537,9 +533,10 @@ class CMLayer:
         # Information from the word LUT should not pass through this
         # layer when source_dim < 5. In this case, we assume that we
         # will do prediction using only the context-adaptive biases.
-        m_rate = learn_rate if (self.source_dim >= 5) else 0.0
-        ag_update_2d(nz_idx, self.params['Wm'], self.grads['Wm'], \
-                     self.moms['Wm'], m_rate)
+        if self.do_rescale:
+            m_rate = learn_rate if (self.source_dim >= 5) else 0.0
+            ag_update_2d(nz_idx, self.params['Wm'], self.grads['Wm'], \
+                         self.moms['Wm'], m_rate)
         # No context-adaptive bias term should be applied if self.bias_dim
         # is < 5. I.e. only information coming up from the word LUT, and
         # possibly rescaled by this layer, should be used in prediction.
@@ -577,14 +574,17 @@ class CMLayer:
 # NOISE INJECTION LAYER #
 #########################
 
-class NoiseLayer:
+class GPUNoiseLayer:
     def __init__(self, drop_rate=0.0, fuzz_scale=0.0):
         # Set stuff required for managing this type of layer
+        self.dYdX = []
         self.drop_rate = drop_rate
         self.drop_scale = 1.0 / (1.0 - drop_rate)
         self.fuzz_scale = fuzz_scale
+        # Set stuff common to all layer types
         self.X = []
-        self.dYdX = []
+        self.Y = []
+        self.dLdY = []
         return
 
     def set_noise_params(self, drop_rate=0.0, fuzz_scale=0.0):
@@ -599,35 +599,92 @@ class NoiseLayer:
         """
         # Cleanup debris from any previous feedforward
         self._cleanup()
-        # Keep a pointer to the given input
+        # Record (a pointer to) the passed input
+        self.X = gp.garray(X)
+        # Generate and apply a dropout mask to the input
+        if (self.drop_rate > 1e-4):
+            drop_mask = self.drop_scale * \
+                    (gp.rand((self.X.shape[0], self.X.shape[1])) > self.drop_rate)
+        else:
+            drop_mask = gp.ones((self.X.shape[0], self.X.shape[1]))
+        self.dYdX = drop_mask
+        if (self.fuzz_scale > 1e-4):
+            fuzz_bump = (self.fuzz_scale / self.drop_scale) * \
+                    gp.randn((self.X.shape[0], self.X.shape[1]))
+            self.Y = drop_mask * (self.X + fuzz_bump)
+        else:
+            self.Y = drop_mask * self.X
+        return self.Y
+
+    def backprop(self, dLdY, return_on_gpu=False):
+        """Perform backprop through this layer.
+        """
+        # Backprop is just multiplication by the mask from feedforward
+        dLdX = gp.garray(dLdY) * self.dYdX
+        if not return_on_gpu:
+            dLdX = gp.as_numpy_array(dLdX).astype(np.float32)
+        return dLdX
+
+    def _cleanup(self):
+        """Clear all temp variables for this layer."""
+        self.X = []
+        self.Y = []
+        self.dYdX = []
+        return
+
+class NoiseLayer:
+    def __init__(self, drop_rate=0.0, fuzz_scale=0.0):
+        # Set stuff required for managing this type of layer
+        self.dYdX = []
+        self.drop_rate = drop_rate
+        self.drop_scale = 1.0 / (1.0 - drop_rate)
+        self.fuzz_scale = fuzz_scale
+        # Set stuff common to all layer types
+        self.X = []
+        self.Y = []
+        self.dLdY = []
+        return
+
+    def set_noise_params(self, drop_rate=0.0, fuzz_scale=0.0):
+        """Set the drop rate for this drop layer."""
+        self.drop_rate = drop_rate
+        self.drop_scale = 1.0 / (1.0 - drop_rate)
+        self.fuzz_scale = fuzz_scale
+        return
+
+    def feedforward(self, X):
+        """Perform feedforward through this layer.
+        """
+        # Cleanup debris from any previous feedforward
+        self._cleanup()
+        # Record (a pointer to) the passed input
         self.X = X
-        # Generate a dropout mask for the input
+        # Generate and apply a dropout mask to the input
         if (self.drop_rate > 1e-4):
             drop_mask = self.drop_scale * \
                     (npr.rand(self.X.shape[0], self.X.shape[1]) > self.drop_rate)
-            drop_mask = drop_mask.astype(np.float32)
         else:
             drop_mask = ones((self.X.shape[0], self.X.shape[1]))
         self.dYdX = drop_mask
-        # Add gaussian fuzz to the input and apply the dropout mask
         if (self.fuzz_scale > 1e-4):
             fuzz_bump = (self.fuzz_scale / self.drop_scale) * \
-                    randn((self.X.shape[0], self.X.shape[1]))
-            Y = drop_mask * (self.X + fuzz_bump)
+                    npr.randn(self.X.shape[0], self.X.shape[1])
+            self.Y = drop_mask * (self.X + fuzz_bump)
         else:
-            Y = drop_mask * self.X
-        return Y
+            self.Y = drop_mask * self.X
+        return self.Y.astype(np.float32)
 
     def backprop(self, dLdY):
         """Perform backprop through this layer.
         """
         # Backprop is just multiplication by the mask from feedforward
         dLdX = dLdY * self.dYdX
-        return dLdX
+        return dLdX.astype(np.float32)
 
     def _cleanup(self):
         """Clear all temp variables for this layer."""
         self.X = []
+        self.Y = []
         self.dYdX = []
         return
 
@@ -650,7 +707,7 @@ class TanhLayer:
         # Record (a pointer to) the passed input
         self.X = X
         # Apply tanh to the input
-        self.Y = np.tanh(self.X)
+        self.Y = ne.evaluate('tanh(X)', optimization='aggressive')
         return self.Y
 
     def backprop(self, dLdY):

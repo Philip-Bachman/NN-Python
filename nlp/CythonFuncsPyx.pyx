@@ -9,7 +9,7 @@ import cython
 import numpy as np
 cimport numpy as np
 
-from libc.math cimport exp, log
+from libc.math cimport exp, log, sqrt
 from libc.string cimport memset
 
 cdef extern from "voidptr.h":
@@ -58,6 +58,7 @@ cdef cy_nsl_ff_bp_ptr cy_nsl_ff_bp
 cdef int ONE = 1
 cdef REAL_t ONEF = <REAL_t>1.0
 cdef REAL_t ADA_EPS = <REAL_t>0.001
+cdef REAL_t ADA_RHO = <REAL_t>0.98
 
 #############
 # W2V_FF_BP #
@@ -303,7 +304,7 @@ cdef void cy_ag_update_2d(
     const int vec_dim) nogil:
 
     # declarations
-    cdef long long row_ptr
+    cdef long long row_ptr, v_i
     cdef int sp_i, vec_bytes
     cdef I32_t i, row_key
 
@@ -313,8 +314,12 @@ cdef void cy_ag_update_2d(
         i = sp_idx[sp_i]
         row_key = row_idx[i]
         row_ptr = row_key * vec_dim
-        saxpy(&vec_dim, &alpha, &dW[row_ptr], &ONE, &W[row_ptr], &ONE)
-        memset(&dW[row_ptr], 0, vec_bytes)
+        for v_i in range(vec_dim):
+            mW[row_ptr + v_i] = (ADA_RHO * mW[row_ptr + v_i]) + \
+                    ((1 - ADA_RHO) * dW[row_ptr + v_i] * dW[row_ptr + v_i])
+            W[row_ptr + v_i] -= alpha * \
+                    (dW[row_ptr + v_i] / (sqrt(mW[row_ptr + v_i]) + ADA_EPS))
+            dW[row_ptr + v_i] = 0.0
     return
 
 def ag_update_2d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
@@ -326,7 +331,7 @@ def ag_update_2d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
     cdef REAL_t *W = <REAL_t *>(np.PyArray_DATA(W_p))
     cdef REAL_t *dW = <REAL_t *>(np.PyArray_DATA(dW_p))
     cdef REAL_t *mW = <REAL_t *>(np.PyArray_DATA(mW_p))
-    cdef REAL_t alpha = <REAL_t>(-1.0 * alpha_p)
+    cdef REAL_t alpha = <REAL_t>alpha_p
 
     with nogil:
         cy_ag_update_2d(sp_size, sp_idx, row_idx, W, dW, mW, alpha, vec_dim)
@@ -348,7 +353,9 @@ cdef void cy_ag_update_1d(
     for sp_i in range(sp_size):
         i = sp_idx[sp_i]
         row_key = row_idx[i]
-        W[row_key] = W[row_key] + (alpha * dW[row_key])
+        mW[row_key] = (ADA_RHO * mW[row_key]) + \
+                ((1 - ADA_RHO) * dW[row_key] * dW[row_key])
+        W[row_key] -= alpha * (dW[row_key] / (sqrt(mW[row_key]) + ADA_EPS))
         dW[row_key] = 0.0
     return
 
@@ -360,7 +367,7 @@ def ag_update_1d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
     cdef REAL_t *W = <REAL_t *>(np.PyArray_DATA(W_p))
     cdef REAL_t *dW = <REAL_t *>(np.PyArray_DATA(dW_p))
     cdef REAL_t *mW = <REAL_t *>(np.PyArray_DATA(mW_p))
-    cdef REAL_t alpha = <REAL_t>(-1.0 * alpha_p)
+    cdef REAL_t alpha = <REAL_t>alpha_p
 
     with nogil:
         cy_ag_update_1d(sp_size, sp_idx, row_idx, W, dW, mW, alpha)

@@ -61,6 +61,7 @@ def make_multithread(inner_func, numthreads):
 ##############################
 
 w2v_ff_bp = make_multithread(w2v_ff_bp_pyx, THREAD_NUM)
+hsm_ff_bp = make_multithread(nsl_ff_bp_pyx, THREAD_NUM)
 nsl_ff_bp = make_multithread(nsl_ff_bp_pyx, THREAD_NUM)
 lut_bp = make_multithread(lut_bp_pyx, THREAD_NUM)
 

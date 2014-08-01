@@ -13,7 +13,7 @@ import numpy.random as npr
 from timeit import default_timer as timer
 import gnumpy as gp
 
-N = 500     # no. of rows/cols
+N = 5000     # no. of rows/cols
 
 def gemm_v1():
     '''
@@ -96,7 +96,7 @@ if __name__ == '__main__':
     for i in range(1000):
         B = gp.garray(A)
         B = B + B
-        A = npr.rand(256, 1500)
+        A = gp.randn((256, 1500)).as_numpy_array()
     berk_time = timer() - start
     print("Berk time: {0:.4f}".format(berk_time))
     print("  @ {0:.4f} transfers/second".format(1000.0 / berk_time))
