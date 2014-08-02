@@ -31,7 +31,7 @@ restorethread.restype = None
 def make_multithread(inner_func, numthreads):
     def func_mt(*args):
         length = len(args[0])
-        sp_idx = np.arange(0,length).astype(np.int32)
+        sp_idx = np.arange(0,length).astype(np.uint32)
         chunklen = (length + (numthreads-1)) // numthreads
         chunkargs = [(sp_idx[i*chunklen:(i+1)*chunklen],)+args for i in range(numthreads)]
         # Start a thread for all but the last chunk of work
@@ -46,7 +46,7 @@ def make_multithread(inner_func, numthreads):
         return 1
     def func_st(*args):
         length = len(args[0])
-        sp_idx = np.arange(0,length).astype(np.int32)
+        sp_idx = np.arange(0,length).astype(np.uint32)
         sp_args = (sp_idx,) + args
         inner_fun(*sp_args)
     func = None

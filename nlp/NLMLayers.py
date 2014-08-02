@@ -7,9 +7,7 @@ import gnumpy as gp
 import numexpr as ne
 
 # Imports of my stuff
-import HelperFuncs as hf
 from HelperFuncs import randn, ones, zeros
-from NumbaFuncs import nsl_ff, nsl_bp
 from CythonFuncs import w2v_ff_bp, nsl_ff_bp, lut_bp, ag_update_2d, ag_update_1d
 
 ADA_EPS = 1e-3
@@ -60,67 +58,29 @@ class NSLayer:
         self.params['W'] = M * m_scales[:,np.newaxis]
         return
 
-    def ff_bp(self, X, pos_samples, neg_samples):
+    def ff_bp(self, X, pos_samples, neg_samples, do_grad=True):
         """Perform feedforward and then backprop for this layer."""
         assert(X.shape[1] == self.params['W'].shape[1])
         assert(pos_samples.shape[0] == X.shape[0])
         assert(neg_samples.shape[0] == X.shape[0])
+        do_grad = 1 if do_grad else 0 # change to int for cython code
         # Cleanup debris from any previous feedforward
         self._cleanup()
         # Record inputs and keys for positive/negative sample examples
         pos_samples = pos_samples[:,np.newaxis]
-        samp_keys = np.hstack((pos_samples, neg_samples)).astype(np.int32)
-        samp_sign = ones(samp_keys.shape)
-        samp_sign[:,0] = -1.0
+        samp_keys = np.hstack((pos_samples, neg_samples)).astype(np.uint32)
+        samp_sign = -1.0 * ones(samp_keys.shape)
+        samp_sign[:,0] = 1.0
         # Do feedforward and backprop all in one go
         L = zeros((1,))
         dLdX = zeros(X.shape)
         nsl_ff_bp(samp_keys, samp_sign, X, self.params['W'], self.params['b'], \
-                  dLdX, self.grads['W'], self.grads['b'], L)
+                  dLdX, self.grads['W'], self.grads['b'], L, do_grad)
         # Derp dorp
         L = L[0]
-        self.grad_idx.update(samp_keys.ravel())
+        if do_grad:
+            self.grad_idx.update(samp_keys.ravel())
         return [dLdX, L]
-
-
-    def feedforward(self, X, pos_samples, neg_samples):
-        """Run feedforward for this layer.
-
-        Parameter pos_samples should be a single column vector of integer
-        indices into this look-up-table, and neg_samples should be a matrix
-        whose columns are lut indices for some negative samples.
-        """
-        assert(X.shape[1] == self.params['W'].shape[1])
-        assert(pos_samples.shape[0] == X.shape[0])
-        assert(neg_samples.shape[0] == X.shape[0])
-        # Cleanup debris from any previous feedforward
-        self._cleanup()
-        # Record inputs and keys for positive/negative sample examples
-        pos_samples = pos_samples[:,np.newaxis]
-        self.X = X
-        self.samp_keys = np.hstack((pos_samples, neg_samples))
-        self.samp_keys = self.samp_keys.astype(np.int32)
-        # Do the feedforward
-        self.Y = zeros((X.shape[0], self.samp_keys.shape[1]))
-        nsl_ff(self.samp_keys, self.X, self.params['W'], \
-               self.params['b'], self.Y)
-        # Using the outputs for these positive and negative samples, compute
-        # loss and gradients for pseudo noise-contrastive training.
-        samp_sign = ones(self.samp_keys.shape)
-        samp_sign[:,0] = -1.0
-        exp_ss_y = np.exp(samp_sign * self.Y)
-        L = np.sum(np.log(1.0 + exp_ss_y))
-        self.dLdY = samp_sign * (exp_ss_y / (1.0 + exp_ss_y))
-        return L
-
-    def backprop(self):
-        """Backprop through this layer, based on most recent feedforward.
-        """
-        self.dLdX = zeros(self.X.shape)
-        self.grad_idx.update(self.samp_keys.ravel())
-        nsl_bp(self.samp_keys, self.X, self.params['W'], self.dLdY, \
-               self.dLdX, self.grads['W'], self.grads['b'])
-        return self.dLdX
 
     def l2_regularize(self, lam_l2=1e-5):
         """Add gradients for l2 regularization. And compute loss."""
@@ -130,7 +90,7 @@ class NSLayer:
 
     def apply_grad(self, learn_rate=1e-2):
         """Apply the current accumulated gradients, with adagrad."""
-        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
+        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.uint32)
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
                      self.moms['W'], learn_rate)
         ag_update_1d(nz_idx, self.params['b'], self.grads['b'], \
@@ -227,7 +187,7 @@ class FullLayer:
         """Backprop through softmax using the given target predictions."""
         # Compute gradient of cross-entropy objective, based on the given
         # target predictions and the most recent feedforward information.
-        L, dLdY = self.xent_loss_and_grad(self.Y, Y_cat.astype(np.int32))
+        L, dLdY = self.xent_loss_and_grad(self.Y, Y_cat.astype(np.uint32))
         # Backprop cross-ent grads to get grads w.r.t. layer parameters
         dLdW = gp.dot(self.X.T, dLdY)
         dLdb = gp.sum(dLdY, axis=0)
@@ -351,7 +311,7 @@ class LUTLayer:
         # Cleanup debris from any previous feedforward
         self._cleanup()
         # Record the incoming list of row indices to extract
-        self.X = X.astype(np.int32)
+        self.X = X.astype(np.uint32)
         # Use look-up table to generate the desired sequences
         if (self.n_gram == 1):
             self.Y = self.params['W'].take(self.X, axis=0)
@@ -385,7 +345,7 @@ class LUTLayer:
 
     def apply_grad(self, learn_rate=1e-2):
         """Apply the current accumulated gradients, with adagrad."""
-        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
+        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.uint32)
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
                      self.moms['W'], learn_rate)
         self.grad_idx = set()
@@ -477,7 +437,7 @@ class CMLayer:
         assert ((self.bias_dim >= 5) or (self.source_dim >= 5))
         # Record the incoming list of row indices to extract
         self.X = X
-        self.C = C.astype(np.int32)
+        self.C = C.astype(np.uint32)
         # Extract the relevant bias parameter rows
         Wb = self.params['Wb'].take(C, axis=0)
         if (self.bias_dim < 5):
@@ -521,15 +481,9 @@ class CMLayer:
         dLdX = self.Wm_sig * dLdYw
         return dLdX
 
-    def l2_regularize(self, lam_l2=1e-5):
-        """Add gradients for l2 regularization. And compute loss."""
-        self.params['Wm'] -= lam_l2 * self.params['Wm']
-        self.params['Wb'] -= lam_l2 * self.params['Wb']
-        return 1
-
     def apply_grad(self, learn_rate=1e-2):
         """Apply the current accumulated gradients, with adagrad."""
-        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.int32)
+        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.uint32)
         # Information from the word LUT should not pass through this
         # layer when source_dim < 5. In this case, we assume that we
         # will do prediction using only the context-adaptive biases.
@@ -545,6 +499,12 @@ class CMLayer:
                      self.moms['Wb'], b_rate)
         self.grad_idx = set()
         return
+
+    def l2_regularize(self, lam_Wm=1e-5, lam_Wb=1e-5):
+        """Add gradients for l2 regularization."""
+        self.params['Wm'] -= lam_Wm * self.params['Wm']
+        self.params['Wb'] -= lam_Wb * self.params['Wb']
+        return 1
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""
@@ -570,9 +530,9 @@ class CMLayer:
         self.dLdY = []
         return
 
-#########################
-# NOISE INJECTION LAYER #
-#########################
+##########################
+# NOISE INJECTION LAYERS #
+##########################
 
 class GPUNoiseLayer:
     def __init__(self, drop_rate=0.0, fuzz_scale=0.0):
@@ -783,12 +743,12 @@ class W2VLayer:
         """Perform a batch update of all parameters based on the given sets
         of anchor/positive example/negative examples indices.
         """
-        # Force incoming LUT indices to the right type (i.e. np.int32)
-        anc_idx = anc_idx.astype(np.int32)
+        # Force incoming LUT indices to the right type (i.e. np.uint32)
+        anc_idx = anc_idx.astype(np.uint32)
         pos_idx = pos_idx[:,np.newaxis]
-        pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
-        pn_sign = ones(pn_idx.shape)
-        pn_sign[:,0] = -1.0
+        pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.uint32)
+        pn_sign = -1.0 * ones(pn_idx.shape)
+        pn_sign[:,0] = 1.0
         L = zeros((1,))
         # Do feedforward and backprop through the predictor/predictee tables
         w2v_ff_bp(anc_idx, pn_idx, pn_sign, self.params['Wa'], \
@@ -810,9 +770,9 @@ class W2VLayer:
         """Perform a batch update of all parameters based on the given sets
         of anchor/positive example/negative examples indices.
         """
-        anc_idx = anc_idx.astype(np.int32)
+        anc_idx = anc_idx.astype(np.uint32)
         pos_idx = pos_idx[:,np.newaxis]
-        pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.int32)
+        pn_idx = np.hstack((pos_idx, neg_idx)).astype(np.uint32)
         pn_sign = ones(pn_idx.shape)
         pn_sign[:,0] = -1.0
         L = zeros((1,))
@@ -825,6 +785,12 @@ class W2VLayer:
         self.grads['b'] = 0.0 * self.grads['b']
         L = L[0]
         return L
+
+    def l2_regularize(self, lam_l2=1e-5):
+        """Add gradients for l2 regularization."""
+        self.params['Wa'] -= lam_l2 * self.params['Wa']
+        self.params['Wc'] -= lam_l2 * self.params['Wc']
+        return
 
     def reset_moms(self, ada_init=1e-3):
         """Reset the gradient accumulators for this layer."""

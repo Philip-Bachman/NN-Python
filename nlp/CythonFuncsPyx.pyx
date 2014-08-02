@@ -4,6 +4,12 @@
 # cython: cdivision=True
 # coding: utf-8
 #
+# Code in this file was written primarily by Philip Bachman, based on code
+# made publically avilable under the license given below...
+#
+# Copyright (C) 2013 Radim Rehurek <me@radimrehurek.com>
+# Licensed under the GNU LGPL v2.1 - http://www.gnu.org/licenses/lgpl.html
+#
 
 import cython
 import numpy as np
@@ -32,17 +38,17 @@ ctypedef void (*sscal_ptr) (const int *N, const float *alpha, const float *X, co
 
 
 ctypedef void (*cy_w2v_ff_bp_ptr) (
-    const int sp_size, const I32_t *sp_idx, const I32_t *anc_keys,
-    const int pn_size, const I32_t *pn_keys, REAL_t *pn_sign,
+    const int sp_size, const UI32_t *sp_idx, const UI32_t *anc_keys,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
     REAL_t *Wa, REAL_t *Wc, REAL_t *b, REAL_t *dWa, REAL_t *dWc, REAL_t *db,
     REAL_t *L, const int do_grad, const int vec_dim) nogil
 
 ctypedef void (*cy_nsl_ff_bp_ptr) (
-    const int sp_size, const I32_t *sp_idx,
-    const int pn_size, const I32_t *pn_keys, REAL_t *pn_sign,
+    const int sp_size, const UI32_t *sp_idx,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
     REAL_t *X, REAL_t *W, REAL_t *b,
     REAL_t *dX, REAL_t *dW, REAL_t *db,
-    REAL_t *L, const int vec_dim) nogil
+    REAL_t *L, const int do_grad, const int vec_dim) nogil
 
 cdef scopy_ptr scopy=<scopy_ptr>PyCObject_AsVoidPtr(blas.scopy._cpointer)  # y = x
 cdef saxpy_ptr saxpy=<saxpy_ptr>PyCObject_AsVoidPtr(blas.saxpy._cpointer)  # y += alpha * x
@@ -65,15 +71,15 @@ cdef REAL_t ADA_RHO = <REAL_t>0.98
 #############
 
 cdef void cy_w2v_ff_bp0(
-    const int sp_size, const I32_t *sp_idx, const I32_t *anc_keys,
-    const int pn_size, const I32_t *pn_keys, REAL_t *pn_sign,
+    const int sp_size, const UI32_t *sp_idx, const UI32_t *anc_keys,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
     REAL_t *Wa, REAL_t *Wc, REAL_t *b, REAL_t *dWa, REAL_t *dWc, REAL_t *db,
     REAL_t *L, const int do_grad, const int vec_dim) nogil:
 
     # declarations
     cdef long long row1, row2
     cdef REAL_t label, y, exp_pns_y, g
-    cdef I32_t a_key, c_key
+    cdef UI32_t a_key, c_key
     cdef int sp_i, i, j
 
     # update loop
@@ -84,29 +90,29 @@ cdef void cy_w2v_ff_bp0(
         for j in range(pn_size):
             c_key = pn_keys[i*pn_size + j] # get the LUT key for the context word
             row2 = c_key * vec_dim # get the starting index of context word's row
-            label = pn_sign[i*pn_size + j] # get the +1/-1 label for the context word
+            neg_label = -1.0 * pn_sign[i*pn_size + j]
             # compute prediction y as np.dot(a_vec, c_vec.T) + b[c_key]
             y = <REAL_t>dsdot(&vec_dim, &Wa[row1], &ONE, &Wc[row2], &ONE) + b[c_key]
-            exp_pns_y = <REAL_t>exp(label * y) # this is used for loss/grad computations
+            exp_pns_y = <REAL_t>exp(neg_label * y)
             L[0] = L[0] + log(1.0 + exp_pns_y) # add the loss on this a/c pair
             if (do_grad == 1):
                 # Compute gradient and update parameter gradient accumulators
-                g = label * (exp_pns_y / (1.0 + exp_pns_y))
+                g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
                 saxpy(&vec_dim, &g, &Wa[row1], &ONE, &dWc[row2], &ONE)
                 saxpy(&vec_dim, &g, &Wc[row2], &ONE, &dWa[row1], &ONE)
                 db[c_key] = db[c_key] + g
     return
 
 cdef void cy_w2v_ff_bp1(
-    const int sp_size, const I32_t *sp_idx, const I32_t *anc_keys,
-    const int pn_size, const I32_t *pn_keys, REAL_t *pn_sign,
+    const int sp_size, const UI32_t *sp_idx, const UI32_t *anc_keys,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
     REAL_t *Wa, REAL_t *Wc, REAL_t *b, REAL_t *dWa, REAL_t *dWc, REAL_t *db,
     REAL_t *L, const int do_grad, const int vec_dim) nogil:
 
     # declarations
     cdef long long row1, row2
     cdef REAL_t label, y, exp_pns_y, g
-    cdef I32_t a_key, c_key
+    cdef UI32_t a_key, c_key
     cdef int sp_i, i, j
 
     # update loop
@@ -117,14 +123,14 @@ cdef void cy_w2v_ff_bp1(
         for j in range(pn_size):
             c_key = pn_keys[i*pn_size + j] # get the LUT key for the context word
             row2 = c_key * vec_dim # get the starting index of context word's row
-            label = pn_sign[i*pn_size + j] # get the +1/-1 label for the context word
+            neg_label = -1.0 * pn_sign[i*pn_size + j]
             # compute prediction y as np.dot(a_vec, c_vec.T) + b[c_key]
             y = <REAL_t>sdot(&vec_dim, &Wa[row1], &ONE, &Wc[row2], &ONE) + b[c_key]
-            exp_pns_y = <REAL_t>exp(label * y) # this is used for loss/grad computations
+            exp_pns_y = <REAL_t>exp(neg_label * y)
             L[0] = L[0] + log(1.0 + exp_pns_y) # add the loss on this a/c pair
             if (do_grad == 1):
                 # Compute gradient and update parameter gradient accumulators
-                g = label * (exp_pns_y / (1.0 + exp_pns_y))
+                g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
                 saxpy(&vec_dim, &g, &Wa[row1], &ONE, &dWc[row2], &ONE)
                 saxpy(&vec_dim, &g, &Wc[row2], &ONE, &dWa[row1], &ONE)
                 db[c_key] = db[c_key] + g
@@ -137,9 +143,9 @@ def w2v_ff_bp_pyx(sp_idx_p, anc_keys_p, pn_keys_p, pn_sign_p, Wa_p, Wc_p, b_p,
     cdef int pn_size = <int>pn_keys_p.shape[1]
     cdef int do_grad = <int>do_grad_p
     cdef int vec_dim = <int>Wa_p.shape[1]
-    cdef I32_t *sp_idx = <I32_t *>(np.PyArray_DATA(sp_idx_p))
-    cdef I32_t *anc_keys = <I32_t *>(np.PyArray_DATA(anc_keys_p))
-    cdef I32_t *pn_keys = <I32_t *>(np.PyArray_DATA(pn_keys_p))
+    cdef UI32_t *sp_idx = <UI32_t *>(np.PyArray_DATA(sp_idx_p))
+    cdef UI32_t *anc_keys = <UI32_t *>(np.PyArray_DATA(anc_keys_p))
+    cdef UI32_t *pn_keys = <UI32_t *>(np.PyArray_DATA(pn_keys_p))
     cdef REAL_t *pn_sign = <REAL_t *>(np.PyArray_DATA(pn_sign_p))
     cdef REAL_t *Wa = <REAL_t *>(np.PyArray_DATA(Wa_p))
     cdef REAL_t *Wc = <REAL_t *>(np.PyArray_DATA(Wc_p))
@@ -181,8 +187,11 @@ def w2v_ff_bp_pyx(sp_idx_p, anc_keys_p, pn_keys_p, pn_sign_p, Wa_p, Wc_p, b_p,
 #         W_p: Numpy matrix of float32 params for this NSLayer/HSMLayer.       #
 #              *same number of columns as X_p                                  #
 #         b_p: Numpy array of float32 giving a bias for each row of W_p.       #
-#         L_p: Numpy array with one element -- to accumulate loss information  #
 #         dX_p, dW_p, db_p: np.float32 gradient accumulators for X_p/W_p/b_p   #
+#         L_p: Numpy array with one element -- to accumulate loss information  #
+#         do_grad_p: int in {0, 1}. if it's 0, then we will only compute loss  #
+#                    and grad arrays will be left untouched. otherwise, the    #
+#                    grad arrays will be modified with the new grad info.      #
 #                                                                              #
 #                                                                              #
 #       1. When used by NSLayer, pn_keys gives the (NSLayer) LUT keys for the  #
@@ -204,16 +213,16 @@ def w2v_ff_bp_pyx(sp_idx_p, anc_keys_p, pn_keys_p, pn_sign_p, Wa_p, Wc_p, b_p,
 ################################################################################
 
 cdef void cy_nsl_ff_bp0(
-    const int sp_size, const I32_t *sp_idx,
-    const int pn_size, const I32_t *pn_keys, REAL_t *pn_sign,
+    const int sp_size, const UI32_t *sp_idx,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
     REAL_t *X, REAL_t *W, REAL_t *b,
     REAL_t *dX, REAL_t *dW, REAL_t *db,
-    REAL_t *L, const int vec_dim) nogil:
+    REAL_t *L, const int do_grad, const int vec_dim) nogil:
 
     # declarations
     cdef long long row1, row2
     cdef REAL_t label, y, exp_pns_y, g
-    cdef I32_t X_key, W_key
+    cdef UI32_t X_key, W_key
     cdef int sp_i, i, j
 
     # update loop
@@ -227,30 +236,31 @@ cdef void cy_nsl_ff_bp0(
                       # that no more code vectors need to be processed for a
                       # given anchor/target key pair.
             row2 = W_key * vec_dim # get the starting index of target row (in W)
-            label = pn_sign[X_key*pn_size + j] # get the +1/-1 label for target
+            neg_label = -1.0 * pn_sign[X_key*pn_size + j] # minus the label
             # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]
             y = <REAL_t>dsdot(&vec_dim, &X[row1], &ONE, &W[row2], &ONE) + b[W_key]
-            exp_pns_y = <REAL_t>exp(label * y) # this is used for loss/grad
+            exp_pns_y = <REAL_t>exp(neg_label * y) # this is used for loss/grad
             L[0] = L[0] + log(1.0 + exp_pns_y) # record the loss
-            # Compute gradient and update gradient accumulators
-            g = label * (exp_pns_y / (1.0 + exp_pns_y))
-            saxpy(&vec_dim, &g, &X[row1], &ONE, &dW[row2], &ONE)
-            saxpy(&vec_dim, &g, &W[row2], &ONE, &dX[row1], &ONE)
-            db[W_key] = db[W_key] + g
+            if (do_grad == 1):
+                # Compute gradient and update gradient accumulators
+                g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
+                saxpy(&vec_dim, &g, &X[row1], &ONE, &dW[row2], &ONE)
+                saxpy(&vec_dim, &g, &W[row2], &ONE, &dX[row1], &ONE)
+                db[W_key] = db[W_key] + g
     return
 
 
 cdef void cy_nsl_ff_bp1(
-    const int sp_size, const I32_t *sp_idx,
-    const int pn_size, const I32_t *pn_keys, REAL_t *pn_sign,
+    const int sp_size, const UI32_t *sp_idx,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
     REAL_t *X, REAL_t *W, REAL_t *b,
     REAL_t *dX, REAL_t *dW, REAL_t *db,
-    REAL_t *L, const int vec_dim) nogil:
+    REAL_t *L, const int do_grad, const int vec_dim) nogil:
 
     # declarations
     cdef long long row1, row2
     cdef REAL_t label, y, exp_pns_y, g
-    cdef I32_t X_key, W_key
+    cdef UI32_t X_key, W_key
     cdef int sp_i, i, j
 
     # update loop
@@ -259,27 +269,33 @@ cdef void cy_nsl_ff_bp1(
         row1 = X_key * vec_dim # get the starting index of input row (in X)
         for j in range(pn_size):
             W_key = pn_keys[X_key*pn_size + j] # get the LUT key for target word
+            if (W_key < 0):
+                break # W_key < 0 is used by hierarchical softmax to indicate
+                      # that no more code vectors need to be processed for a
+                      # given anchor/target key pair.
             row2 = W_key * vec_dim # get the starting index of target row (in W)
-            label = pn_sign[X_key*pn_size + j] # get the +1/-1 label for target
+            neg_label = -1.0 * pn_sign[X_key*pn_size + j] # minus the label
             # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]
             y = <REAL_t>sdot(&vec_dim, &X[row1], &ONE, &W[row2], &ONE) + b[W_key]
-            exp_pns_y = <REAL_t>exp(label * y) # this is used for loss/grad
+            exp_pns_y = <REAL_t>exp(neg_label * y) # this is used for loss/grad
             L[0] = L[0] + log(1.0 + exp_pns_y) # record the loss
-            # Compute gradient and update gradient accumulators
-            g = label * (exp_pns_y / (1.0 + exp_pns_y))
-            saxpy(&vec_dim, &g, &X[row1], &ONE, &dW[row2], &ONE)
-            saxpy(&vec_dim, &g, &W[row2], &ONE, &dX[row1], &ONE)
-            db[W_key] = db[W_key] + g
+            if (do_grad == 1):
+                # Compute gradient and update gradient accumulators
+                g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
+                saxpy(&vec_dim, &g, &X[row1], &ONE, &dW[row2], &ONE)
+                saxpy(&vec_dim, &g, &W[row2], &ONE, &dX[row1], &ONE)
+                db[W_key] = db[W_key] + g
     return
 
 def nsl_ff_bp_pyx(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p,
-                  dX_p, dW_p, db_p, L_p):
+                  dX_p, dW_p, db_p, L_p, do_grad_p):
     # Define and cast minibatch problem parameters
     cdef int sp_size = <int>sp_idx_p.shape[0]
     cdef int pn_size = <int>pn_keys_p.shape[1]
+    cdef int do_grad = <int>do_grad_p
     cdef int vec_dim = <int>W_p.shape[1]
-    cdef I32_t *sp_idx = <I32_t *>(np.PyArray_DATA(sp_idx_p))
-    cdef I32_t *pn_keys = <I32_t *>(np.PyArray_DATA(pn_keys_p))
+    cdef UI32_t *sp_idx = <UI32_t *>(np.PyArray_DATA(sp_idx_p))
+    cdef UI32_t *pn_keys = <UI32_t *>(np.PyArray_DATA(pn_keys_p))
     cdef REAL_t *pn_sign = <REAL_t *>(np.PyArray_DATA(pn_sign_p))
     cdef REAL_t *X = <REAL_t *>(np.PyArray_DATA(X_p))
     cdef REAL_t *W = <REAL_t *>(np.PyArray_DATA(W_p))
@@ -291,7 +307,7 @@ def nsl_ff_bp_pyx(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p,
 
     with nogil:
         cy_nsl_ff_bp(sp_size, sp_idx, pn_size, pn_keys, pn_sign,
-                     X, W, b, dX, dW, db, L, vec_dim)
+                     X, W, b, dX, dW, db, L, do_grad, vec_dim)
     return
 
 ################
@@ -299,14 +315,14 @@ def nsl_ff_bp_pyx(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p,
 ################
 
 cdef void cy_ag_update_2d(
-    const int sp_size, const I32_t *sp_idx, const I32_t *row_idx,
+    const int sp_size, const UI32_t *sp_idx, const UI32_t *row_idx,
     REAL_t *W, REAL_t *dW, REAL_t *mW, REAL_t alpha,
     const int vec_dim) nogil:
 
     # declarations
     cdef long long row_ptr, v_i
     cdef int sp_i, vec_bytes
-    cdef I32_t i, row_key
+    cdef UI32_t i, row_key
 
     # update loop
     vec_bytes = cython.sizeof(REAL_t) * vec_dim
@@ -326,8 +342,8 @@ def ag_update_2d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
     # Define and cast minibatch problem parameters
     cdef int sp_size = <int>sp_idx_p.shape[0]
     cdef int vec_dim = <int>W_p.shape[1]
-    cdef I32_t *sp_idx = <I32_t *>(np.PyArray_DATA(sp_idx_p))
-    cdef I32_t *row_idx = <I32_t *>(np.PyArray_DATA(row_idx_p))
+    cdef UI32_t *sp_idx = <UI32_t *>(np.PyArray_DATA(sp_idx_p))
+    cdef UI32_t *row_idx = <UI32_t *>(np.PyArray_DATA(row_idx_p))
     cdef REAL_t *W = <REAL_t *>(np.PyArray_DATA(W_p))
     cdef REAL_t *dW = <REAL_t *>(np.PyArray_DATA(dW_p))
     cdef REAL_t *mW = <REAL_t *>(np.PyArray_DATA(mW_p))
@@ -342,12 +358,12 @@ def ag_update_2d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
 ################
 
 cdef void cy_ag_update_1d(
-    const int sp_size, const I32_t *sp_idx, const I32_t *row_idx, REAL_t *W,
+    const int sp_size, const UI32_t *sp_idx, const UI32_t *row_idx, REAL_t *W,
     REAL_t *dW, REAL_t *mW, REAL_t alpha) nogil:
 
     # declarations
     cdef int sp_i
-    cdef I32_t i, row_key
+    cdef UI32_t i, row_key
 
     # update loop
     for sp_i in range(sp_size):
@@ -362,8 +378,8 @@ cdef void cy_ag_update_1d(
 def ag_update_1d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
     # Define and cast minibatch problem parameters
     cdef int sp_size = <int>sp_idx_p.shape[0]
-    cdef I32_t *sp_idx = <I32_t *>(np.PyArray_DATA(sp_idx_p))
-    cdef I32_t *row_idx = <I32_t *>(np.PyArray_DATA(row_idx_p))
+    cdef UI32_t *sp_idx = <UI32_t *>(np.PyArray_DATA(sp_idx_p))
+    cdef UI32_t *row_idx = <UI32_t *>(np.PyArray_DATA(row_idx_p))
     cdef REAL_t *W = <REAL_t *>(np.PyArray_DATA(W_p))
     cdef REAL_t *dW = <REAL_t *>(np.PyArray_DATA(dW_p))
     cdef REAL_t *mW = <REAL_t *>(np.PyArray_DATA(mW_p))
@@ -378,13 +394,13 @@ def ag_update_1d_pyx(sp_idx_p, row_idx_p, W_p, dW_p, mW_p, alpha_p):
 ##########
 
 cdef void cy_lut_bp(
-    const int sp_size, const I32_t *sp_idx, const I32_t *row_idx,
+    const int sp_size, const UI32_t *sp_idx, const UI32_t *row_idx,
     REAL_t *dLdY, REAL_t *dW, const int vec_dim) nogil:
 
     # declarations
     cdef long long row1, row2
     cdef int sp_i
-    cdef I32_t i, j
+    cdef UI32_t i, j
 
     # update loop
     for sp_i in range(sp_size):
@@ -399,8 +415,8 @@ def lut_bp_pyx(sp_idx_p, row_idx_p, dLdY_p, dW_p):
     # Define and cast minibatch problem parameters
     cdef int sp_size = <int>sp_idx_p.shape[0]
     cdef int vec_dim = <int>dLdY_p.shape[1]
-    cdef I32_t *sp_idx = <I32_t *>(np.PyArray_DATA(sp_idx_p))
-    cdef I32_t *row_idx = <I32_t *>(np.PyArray_DATA(row_idx_p))
+    cdef UI32_t *sp_idx = <UI32_t *>(np.PyArray_DATA(sp_idx_p))
+    cdef UI32_t *row_idx = <UI32_t *>(np.PyArray_DATA(row_idx_p))
     cdef REAL_t *dLdY = <REAL_t *>(np.PyArray_DATA(dLdY_p))
     cdef REAL_t *dW = <REAL_t *>(np.PyArray_DATA(dW_p))
 

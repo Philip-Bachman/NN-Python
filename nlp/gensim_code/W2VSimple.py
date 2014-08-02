@@ -20,7 +20,7 @@ except ImportError:
     from Queue import Queue
 
 from numpy import exp, dot, zeros, outer, random, get_include, float32 as REAL, int64, prod, dtype as np_dtype, \
-    uint32, seterr, array, uint8, vstack, argsort, fromstring, sqrt, newaxis, ndarray, empty, sum as np_sum
+    uint32, seterr, array, uint8, vstack, argsort, fromstring, sqrt, newaxis, empty, sum as np_sum
 
 logger = logging.getLogger("W2VSimple")
 

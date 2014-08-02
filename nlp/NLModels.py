@@ -1,10 +1,10 @@
 import numpy as np
 import numpy.random as npr
 import NLMLayers as nlml
-import ParVec as pv
-import HelperFuncs as hf
 import cPickle as pickle
-from HelperFuncs import zeros, ones, randn
+from HelperFuncs import zeros, ones, randn, \
+                        rand_word_seqs, PNSampler # TODO: get rid of these
+import CorpusUtils as cu
 
 class PVModel:
     """
@@ -43,7 +43,7 @@ class PVModel:
           adds the option of using dropout/masking noise and Gaussian "fuzzing"
           noise for stronger regularization.
     """
-    def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key,
+    def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key, \
                  pre_words=5, lam_wv=1e-4, lam_cv=1e-4, lam_sm=1e-4):
         # Record options/parameters
         self.wv_dim = wv_dim
@@ -60,15 +60,15 @@ class PVModel:
         self.drop_rate = 0.0
         self.fuzz_scale = 0.0
         # Create layers to use during training
-        self.word_layer = nlml.LUTLayer(self.max_wv_key, wv_dim, 
+        self.word_layer = nlml.LUTLayer(self.max_wv_key, wv_dim, \
                                         n_gram=self.pre_words)
-        self.context_layer = nlml.CMLayer(max_key=max_cv_key,
-                                          source_dim=wv_dim,
-                                          bias_dim=cv_dim,
+        self.context_layer = nlml.CMLayer(max_key=max_cv_key, \
+                                          source_dim=wv_dim, \
+                                          bias_dim=cv_dim, \
                                           do_rescale=False)
-        self.noise_layer = nlml.GPUNoiseLayer(drop_rate=self.drop_rate,
+        self.noise_layer = nlml.GPUNoiseLayer(drop_rate=self.drop_rate, \
                                               fuzz_scale=self.fuzz_scale)
-        self.class_layer = nlml.FullLayer(in_dim=(cv_dim + pre_words*wv_dim),
+        self.class_layer = nlml.FullLayer(in_dim=(cv_dim + pre_words*wv_dim), \
                                           max_out_key=self.max_wv_key)
         return
 
@@ -141,7 +141,7 @@ class PVModel:
         self.class_layer.reset_moms(ada_init=1.0)
         print("Training all parameters:")
         for b in range(batch_count):
-            [seq_keys, phrase_keys] = hf.rand_word_seqs(phrase_list, batch_size, \
+            [seq_keys, phrase_keys] = rand_word_seqs(phrase_list, batch_size, \
                                       self.pre_words+1, self.max_wv_key)
             pre_keys = seq_keys[:,0:-1]
             post_keys = seq_keys[:,-1]
@@ -169,9 +169,9 @@ class PVModel:
         # Put a new context layer in place of self.context_layer, but keep
         # a pointer to self.context_layer around to restore later...
         max_cv_key = len(phrase_list) - 1
-        new_context_layer = nlml.CMLayer(max_key=self.max_cv_key,
-                                         source_dim=self.wv_dim,
-                                         bias_dim=self.cv_dim,
+        new_context_layer = nlml.CMLayer(max_key=self.max_cv_key, \
+                                         source_dim=self.wv_dim, \
+                                         bias_dim=self.cv_dim, \
                                          do_rescale=False)
         new_context_layer.init_params(0.0)
         prev_context_layer = self.context_layer
@@ -181,7 +181,7 @@ class PVModel:
         L = 0.0
         print("Training new context vectors:")
         for b in range(batch_count):
-            [seq_keys, phrase_keys] = hf.rand_word_seqs(phrase_list, batch_size, \
+            [seq_keys, phrase_keys] = rand_word_seqs(phrase_list, batch_size, \
                                       self.pre_words+1, self.max_wv_key)
             pre_keys = seq_keys[:,0:-1]
             post_keys = seq_keys[:,-1]
@@ -230,6 +230,7 @@ class CAModel:
         self.lam_wv = lam_wv
         self.lam_cv = lam_cv
         self.lam_ns = lam_ns
+        self.reg_freq = 20 # number of batches between regularization updates
         # Set noise layer parameters (for better regularization)
         self.drop_rate = 0.0
         self.fuzz_scale = 0.0
@@ -287,10 +288,8 @@ class CAModel:
         Xc = self.context_layer.feedforward(Xb, phrase_keys)
         Xn = self.noise_layer.feedforward(Xc)
 
-        # Turan the corner with feedforward and backprop at class layer
-        dLdXn, L = self.class_layer.ff_bp(Xn, pos_keys, neg_keys)
-        #L = self.class_layer.feedforward(Xn, pos_keys, neg_keys)
-        #dLdXn = self.class_layer.backprop()
+        # Turn the corner with feedforward and backprop at class layer
+        dLdXn, L = self.class_layer.ff_bp(Xn, pos_keys, neg_keys, do_grad=True)
 
         # Backprop through layers based on feedforward result
         dLdXc = self.noise_layer.backprop(dLdXn)
@@ -321,7 +320,7 @@ class CAModel:
             train_context: whether or not to do updates for the context layer
             learn_rate: learning rate for adagrad updates
         """
-        sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
+        sampler = PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
         print("Training all parameters:")
         L = 0.0
         self.word_layer.reset_moms(1.0)
@@ -332,10 +331,13 @@ class CAModel:
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
                                    train_words=train_words, train_context=train_context, \
                                    learn_rate=learn_rate)
-            if ((b % 200) == 0):
-                self.word_layer.clip_params(max_norm=2.0)
-                self.context_layer.clip_params(Wm_norm=1.0, Wb_norm=1.0)
-                self.class_layer.clip_params(max_norm=2.0)
+            # apply l2 regularization, but not every round (to save time)
+            if ((b > 1) and ((b % self.reg_freq) == 0)):
+                self.word_layer.l2_regularize(lam_l2=self.lam_wv)
+                self.context_layer.l2_regularize(lam_Wm=self.lam_cv, \
+                                                 lam_Wb=self.lam_cv)
+                self.class_layer.l2_regularize(lam_l2=self.lam_ns)
+            # diagnostic display stuff...
             if ((b > 1) and ((b % 1000) == 0)):
                 Wm_info = self.context_layer.norm_info('Wm')
                 Wb_info = self.context_layer.norm_info('Wb')
@@ -368,7 +370,7 @@ class CAModel:
         self.context_layer = new_context_layer
         self.context_layer.reset_moms(1.0)
         # train the new context layer
-        sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
+        sampler = PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
         print("Training new context vectors:")
         L = 0.0
         for b in range(batch_count):
@@ -376,10 +378,10 @@ class CAModel:
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
                                    train_words=False, train_context=True, \
                                    learn_rate=learn_rate)
-            if ((b % 200) == 0):
-                self.word_layer.clip_params(max_norm=2.0)
-                self.context_layer.clip_params(Wm_norm=1.0, Wb_norm=1.0)
-                self.class_layer.clip_params(max_norm=2.0)
+            # apply l2 regularization, but not every round (to save time)
+            if ((b > 1) and ((b % self.reg_freq) == 0)):
+                self.context_layer.l2_regularize(lam_Wm=self.lam_cv, \
+                                                 lam_Wb=self.lam_cv)
             if ((b > 1) and ((b % 1000) == 0)):
                 Wm_info = self.context_layer.norm_info('Wm')
                 Wb_info = self.context_layer.norm_info('Wb')
@@ -403,20 +405,16 @@ class W2VModel:
     Compositionality" by Mikolov et. al. (NIPS 2013).
 
     Important Parameters (accessible via self.*):
-      wv_dim: dimension of the LUT word vectors
-      max_wv_key: max key of a valid word in the word LUT
-      sg_window: window size for sampling positive skip-gram examples
-      ns_count: number of negative samples for negative sampling
+      wv_dim: dimension of the word context/prediction vectors
+      max_wv_key: max key of a valid word in the LUTs
       lam_l2: l2 regularization parameter for word vectors
     """
-    def __init__(self, wv_dim, max_wv_key, sg_window=6, ns_count=10, \
-                 lam_l2=1e-4):
+    def __init__(self, wv_dim, max_wv_key, lam_l2=1e-4):
         # Record options/parameters
         self.wv_dim = wv_dim
         self.max_wv_key = max_wv_key
-        self.sg_window = sg_window
-        self.ns_count = ns_count
         self.lam_l2 = lam_l2
+        self.reg_freq = 20 # number of batches between regularization updates
         # Create the layer to use during training
         self.w2v_layer = nlml.W2VLayer(max_word_key=self.max_wv_key, \
                                        word_dim=self.wv_dim, \
@@ -424,7 +422,7 @@ class W2VModel:
         return
 
     def init_params(self, weight_scale=0.05):
-        """Reset weights in the word/context LUTs and the prediciton layer."""
+        """Reset weights in the word context/prediction LUTs."""
         self.w2v_layer.init_params(weight_scale)
         return
 
@@ -434,12 +432,13 @@ class W2VModel:
         return
 
     def batch_update(self, anc_keys, pos_keys, neg_keys, learn_rate=1e-3):
-        """Perform a single "minibatch" update of the model parameters.
+        """
+        Perform a single "minibatch" update of the model parameters.
 
         Parameters:
-            anc_keys: word LUT keys for the anchor words
-            pos_keys: word LUT keys for the positive examples to predict
-            neg_keys: word LUT keys for the negative examples to predict
+            anc_keys: context LUT keys for the anchor words
+            pos_keys: prediction LUT keys for the positive examples
+            neg_keys: prediction LUT keys for the negative examples
             learn_rate: learning rate for adagrad updates
         """
         # Update the W2VLayer using the given examples
@@ -447,41 +446,46 @@ class W2VModel:
                                        learn_rate=learn_rate)
         return L
 
-    def train(self, phrase_list, all_words, batch_size, batch_count, \
+    def train(self, pos_sampler, neg_sampler, batch_size, batch_count, \
               learn_rate=1e-3):
-        """Train all parameters in the model using the given phrases.
+        """
+        Train all parameters in the model using minibatches of samples drawn
+        from the given pos_sampler and neg_sampler. pos_sampler should provide
+        samples of anchor/context word pairs and neg_sampler should provide
+        words from the "negative contrastive sampling" distribution.
 
         Parameters:
-            phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
-            all_words: list of words to sample uniformly for negative examples
+            pos_sampler: sampler for generating positive prediction pairs
+            neg_sampler: sampler for generating contrastive examples
             batch_size: size of minibatches for each update
             batch_count: number of minibatch updates to perform
             learn_rate: learning rate for adagrad updates
         """
         L = 0.0
-        sampler = hf.PNSampler(phrase_list, all_words, self.sg_window, self.ns_count)
         print("Training all parameters:")
         for b in range(batch_count):
-            anc_keys, pos_keys, neg_keys, phrase_keys = sampler.sample(batch_size)
+            anc_keys, pos_keys, phrase_keys = pos_sampler.sample(batch_size)
+            neg_keys = neg_sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, learn_rate=learn_rate)
+            if ((b > 1) and ((b % self.reg_freq) == 0)):
+                self.w2v_layer.l2_regularize(self.lam_l2)
             if ((b % 1000) == 0):
                 obs_count = 1000.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
-                self.w2v_layer.clip_params(5.0)
         return
 
-    def test(self, phrase_list, all_words, test_samples):
+    def test(self, pos_sampler, neg_sampler, test_samples):
         """Train all parameters in the model using the given phrases.
 
         Parameters:
-            phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
-            all_words: list of words to sample uniformly for negative examples
-            test_samples: number of samples to use for testing
+            pos_sampler: sampler for generating positive prediction pairs
+            neg_sampler: sampler for generating contrastive examples
+            test_samples: number of samples to check loss for
         """
-        [a_idx, p_idx, n_idx, phrase_idx] = hf.rand_pos_neg(phrase_list, \
-                      all_words, test_samples, self.sg_window, self.ns_count)
-        L = self.w2v_layer.batch_test(a_idx, p_idx, n_idx)
+        anc_keys, pos_keys, phrase_keys = pos_sampler.sample(test_samples)
+        neg_keys = neg_sampler.sample(test_samples)
+        L = self.w2v_layer.batch_test(anc_keys, pos_keys, neg_keys)
         print("Test loss: {0:.4f}".format(L / test_samples))
         return L
 
@@ -492,9 +496,9 @@ def some_nearest_words(keys_to_words, sample_count, W1, W2):
     norms = np.sqrt(np.sum(W**2.0,axis=1,keepdims=1))
     W = W / (norms + 1e-5)
     # 
-    source_keys = np.zeros((sample_count,)).astype(np.int32)
-    neighbor_keys = np.zeros((sample_count, 10)).astype(np.int32)
-    all_keys = np.asarray(keys_to_words.keys()).astype(np.int32)
+    source_keys = np.zeros((sample_count,)).astype(np.uint32)
+    neighbor_keys = np.zeros((sample_count, 10)).astype(np.uint32)
+    all_keys = np.asarray(keys_to_words.keys()).astype(np.uint32)
     for s in range(sample_count):
         i = npr.randint(0,all_keys.size)
         source_k = all_keys[i]
@@ -520,8 +524,8 @@ def test_PVModel_stb():
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
     te_phrases = stb_data['dev_full_phrases']
-    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
-    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
+    tr_phrases = [np.asarray(p).astype(np.uint32) for p in tr_phrases]
+    te_phrases = [np.asarray(p).astype(np.uint32) for p in te_phrases]
     # Record maximum required keys for the context layer's tables
     max_wv_key = max(stb_data['words_to_keys'].values())
     max_cv_key = len(tr_phrases) - 1
@@ -546,8 +550,8 @@ def test_PVModel_stb():
 
     X_train = cl_train.params['Wb'].copy()
     X_dev = cl_dev.params['Wb'].copy()
-    Y_train = np.asarray([label for label in stb_data['train_full_labels']]).astype(np.int32)
-    Y_dev = np.asarray([label for label in stb_data['dev_full_labels']]).astype(np.int32)
+    Y_train = np.asarray([label for label in stb_data['train_full_labels']]).astype(np.uint32)
+    Y_dev = np.asarray([label for label in stb_data['dev_full_labels']]).astype(np.uint32)
 
     return [cl_train, cl_dev, stb_data, pvm]
 
@@ -564,9 +568,9 @@ def test_CAModel_stb():
     tr_words = []
     for phrase in tr_phrases:
         tr_words.extend(phrase)
-    tr_words = np.asarray(tr_words).astype(np.int32)
-    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
-    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
+    tr_words = np.asarray(tr_words).astype(np.uint32)
+    tr_phrases = [np.asarray(p).astype(np.uint32) for p in tr_phrases]
+    te_phrases = [np.asarray(p).astype(np.uint32) for p in te_phrases]
     # Record maximum required keys for the context layer's tables
     max_wv_key = max(stb_data['words_to_keys'].values())
     max_cv_key = len(tr_phrases) - 1
@@ -610,8 +614,8 @@ def test_W2VModel_stb():
     tr_words = []
     for phrase in tr_phrases:
         tr_words.extend(phrase)
-    tr_words = np.asarray(tr_words).astype(np.int32)
-    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
+    tr_words = np.asarray(tr_words).astype(np.uint32)
+    tr_phrases = [np.asarray(p).astype(np.uint32) for p in tr_phrases]
     # Record maximum required keys for the context layer's tables
     max_wv_key = max(w2k.values())
     max_cv_key = len(tr_phrases) - 1
@@ -648,7 +652,7 @@ def test_W2VModel_1bw():
     tr_words = []
     for phrase in tr_phrases:
         tr_words.extend([k for k in phrase])
-    tr_words = np.asarray(tr_words).astype(np.int32)
+    tr_words = np.asarray(tr_words).astype(np.uint32)
     # Record maximum required keys for the context layer's tables
     max_wv_key = max(dataset['words_to_keys'].values())
 
@@ -678,38 +682,43 @@ if __name__ == '__main__':
      # Load tree data
     tree_dir = './trees'
     stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
+    w2k = stb_data['words_to_keys']
+    k2w = stb_data['keys_to_words']
     # Get the lists of full train and test phrases
-    tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['dev_full_phrases']
+    tr_phrases = []
+    tr_phrases.extend(stb_data['train_full_phrases'])
+    tr_phrases.extend(stb_data['dev_full_phrases'])
+    tr_phrases.extend(stb_data['test_full_phrases'])
+    del stb_data
     # Get the list of all word occurrences in the training phrases
     tr_words = []
     for phrase in tr_phrases:
         tr_words.extend(phrase)
-    tr_words = np.asarray(tr_words).astype(np.int32)
-    tr_phrases = [np.asarray(p).astype(np.int32) for p in tr_phrases]
-    te_phrases = [np.asarray(p).astype(np.int32) for p in te_phrases]
+    tr_words = np.asarray(tr_words).astype(np.uint32)
+    tr_phrases = [np.asarray(p).astype(np.uint32) for p in tr_phrases]
     # Record maximum required keys for the context layer's tables
-    max_wv_key = max(stb_data['words_to_keys'].values())
+    max_wv_key = max(w2k.values())
     max_cv_key = len(tr_phrases) - 1
 
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
     wv_dim = 200
-    cv_dim = 50
-    lam_l2 = 1e-3
-    cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
-                  ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
-    cam.init_params(0.05)
-    cam.set_noise(drop_rate=0.5, fuzz_scale=0.02)
+    lam_l2 = 1e-4
+    # Initialize the model and some sample samplers for training
+    w2v_model = W2VModel(wv_dim, max_wv_key, lam_l2=lam_l2)
+    pos_sampler = cu.PosSampler(tr_phrases, sg_window)
+    neg_sampler = cu.NegSampler(tr_words)
 
-    # Train all parameters using the training set phrases
-    cam.train(tr_phrases, tr_words, 300, 20001, train_words=True, \
-              train_context=True, learn_rate=1e-3)
-    cl_train = cam.context_layer
-
-    # Infer new context vectors for the test set phrases
-    #cl_dev = cam.infer_context_vectors(te_phrases, tr_words, 300, 10001, 1e-3)
+    alpha = 1e-2
+    for i in range(15):
+        # Train all parameters using the training set phrases
+        w2v_model.train(pos_sampler, neg_sampler, 300, 25001, alpha)
+        alpha = alpha * 0.8
+        [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
+                w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
+        for w in range(10):
+            print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
 
 
 

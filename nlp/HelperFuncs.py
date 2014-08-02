@@ -18,28 +18,6 @@ def zeros(shape, dtype=np.float32):
     return np.zeros(shape, dtype=dtype)
 
 
-###########################################
-# WORD VALIDATION, FOR MANAGING OOV WORDS #
-###########################################
-
-def catch_oov_words(w_keys, v_keys, oov_key):
-    """Set each entry in w_keys that is not in v_keys to oov_key.
-
-    Note: w_keys should be a 1d or 2d numpy array of np.int32, v_keys should
-          be a _set_ of np.int32, and oov_key should be a lone np.int32.
-    """
-    assert((w_keys.ndim == 1) or (w_keys.ndim == 2))
-    if (w_keys.ndim == 1):
-        for i in range(w_keys.shape[0]):
-            if not (w_keys[i] in v_keys):
-                w_keys[i] = oov_key
-    else:
-        for i in range(w_keys.shape[0]):
-            for j in range(w_keys.shape[1]):
-                if not (w_keys[i,j] in v_keys):
-                    w_keys[i,j] = oov_key
-    return w_keys
-
 ################################
 # TRAINING DATA SAMPLING STUFF #
 ################################
@@ -55,8 +33,8 @@ def rand_word_seqs(phrase_list, seq_count, seq_len, null_key):
     they are assigned the key given by null_key.
     """
     phrase_count = len(phrase_list)
-    seq_keys = np.zeros((seq_count, seq_len), dtype=np.int32)
-    phrase_keys = np.zeros((seq_count,), dtype=np.int32)
+    seq_keys = np.zeros((seq_count, seq_len), dtype=np.uint32)
+    phrase_keys = np.zeros((seq_count,), dtype=np.uint32)
     for i in range(seq_count):
         phrase_keys[i] = npr.randint(0, phrase_count)
         phrase = phrase_list[phrase_keys[i]]
@@ -69,8 +47,8 @@ def rand_word_seqs(phrase_list, seq_count, seq_len, null_key):
                 seq_keys[i,j] = null_key
             else:
                 seq_keys[i,j] = phrase[preceding_key]
-    seq_keys = seq_keys.astype(np.int32)
-    phrase_keys = phrase_keys.astype(np.int32)
+    seq_keys = seq_keys.astype(np.uint32)
+    phrase_keys = phrase_keys.astype(np.uint32)
     return [seq_keys, phrase_keys]
 
 def rand_word_pairs(phrase_list, pair_count, context_size):
@@ -83,14 +61,14 @@ def rand_word_pairs(phrase_list, pair_count, context_size):
             NOTE: Samples are always drawn uniformly from within a context
                   window that was already clipped to fit the source phrase.
     Outputs:
-        anchor_keys: vector of np.int32 (samp_count,)
-        context_keys: vector of np.int32 (samp_count,)
-        phrase_keys: vector of np.int32 (samp_count,)
+        anchor_keys: vector of np.uint32 (samp_count,)
+        context_keys: vector of np.uint32 (samp_count,)
+        phrase_keys: vector of np.uint32 (samp_count,)
     """
     phrase_count = len(phrase_list)
-    anchor_keys = np.zeros((pair_count,), dtype=np.int32)
-    context_keys = np.zeros((pair_count,), dtype=np.int32)
-    phrase_keys = np.zeros((pair_count,), dtype=np.int32)
+    anchor_keys = np.zeros((pair_count,), dtype=np.uint32)
+    context_keys = np.zeros((pair_count,), dtype=np.uint32)
+    phrase_keys = np.zeros((pair_count,), dtype=np.uint32)
     for i in range(pair_count):
         phrase_keys[i] = npr.randint(0, phrase_count)
         phrase = phrase_list[phrase_keys[i]]
@@ -103,9 +81,9 @@ def rand_word_pairs(phrase_list, pair_count, context_size):
             c_idx = npr.randint(c_min, c_max)
         anchor_keys[i] = phrase[a_idx]
         context_keys[i] = phrase[c_idx]
-    anchor_keys = anchor_keys.astype(np.int32)
-    context_keys = context_keys.astype(np.int32)
-    phrase_keys =  phrase_keys.astype(np.int32)
+    anchor_keys = anchor_keys.astype(np.uint32)
+    context_keys = context_keys.astype(np.uint32)
+    phrase_keys =  phrase_keys.astype(np.uint32)
     return [anchor_keys, context_keys, phrase_keys]
 
 def rand_pos_neg(phrase_list, all_words, samp_count, context_size, neg_count):
@@ -118,19 +96,19 @@ def rand_pos_neg(phrase_list, all_words, samp_count, context_size, neg_count):
         context_size: half-width of context window to sample positives from
         neg_count: number of negative samples to draw for each positive one
     Outputs:
-        anchor_keys: vector of np.int32 (samp_count,)
-        pos_keys: vector of np.int32 (samp_count,)
-        neg_keys: matrix of np.int32 (samp_count, neg_count)
-        phrase_keys: vector of np.int32 (samp_count,)
+        anchor_keys: vector of np.uint32 (samp_count,)
+        pos_keys: vector of np.uint32 (samp_count,)
+        neg_keys: matrix of np.uint32 (samp_count, neg_count)
+        phrase_keys: vector of np.uint32 (samp_count,)
     """
     phrase_count = len(phrase_list)
     #max_len = np.max(np.asarray([p.size for p in phrase_list]))
     #phrase_probs = np.asarray([float(p.size) / max_len for p in phrase_list])
     word_count = len(all_words)
-    anchor_keys = np.zeros((samp_count,), dtype=np.int32)
-    pos_keys = np.zeros((samp_count,), dtype=np.int32)
-    neg_keys = np.zeros((samp_count,neg_count), dtype=np.int32)
-    phrase_keys = np.zeros((samp_count,), dtype=np.int32)
+    anchor_keys = np.zeros((samp_count,), dtype=np.uint32)
+    pos_keys = np.zeros((samp_count,), dtype=np.uint32)
+    neg_keys = np.zeros((samp_count,neg_count), dtype=np.uint32)
+    phrase_keys = np.zeros((samp_count,), dtype=np.uint32)
     for i in range(samp_count):
         phrase_keys[i] = npr.randint(0, high=phrase_count)
         # rejection sample phrases in proprtion to their length
@@ -150,10 +128,10 @@ def rand_pos_neg(phrase_list, all_words, samp_count, context_size, neg_count):
         # Sample a random negative example from the full word list
         n_idx = npr.randint(0, high=word_count, size=(1,neg_count))
         neg_keys[i,:] = all_words[n_idx]
-    anchor_keys = anchor_keys.astype(np.int32)
-    pos_keys = pos_keys.astype(np.int32)
-    neg_keys = neg_keys.astype(np.int32)
-    phrase_keys = phrase_keys.astype(np.int32)
+    anchor_keys = anchor_keys.astype(np.uint32)
+    pos_keys = pos_keys.astype(np.uint32)
+    neg_keys = neg_keys.astype(np.uint32)
+    phrase_keys = phrase_keys.astype(np.uint32)
     return [anchor_keys, pos_keys, neg_keys, phrase_keys]
 
 
@@ -202,20 +180,20 @@ class PNSampler:
         return
 
     def sample_negatives(self, sample_count):
-        neg_keys = np.zeros((sample_count,self.neg_count), dtype=np.int32)
+        neg_keys = np.zeros((sample_count,self.neg_count), dtype=np.uint32)
         neg_idx = npr.randint(0, high=self.neg_table_size, size=neg_keys.shape)
         for i in range(neg_keys.shape[1]):
             neg_keys[:,i] = self.neg_table[neg_idx[:,i]]
-        neg_keys = neg_keys.astype(np.int32)
+        neg_keys = neg_keys.astype(np.uint32)
         return neg_keys
 
     def sample(self, sample_count):
         """Draw a sample."""
-        anc_keys = np.zeros((sample_count,), dtype=np.int32)
-        pos_keys = np.zeros((sample_count,), dtype=np.int32)
-        phrase_keys = np.zeros((sample_count,), dtype=np.int32)
-        rand_pool = npr.randint(0, high=1e6, size=(10*sample_count,)).astype(np.int32)
-        ri = np.asarray([0]).astype(np.int32)
+        anc_keys = np.zeros((sample_count,), dtype=np.uint32)
+        pos_keys = np.zeros((sample_count,), dtype=np.uint32)
+        phrase_keys = np.zeros((sample_count,), dtype=np.uint32)
+        rand_pool = npr.randint(0, high=1e6, size=(10*sample_count,)).astype(np.uint32)
+        ri = np.asarray([0]).astype(np.uint32)
         repeats = 5
         if not ((sample_count % repeats) == 0):
             repeats = 1
@@ -224,10 +202,10 @@ class PNSampler:
             fast_pair_sample(self.phrase_list[phrase_keys[i]], self.max_window, \
                              i, repeats, anc_keys, pos_keys, rand_pool, ri)
         # Sample negative examples from self.neg_table
-        anc_keys = anc_keys.astype(np.int32)
-        pos_keys = pos_keys.astype(np.int32)
+        anc_keys = anc_keys.astype(np.uint32)
+        pos_keys = pos_keys.astype(np.uint32)
         neg_keys = self.sample_negatives(sample_count)
-        phrase_keys = phrase_keys.astype(np.int32)
+        phrase_keys = phrase_keys.astype(np.uint32)
         return [anc_keys, pos_keys, neg_keys, phrase_keys]
 
 

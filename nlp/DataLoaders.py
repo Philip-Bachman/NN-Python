@@ -293,7 +293,7 @@ def Load1BWords(data_dir='./training_text', file_count=100, min_freq=5):
     w2k, k2w = make_key_dicts(txt_phrases, freq_cutoff=min_freq, unk_word='*UNK*')
     # Create LUT key representations of each phrase
     lk_phrases = [[(w2k[w] if (w in w2k) else w2k['*UNK*']) for w in p] for p in txt_phrases]
-    lk_phrases = [np.asarray(p).astype(np.int32) for p in lk_phrases]
+    lk_phrases = [np.asarray(p).astype(np.uint32) for p in lk_phrases]
     # Partition the dataset into training and validation parts
     split_idx = (4 * len(lk_phrases)) // 5
     dataset = {}
