@@ -26,6 +26,8 @@ import numba
 from six import iteritems, itervalues
 from six.moves import xrange
 
+MAX_HSM_KEY = 10000000
+
 class SentenceFileIterator(object):
     """
     Iterator over all files in some directory.
@@ -135,7 +137,7 @@ def build_vocab(sentences, min_count=5, compute_hs_tree=True, \
     result['hs_tree'] = None
     result['ns_table'] = None
     if compute_hs_tree:
-        result['hs_tree'] = create_binary_tree(words_to_vocabs)
+        result['hs_tree'] = _create_binary_tree(words_to_vocabs)
     if compute_ns_table:
         # build the table for drawing random words (for negative sampling)
         result['ns_table'] = _make_table(words_to_vocabs, keys_to_words, \
@@ -186,7 +188,7 @@ def _make_table(w2v, k2w, w2k, table_size=100000000, power=0.75):
     return table
 
 
-def create_binary_tree(w2v):
+def _create_binary_tree(w2v):
     """
     Create a binary Huffman tree using stored vocabulary word counts. Frequent words
     will have shorter binary codes. Called internally from `build_vocab()`.
@@ -202,21 +204,40 @@ def create_binary_tree(w2v):
         heapq.heappush(heap, Vocab(count=(min1.count + min2.count), \
                 index=(i + len(w2v)), left=min1, right=min2))
     # recurse over the tree, assigning a binary code to each vocabulary word
+    key_dict = {} # map from word LUT keys to HSM code keys
+    sign_dict = {} # map from word LUT keys to HSM code signs
     if heap:
-        max_depth = 0
         stack = [(heap[0], [], [])]
         while stack:
-            node, codes, points = stack.pop()
+            node, signs, keys = stack.pop()
             if node.index < len(w2v):
                 # leaf node => store its path from the root
-                node.code, node.point = codes, points
-                max_depth = max(len(codes), max_depth)
+                key_dict[node.index] = keys
+                sign_dict[node.index] = signs
             else:
                 # inner node => continue recursion
-                points = np.array(list(points) + [node.index - len(w2v)], dtype=np.uint32)
-                stack.append((node.left, np.array(list(codes) + [-1.0], dtype=np.float32), points))
-                stack.append((node.right, np.array(list(codes) + [1.0], dtype=np.float32), points))
-    return
+                keys = np.array(list(keys) + [node.index - len(w2v)], dtype=np.uint32)
+                stack.append((node.left, np.array(list(signs) + [-1.0], dtype=np.float32), keys))
+                stack.append((node.right, np.array(list(signs) + [1.0], dtype=np.float32), keys))
+    # get the max code length and maximum word LUT key
+    max_code_len = np.max(np.array([v.size for v in key_dict.values()]))
+    max_word_key = np.max(np.array([k for k in key_dict.keys()]))
+    # extend all v.codes/v.points to the same size
+    code_keys = np.zeros((max_word_key+1, max_code_len), dtype=np.uint32)
+    code_signs = np.zeros((max_word_key+1, max_code_len), dtype=np.float32)
+    for k in key_dict.keys():
+        c_len = key_dict[k].size
+        for j in range(max_code_len):
+            if (j >= c_len):
+                code_keys[k,j] = MAX_HSM_KEY + 1
+            else:
+                code_keys[k,j] = key_dict[k][j]
+                code_signs[k,j] = sign_dict[k][j]
+    # record hsm code keys and signs for returnage
+    hsm_tree = {}
+    hsm_tree['keys_to_code_keys'] = code_keys.astype(np.uint32)
+    hsm_tree['keys_to_code_signs'] = code_signs.astype(np.float32)
+    return hsm_tree
 
 ###################################
 # TRAINING EXAMPLE SAMPLING UTILS #
@@ -249,14 +270,15 @@ def fast_pair_sample(phrase, max_window, i, repeats, anc_keys, pos_keys, rand_po
 
 class PosSampler:
     """
-    This samples examples positive example pairs each comprising an anchor
-    word and a context word in its "skip-gram window".
+    This samples positive example pairs each comprising an anchor word and a
+    near-by context word from its "skip-gram window".
     """
     def __init__(self, phrase_list, max_window):
         # phrase_list contains the phrases to sample from 
         self.max_window = max_window
         self.phrase_list = phrase_list
         self.phrase_table = self._make_table(self.phrase_list)
+        self.max_phrase_key = np.max(self.phrase_table)
         self.pt_size = self.phrase_table.size
         return
 
@@ -333,7 +355,7 @@ class NegSampler:
 
 if __name__=="__main__":
     sentences = SentenceFileIterator('./training_text')
-    result = build_vocab(sentences, min_count=3, down_sample=0.0)
+    result = build_vocab(sentences, min_count=10, down_sample=0.0)
 
 
 

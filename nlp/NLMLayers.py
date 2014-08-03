@@ -8,7 +8,8 @@ import numexpr as ne
 
 # Imports of my stuff
 from HelperFuncs import randn, ones, zeros
-from CythonFuncs import w2v_ff_bp, nsl_ff_bp, lut_bp, ag_update_2d, ag_update_1d
+from CythonFuncs import w2v_ff_bp, nsl_ff_bp, hsm_ff_bp, lut_bp, \
+                        ag_update_2d, ag_update_1d
 
 ADA_EPS = 1e-3
 
@@ -18,10 +19,9 @@ ADA_EPS = 1e-3
 
 class NSLayer:
     def __init__(self, in_dim=0, max_out_key=0):
-        # Record the required input dimension and output dimension. The
-        # required ouput dimension is one more than the max output key.
+        # Record and initialize layer parameters
         self.dim_input = in_dim
-        self.key_count = max_out_key + 1
+        self.key_count = max_out_key + 1 # assume 0 is a key
         self.params = {}
         self.params['W'] = 0.01 * randn((self.key_count, in_dim))
         self.params['b'] = zeros((self.key_count,))
@@ -125,9 +125,101 @@ class NSLayer:
 # HIERARCHICAL SOFTMAX LAYER -- VERY INCOMPLETE #
 #################################################
 
-#
-# TODO: implement HSMLayer
-#
+class HSMLayer:
+    def __init__(self, in_dim=0, max_out_key=0):
+        # Record and initialize some layer parameters
+        self.dim_input = in_dim
+        self.key_count = max_out_key + 1 # assume 0 is a key
+        self.params = {}
+        self.params['W'] = 0.01 * randn((self.key_count, in_dim))
+        self.params['b'] = zeros((self.key_count,))
+        self.grads = {}
+        self.grads['W'] = zeros((self.key_count, in_dim))
+        self.grads['b'] = zeros((self.key_count,))
+        self.moms = {}
+        self.moms['W'] = zeros((self.key_count, in_dim))
+        self.moms['b'] = zeros((self.key_count,))
+        # Set temp vars to use in feedforward/backprop
+        self.X = []
+        self.Y = []
+        self.dLdX = []
+        self.dLdY = []
+        self.samp_keys = []
+        self.grad_idx = set()
+        return
+
+    def init_params(self, w_scale=0.01, b_scale=0.0):
+        """Randomly initialize the weights in this layer."""
+        self.params['W'] = w_scale * randn((self.key_count, self.dim_input))
+        self.grads['W'] = zeros((self.key_count, self.dim_input))
+        self.params['b'] = zeros((self.key_count,))
+        self.grads['b'] = zeros((self.key_count,))
+        return
+
+    def clip_params(self, max_norm=5.0):
+        """Bound L2 (row-wise) norm of W by max_norm."""
+        M = self.params['W']
+        m_scales = max_norm / np.sqrt(np.sum(M**2.0,axis=1) + 1e-5)
+        mask = (m_scales < 1.0)
+        mask = mask.astype(np.float32) # why is explicit cast needed?
+        m_scales = (m_scales * mask) + (1.0 - mask)
+        self.params['W'] = M * m_scales[:,np.newaxis]
+        return
+
+    def ff_bp(self, X, code_keys, code_signs, do_grad=True):
+        """Perform feedforward and then backprop for this layer."""
+        do_grad = 1 if do_grad else 0 # change to int for cython code
+        # Cleanup debris from any previous feedforward
+        self._cleanup()
+        # Do feedforward and backprop all in one go
+        L = zeros((1,))
+        dLdX = zeros(X.shape)
+        hsm_ff_bp(code_keys, code_signs, X, self.params['W'], self.params['b'], \
+                  dLdX, self.grads['W'], self.grads['b'], L, do_grad)
+        # Derp dorp
+        L = L[0]
+        if do_grad:
+            self.grad_idx.update(code_keys.ravel())
+        return [dLdX, L]
+
+    def l2_regularize(self, lam_l2=1e-5):
+        """Add gradients for l2 regularization. And compute loss."""
+        self.params['W'] -= lam_l2 * self.params['W']
+        self.params['b'] -= lam_l2 * self.params['b']
+        return 1
+
+    def apply_grad(self, learn_rate=1e-2):
+        """Apply the current accumulated gradients, with adagrad."""
+        nz_idx = np.asarray([i for i in self.grad_idx if i >= 0]).astype(np.uint32)
+        ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
+                     self.moms['W'], learn_rate)
+        ag_update_1d(nz_idx, self.params['b'], self.grads['b'], \
+                     self.moms['b'], learn_rate)
+        self.grad_idx = set()
+        return
+
+    def reset_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+        return
+
+    def reset_grads_and_moms(self, ada_init=1e-3):
+        """Reset the gradient accumulators for this layer."""
+        self.grads['W'] = (0.0 * self.grads['W'])
+        self.grads['b'] = (0.0 * self.grads['b'])
+        self.moms['W'] = (0.0 * self.moms['W']) + ada_init
+        self.moms['b'] = (0.0 * self.moms['b']) + ada_init
+        return
+
+    def _cleanup(self):
+        """Cleanup temporary feedforward/backprop stuff."""
+        self.X = []
+        self.Y = []
+        self.samp_keys = []
+        self.dLdX = []
+        self.dLdY = []
+        return
 
 #################################
 # FULLY-CONNECTED SOFTMAX LAYER #

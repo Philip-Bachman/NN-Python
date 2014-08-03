@@ -62,6 +62,7 @@ cdef cy_nsl_ff_bp_ptr cy_nsl_ff_bp
 
 # define some useful constants
 cdef int ONE = 1
+cdef long long MAX_HSM_KEY = 5000000
 cdef REAL_t ONEF = <REAL_t>1.0
 cdef REAL_t ADA_EPS = <REAL_t>0.001
 cdef REAL_t ADA_RHO = <REAL_t>0.98
@@ -205,8 +206,8 @@ def w2v_ff_bp_pyx(sp_idx_p, anc_keys_p, pn_keys_p, pn_sign_p, Wa_p, Wc_p, b_p,
 #       vector / prediction target pair multiple code vectors are required,    #
 #       but each anchor/target pair may use different numbers of code vectors. #
 #       When processing the row of pn_keys which gives the code vector keys    #
-#       for a given anchor/target pair, a key < 0 indicates that no more code  #
-#       vectors need be processed for this pair. For each code vector key >= 0 #
+#       for a given anchor/target pair, a huge key indicates that no more code #
+#       vectors need be processed for this pair. For each valid code vec key   #
 #       there is an associated target class in {+1, -1}, stored in the same    #
 #       element in pn_sign as the code vector key was in pn_keys.              #
 #                                                                              #
@@ -230,9 +231,9 @@ cdef void cy_nsl_ff_bp0(
         X_key = sp_idx[sp_i]
         row1 = X_key * vec_dim # get the starting index of input row (in X)
         for j in range(pn_size):
-            W_key = pn_keys[X_key*pn_size + j] # get the LUT key for target word
-            if (W_key < 0):
-                break # W_key < 0 is used by hierarchical softmax to indicate
+            W_key = pn_keys[X_key*pn_size + j]
+            if (W_key > MAX_HSM_KEY):
+                break # big keys are used by hierarchical softmax to indicate
                       # that no more code vectors need to be processed for a
                       # given anchor/target key pair.
             row2 = W_key * vec_dim # get the starting index of target row (in W)
@@ -268,9 +269,9 @@ cdef void cy_nsl_ff_bp1(
         X_key = sp_idx[sp_i]
         row1 = X_key * vec_dim # get the starting index of input row (in X)
         for j in range(pn_size):
-            W_key = pn_keys[X_key*pn_size + j] # get the LUT key for target word
-            if (W_key < 0):
-                break # W_key < 0 is used by hierarchical softmax to indicate
+            W_key = pn_keys[X_key*pn_size + j]
+            if (W_key > MAX_HSM_KEY):
+                break # big keys are used by hierarchical softmax to indicate
                       # that no more code vectors need to be processed for a
                       # given anchor/target key pair.
             row2 = W_key * vec_dim # get the starting index of target row (in W)
