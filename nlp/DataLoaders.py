@@ -2,7 +2,7 @@ import numpy as np
 import numpy.random as npr
 
 
-def make_key_dicts(word_list, freq_cutoff=2, unk_word='*UNK*'):
+def make_key_dicts(word_list, min_freq=2, unk_word='*UNK*'):
     """Make word-to-key and key-to words dicts from word_list."""
     if type(word_list[0]) == type([]):
         word_hist = {}
@@ -19,7 +19,7 @@ def make_key_dicts(word_list, freq_cutoff=2, unk_word='*UNK*'):
                 word_hist[w] = 1
             else:
                 word_hist[w] += 1
-    kept_words = [w for w in word_hist if (word_hist[w] >= freq_cutoff)]
+    kept_words = [w for w in word_hist if (word_hist[w] >= min_freq)]
     w2k = {}
     k2w = {}
     for (i, w) in enumerate(kept_words):
@@ -163,7 +163,7 @@ class STBParser:
 
     TODO: More docs.
     """
-    def __init__(self, tree_dir, freq_cutoff=2):
+    def __init__(self, tree_dir, min_freq=2, use_all_words=False):
         # Get file names for train/dev/test trees
         train_file = "{0:s}/train.txt".format(tree_dir)
         dev_file = "{0:s}/dev.txt".format(tree_dir)
@@ -174,9 +174,14 @@ class STBParser:
         self.test_trees = self.parse_tree_file(test_file)
         # Get the set of all word occurrences in the training trees
         train_words = self.get_all_words(self.train_trees)
+        if use_all_words:
+            # Keep all words present in the corpus in the vocab
+            train_words.extend(self.get_all_words(self.dev_trees))
+            train_words.extend(self.get_all_words(self.test_trees))
+            min_freq = 0
         # Compute maps from words to LUT keys and visa-versa, while discarding
-        # words that occur fewer than 'freq_cutoff' times.
-        w2k, k2w = make_key_dicts(train_words, freq_cutoff=freq_cutoff, \
+        # words that occur fewer than 'min_freq' times.
+        w2k, k2w = make_key_dicts(train_words, min_freq=min_freq, \
                                        unk_word='*UNK*')
         self.words_to_keys = w2k
         self.keys_to_words = k2w
@@ -204,23 +209,28 @@ class STBParser:
 
 
 
-def LoadSTB(tree_dir, freq_cutoff=2, keep_trees_grouped=True):
-    """Load Stanford Treebank train/dev/test trees in a minimal format.
+def LoadSTB(tree_dir, min_freq=2, use_all_words=False):
+    """
+    Load Stanford Treebank train/dev/test trees in a simple format.
 
     This converts all trees in the original train/validate/test files into
-    lists of keys for indexing into a look-up-table. All words in the
-    validation and test sets that don't occur in the training set are given
-    the same LUT key (recorded in dataset['words_to_keys']['*UNK*']). Phrases
-    are recorded in two forms: the full phrases as sequences of LUT keys and
-    all sub phrases as sequences of LUT keys.
+    lists of keys for indexing into a look-up-table. A map from LUT keys to
+    words is returned in result['keys_to_words'] and the inverse map is
+    returned in result['words_to_keys']. The full phrases and their labels
+    (i.e. not including sub-phrase information) are returned in
+    result['*_full_phrases'] and result['*_full_labels'] for * in {train, dev,
+    test}. Similar information, but including all sub-phrases, is returned in
+    result['*_phrases'] and result['*_labels'].
 
-    If keep_trees_grouped is True, all LUT key sequences associated with a
-    particular "parent" full phrase are lumped together in a sublist.
+    If use_all_words is True, then all words from the train/dev/test sets will
+    be included in the vocabulary/LUTs. If not, then LUT keys will only be
+    assigned to words which appear at least min_freq times in full phrases from
+    the training set. All other words will be assigned a LUT key associated
+    with the word/token '*UNK*'.
     """
     # Parse the tree text files
-    stbp = STBParser(tree_dir, freq_cutoff=freq_cutoff)
+    stbp = STBParser(tree_dir, min_freq=min_freq, use_all_words=use_all_words)
     dataset = {}
-    dataset['trees_are_grouped'] = keep_trees_grouped
     # Get the vocab list (and look-up-table index map)
     dataset['words_to_keys'] = stbp.words_to_keys
     dataset['keys_to_words'] = stbp.keys_to_words
@@ -233,12 +243,8 @@ def LoadSTB(tree_dir, freq_cutoff=2, keep_trees_grouped=True):
         lutis_and_labels = tree.get_lutis_and_labels()
         dataset['train_full_phrases'].append(lutis_and_labels[0][-1])
         dataset['train_full_labels'].append(lutis_and_labels[1][-1])
-        if keep_trees_grouped:
-            dataset['train_phrases'].append(lutis_and_labels[0])
-            dataset['train_labels'].append(lutis_and_labels[1])
-        else:
-            dataset['train_phrases'].extend(lutis_and_labels[0])
-            dataset['train_labels'].extend(lutis_and_labels[1])
+        dataset['train_phrases'].extend(lutis_and_labels[0])
+        dataset['train_labels'].extend(lutis_and_labels[1])
     # Get the development set phrases and labels
     dataset['dev_phrases'] = []
     dataset['dev_labels'] = []
@@ -248,12 +254,8 @@ def LoadSTB(tree_dir, freq_cutoff=2, keep_trees_grouped=True):
         lutis_and_labels = tree.get_lutis_and_labels()
         dataset['dev_full_phrases'].append(lutis_and_labels[0][-1])
         dataset['dev_full_labels'].append(lutis_and_labels[1][-1])
-        if keep_trees_grouped:
-            dataset['dev_phrases'].append(lutis_and_labels[0])
-            dataset['dev_labels'].append(lutis_and_labels[1])
-        else:
-            dataset['dev_phrases'].extend(lutis_and_labels[0])
-            dataset['dev_labels'].extend(lutis_and_labels[1])
+        dataset['dev_phrases'].extend(lutis_and_labels[0])
+        dataset['dev_labels'].extend(lutis_and_labels[1])
     # Get the testing set phrases and labels
     dataset['test_phrases'] = []
     dataset['test_labels'] = []
@@ -263,14 +265,14 @@ def LoadSTB(tree_dir, freq_cutoff=2, keep_trees_grouped=True):
         lutis_and_labels = tree.get_lutis_and_labels()
         dataset['test_full_phrases'].append(lutis_and_labels[0][-1])
         dataset['test_full_labels'].append(lutis_and_labels[1][-1])
-        if keep_trees_grouped:
-            dataset['test_phrases'].append(lutis_and_labels[0])
-            dataset['test_labels'].append(lutis_and_labels[1])
-        else:
-            dataset['test_phrases'].extend(lutis_and_labels[0])
-            dataset['test_labels'].extend(lutis_and_labels[1])
-    # Intentionally forget the memory hog 
-    del stbp
+        dataset['test_phrases'].extend(lutis_and_labels[0])
+        dataset['test_labels'].extend(lutis_and_labels[1])
+    # Convert to np.uint32 (which we always use for LUT keys)
+    for set_str in ['train', 'dev', 'test']:
+        s = '{0:s}_full_phrases'.format(set_str)
+        dataset[s] = [np.array(p).astype(np.uint32) for p in dataset[s]]
+        s = '{0:s}_phrases'.format(set_str)
+        dataset[s] = [np.array(p).astype(np.uint32) for p in dataset[s]]
     return dataset
 
 def parse_1bwords_file(f_name):
@@ -290,7 +292,7 @@ def Load1BWords(data_dir='./training_text', file_count=100, min_freq=5):
     for i in range(file_count):
        txt_phrases.extend(parse_1bwords_file("{0:s}/{1:s}".format(data_dir, txt_files[i])))
     # Make dicts for words -> LUT keys and LUT keys -> words
-    w2k, k2w = make_key_dicts(txt_phrases, freq_cutoff=min_freq, unk_word='*UNK*')
+    w2k, k2w = make_key_dicts(txt_phrases, min_freq=min_freq, unk_word='*UNK*')
     # Create LUT key representations of each phrase
     lk_phrases = [[(w2k[w] if (w in w2k) else w2k['*UNK*']) for w in p] for p in txt_phrases]
     lk_phrases = [np.asarray(p).astype(np.uint32) for p in lk_phrases]
@@ -311,7 +313,7 @@ def Load1BWords(data_dir='./training_text', file_count=100, min_freq=5):
 ###############################################################
 
 if __name__ == '__main__':
-    dataset = LoadSTB('./trees', freq_cutoff=3, keep_trees_grouped=True)
+    dataset = LoadSTB('./trees', min_freq=3, use_all_words=False)
 
 
 

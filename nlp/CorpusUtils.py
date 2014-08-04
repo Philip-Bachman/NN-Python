@@ -26,7 +26,7 @@ import numba
 from six import iteritems, itervalues
 from six.moves import xrange
 
-MAX_HSM_KEY = 10000000
+MAX_HSM_KEY = 12345678
 
 class SentenceFileIterator(object):
     """
@@ -44,8 +44,9 @@ class SentenceFileIterator(object):
 
     def __iter__(self):
         for fname in os.listdir(self.dirname):
-            for line in open(os.path.join(self.dirname, fname)):
-                yield line.split()
+            if fname.find('.txt') > -1:
+                for line in open(os.path.join(self.dirname, fname)):
+                    yield line.split()
 
 class Vocab(object):
     """
@@ -160,7 +161,7 @@ def _precalc_downsampling(w2v, down_sample=0.0):
         v.sample_prob = min(prob, 1.0)
     return
 
-def _make_table(w2v, k2w, w2k, table_size=100000000, power=0.75):
+def _make_table(w2v, k2w, w2k, table_size=10000000, power=0.75):
     """
     Create a table using stored vocabulary word counts for drawing random words
     in the negative sampling training routines.
@@ -223,6 +224,7 @@ def _create_binary_tree(w2v):
     max_code_len = np.max(np.array([v.size for v in key_dict.values()]))
     max_word_key = np.max(np.array([k for k in key_dict.keys()]))
     # extend all v.codes/v.points to the same size
+    max_code_key =0
     code_keys = np.zeros((max_word_key+1, max_code_len), dtype=np.uint32)
     code_signs = np.zeros((max_word_key+1, max_code_len), dtype=np.float32)
     for k in key_dict.keys():
@@ -233,10 +235,13 @@ def _create_binary_tree(w2v):
             else:
                 code_keys[k,j] = key_dict[k][j]
                 code_signs[k,j] = sign_dict[k][j]
+                if (code_keys[k,j] > max_code_key):
+                    max_code_key = code_keys[k,j]
     # record hsm code keys and signs for returnage
     hsm_tree = {}
     hsm_tree['keys_to_code_keys'] = code_keys.astype(np.uint32)
     hsm_tree['keys_to_code_signs'] = code_signs.astype(np.float32)
+    hsm_tree['max_code_key'] = max_code_key
     return hsm_tree
 
 ###################################
@@ -355,7 +360,7 @@ class NegSampler:
 
 if __name__=="__main__":
     sentences = SentenceFileIterator('./training_text')
-    result = build_vocab(sentences, min_count=10, down_sample=0.0)
+    result = build_vocab(sentences, min_count=3, down_sample=0.0)
 
 
 

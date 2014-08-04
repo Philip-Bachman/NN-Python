@@ -207,8 +207,6 @@ class CAModel:
       cv_dim: dimension of the context (a.k.a. paragraph) vectors
       max_wv_key: max key of a valid word in the word LUT
       max_cv_key: max key of a valid context in the context LUT
-      sg_window: window size for sampling positive skip-gram examples
-      ns_count: number of negative samples for negative sampling
       lam_wv: l2 regularization parameter for word vectors
       lam_cv: l2 regularization parameter for context vectors
       lam_ns: l2 regularization parameter for negative sampling layer
@@ -218,8 +216,8 @@ class CAModel:
           noise layer adds the option of using dropout/masking noise and also
           Gaussian "weight fuzzing" noise for stronger regularization.
     """
-    def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=6, \
-                 ns_count=8, lam_wv=1e-4, lam_cv=1e-4, lam_ns=1e-4):
+    def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key, \
+                 lam_wv=1e-4, lam_cv=1e-4, lam_ns=1e-4):
         # Record options/parameters
         self.wv_dim = wv_dim
         self.cv_dim = cv_dim
@@ -581,13 +579,15 @@ def test_CAModel_stb():
     wv_dim = 200
     cv_dim = 50
     lam_l2 = 1e-3
-    cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, sg_window=sg_window, \
-                  ns_count=ns_count, lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
+    cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, \
+                  lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
     cam.set_noise(drop_rate=0.5, fuzz_scale=0.02)
+    pos_sampler = cu.PosSampler(tr_phrases, sg_window)
+    neg_sampler = cu.NegSampler(tr_words)
 
     # Train all parameters using the training set phrases
-    cam.train(tr_phrases, tr_words, 300, 20001, train_words=True, \
+    cam.train(pos_sampler, neg_sampler, 300, 20001, train_words=True, \
               train_context=True, learn_rate=1e-3)
     cl_train = cam.context_layer
 
@@ -663,16 +663,17 @@ def test_W2VModel_1bw():
     ns_count = 10
     wv_dim = 200
     lam_l2 = 1e-4
-    w2v_model = W2VModel(wv_dim, max_wv_key, sg_window=sg_window, \
-                         ns_count=ns_count, lam_l2=lam_l2)
+    w2v_model = W2VModel(wv_dim, max_wv_key, lam_l2=lam_l2)
+    pos_sampler = cu.PosSampler(tr_phrases, sg_window)
+    neg_sampler = cu.NegSampler(tr_words)
 
     print("Corpus word count: {0:d}".format(tr_words.size))
     print("Vocabulary size: {0:d}".format(max_wv_key+1))
     print("Vector dimension: {0:d}".format(wv_dim))
     for i in range(50):
         # Train all parameters using the training set phrases
-        w2v_model.train(tr_phrases, tr_words, 256, 100001, 1e-2)
-        w2v_model.test(te_phrases, tr_words, 2000)
+        w2v_model.train(pos_sampler, neg_sampler, 256, 100001, 1e-2)
+        w2v_model.test(pos_sampler, neg_sampler, 2000)
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( dataset['keys_to_words'], \
                 10, w2v_model.w2v_layer.params['Wa'], w2v_model.w2v_layer.params['Wc'])
         for w in range(10):
@@ -705,7 +706,7 @@ if __name__ == '__main__':
     cv_dim = 50
     lam_l2 = 1e-1
 
-    cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key ,lam_wv=lam_l2, \
+    cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, lam_wv=lam_l2, \
                   lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
     cam.set_noise(drop_rate=0.5, fuzz_scale=0.0)

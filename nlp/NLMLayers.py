@@ -12,6 +12,7 @@ from CythonFuncs import w2v_ff_bp, nsl_ff_bp, hsm_ff_bp, lut_bp, \
                         ag_update_2d, ag_update_1d
 
 ADA_EPS = 1e-3
+MAX_HSM_KEY = 12345678
 
 ###########################
 # NEGATIVE SAMPLING LAYER #
@@ -126,10 +127,10 @@ class NSLayer:
 #################################################
 
 class HSMLayer:
-    def __init__(self, in_dim=0, max_out_key=0):
+    def __init__(self, in_dim=0, max_hs_key=0):
         # Record and initialize some layer parameters
         self.dim_input = in_dim
-        self.key_count = max_out_key + 1 # assume 0 is a key
+        self.key_count = max_hs_key + 1 # assume 0 is a key
         self.params = {}
         self.params['W'] = 0.01 * randn((self.key_count, in_dim))
         self.params['b'] = zeros((self.key_count,))
@@ -144,7 +145,6 @@ class HSMLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        self.samp_keys = []
         self.grad_idx = set()
         return
 
@@ -190,7 +190,7 @@ class HSMLayer:
 
     def apply_grad(self, learn_rate=1e-2):
         """Apply the current accumulated gradients, with adagrad."""
-        nz_idx = np.asarray([i for i in self.grad_idx if i >= 0]).astype(np.uint32)
+        nz_idx = np.asarray([i for i in self.grad_idx if (i < self.key_count)]).astype(np.uint32)
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
                      self.moms['W'], learn_rate)
         ag_update_1d(nz_idx, self.params['b'], self.grads['b'], \
@@ -216,7 +216,6 @@ class HSMLayer:
         """Cleanup temporary feedforward/backprop stuff."""
         self.X = []
         self.Y = []
-        self.samp_keys = []
         self.dLdX = []
         self.dLdY = []
         return

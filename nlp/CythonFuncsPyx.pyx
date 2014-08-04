@@ -62,7 +62,7 @@ cdef cy_nsl_ff_bp_ptr cy_nsl_ff_bp
 
 # define some useful constants
 cdef int ONE = 1
-cdef long long MAX_HSM_KEY = 5000000
+cdef UI32_t MAX_HSM_KEY = <UI32_t>12345678
 cdef REAL_t ONEF = <REAL_t>1.0
 cdef REAL_t ADA_EPS = <REAL_t>0.001
 cdef REAL_t ADA_RHO = <REAL_t>0.98
@@ -232,22 +232,19 @@ cdef void cy_nsl_ff_bp0(
         row1 = X_key * vec_dim # get the starting index of input row (in X)
         for j in range(pn_size):
             W_key = pn_keys[X_key*pn_size + j]
-            if (W_key > MAX_HSM_KEY):
-                break # big keys are used by hierarchical softmax to indicate
-                      # that no more code vectors need to be processed for a
-                      # given anchor/target key pair.
-            row2 = W_key * vec_dim # get the starting index of target row (in W)
-            neg_label = -1.0 * pn_sign[X_key*pn_size + j] # minus the label
-            # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]
-            y = <REAL_t>dsdot(&vec_dim, &X[row1], &ONE, &W[row2], &ONE) + b[W_key]
-            exp_pns_y = <REAL_t>exp(neg_label * y) # this is used for loss/grad
-            L[0] = L[0] + log(1.0 + exp_pns_y) # record the loss
-            if (do_grad == 1):
-                # Compute gradient and update gradient accumulators
-                g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
-                saxpy(&vec_dim, &g, &X[row1], &ONE, &dW[row2], &ONE)
-                saxpy(&vec_dim, &g, &W[row2], &ONE, &dX[row1], &ONE)
-                db[W_key] = db[W_key] + g
+            if (W_key < MAX_HSM_KEY):
+                row2 = W_key * vec_dim # get the starting index of target row (in W)
+                neg_label = -1.0 * pn_sign[X_key*pn_size + j] # minus the label
+                # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]
+                y = <REAL_t>dsdot(&vec_dim, &X[row1], &ONE, &W[row2], &ONE) + b[W_key]
+                exp_pns_y = <REAL_t>exp(neg_label * y) # this is used for loss/grad
+                L[0] = L[0] + log(1.0 + exp_pns_y) # record the loss
+                if (do_grad == 1):
+                    # Compute gradient and update gradient accumulators
+                    g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
+                    saxpy(&vec_dim, &g, &X[row1], &ONE, &dW[row2], &ONE)
+                    saxpy(&vec_dim, &g, &W[row2], &ONE, &dX[row1], &ONE)
+                    db[W_key] = db[W_key] + g
     return
 
 
@@ -270,22 +267,19 @@ cdef void cy_nsl_ff_bp1(
         row1 = X_key * vec_dim # get the starting index of input row (in X)
         for j in range(pn_size):
             W_key = pn_keys[X_key*pn_size + j]
-            if (W_key > MAX_HSM_KEY):
-                break # big keys are used by hierarchical softmax to indicate
-                      # that no more code vectors need to be processed for a
-                      # given anchor/target key pair.
-            row2 = W_key * vec_dim # get the starting index of target row (in W)
-            neg_label = -1.0 * pn_sign[X_key*pn_size + j] # minus the label
-            # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]
-            y = <REAL_t>sdot(&vec_dim, &X[row1], &ONE, &W[row2], &ONE) + b[W_key]
-            exp_pns_y = <REAL_t>exp(neg_label * y) # this is used for loss/grad
-            L[0] = L[0] + log(1.0 + exp_pns_y) # record the loss
-            if (do_grad == 1):
-                # Compute gradient and update gradient accumulators
-                g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
-                saxpy(&vec_dim, &g, &X[row1], &ONE, &dW[row2], &ONE)
-                saxpy(&vec_dim, &g, &W[row2], &ONE, &dX[row1], &ONE)
-                db[W_key] = db[W_key] + g
+            if (W_key < MAX_HSM_KEY):
+                row2 = W_key * vec_dim # get the starting index of target row (in W)
+                neg_label = -1.0 * pn_sign[X_key*pn_size + j] # minus the label
+                # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]
+                y = <REAL_t>sdot(&vec_dim, &X[row1], &ONE, &W[row2], &ONE) + b[W_key]
+                exp_pns_y = <REAL_t>exp(neg_label * y) # this is used for loss/grad
+                L[0] = L[0] + log(1.0 + exp_pns_y) # record the loss
+                if (do_grad == 1):
+                    # Compute gradient and update gradient accumulators
+                    g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
+                    saxpy(&vec_dim, &g, &X[row1], &ONE, &dW[row2], &ONE)
+                    saxpy(&vec_dim, &g, &W[row2], &ONE, &dX[row1], &ONE)
+                    db[W_key] = db[W_key] + g
     return
 
 def nsl_ff_bp_pyx(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p,
