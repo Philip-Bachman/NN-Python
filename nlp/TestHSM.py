@@ -148,8 +148,6 @@ class CAModel:
         self.class_layer.reset_moms(1.0)
         for b in range(batch_count):
             anc_keys, pos_keys, phrase_keys = pos_sampler.sample(batch_size)
-            for i in range(batch_size):
-                phrase_keys[i] = 0
             if self.use_ns:
                 param_1 = pos_keys
                 param_2 = var_param.sample(batch_size)
@@ -268,28 +266,41 @@ def some_nearest_words(keys_to_words, sample_count, W1=None, W2=None):
     return [source_keys, neighbor_keys, source_words, neighbor_words]
 
 if __name__=="__main__":
-    import DataLoaders as dl
-     # Load text phrase data
-    dataset = dl.Load1BWords('./training_text', file_count=4, min_freq=10)
+    # import DataLoaders as dl
+    #  # Load text phrase data
+    # dataset = dl.Load1BWords('./training_text', file_count=4, min_freq=10)
 
-    # Get the lists of full train and test phrases
-    tr_phrases = dataset['train_key_phrases']
-    te_phrases = dataset['dev_key_phrases']
-    k2w = dataset['keys_to_words']
-    # Get the list of all word occurrences in the training phrases
-    tr_words = []
-    for phrase in tr_phrases:
-        tr_words.extend([k for k in phrase])
-    tr_words = np.asarray(tr_words).astype(np.uint32)
-    # Record maximum required keys for the context layer's tables
-    max_wv_key = max(dataset['words_to_keys'].values())
-    max_cv_key = 100
+    # # Get the lists of full train and test phrases
+    # tr_phrases = dataset['train_key_phrases']
+    # te_phrases = dataset['dev_key_phrases']
+    # k2w = dataset['keys_to_words']
+    # # Get the list of all word occurrences in the training phrases
+    # tr_words = []
+    # for phrase in tr_phrases:
+    #     tr_words.extend([k for k in phrase])
+    # tr_words = np.array(tr_words).astype(np.uint32)
+    # # Record maximum required keys for the context layer's tables
+    # max_wv_key = max(dataset['words_to_keys'].values())
+    # max_cv_key = 100
+    sentences = cu.SentenceFileIterator('./training_text')
+    key_dicts = cu.build_vocab(sentences, min_count=20, compute_hs_tree=True, \
+                            compute_ns_table=True, down_sample=0.0)
+    w2k = key_dicts['words_to_keys']
+    k2w = key_dicts['keys_to_words']
+    neg_table = key_dicts['ns_table']
+    unk_word = key_dicts['unk_word']
+    sentences = cu.SentenceFileIterator('./training_text')
+    tr_phrases = cu.sample_phrases(sentences, w2k, unk_word=unk_word, \
+                                max_phrases=100000)
+    max_cv_key = len(tr_phrases) + 1
+    max_wv_key = max(w2k.values())
+
 
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
     wv_dim = 256
-    cv_dim = 50
+    cv_dim = 10
     lam_l2 = 1e-3
 
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, \
@@ -300,7 +311,7 @@ if __name__=="__main__":
 
     # Initialize samplers for training
     pos_sampler = cu.PosSampler(tr_phrases, sg_window)
-    neg_sampler = cu.NegSampler(neg_table=tr_words, neg_count=ns_count)
+    neg_sampler = cu.NegSampler(neg_table=neg_table, neg_count=ns_count)
 
     # Train all parameters using the training set phrases
     for i in range(50):
