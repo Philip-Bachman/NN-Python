@@ -64,6 +64,8 @@ class NSLayer:
         assert(X.shape[1] == self.params['W'].shape[1])
         assert(pos_samples.shape[0] == X.shape[0])
         assert(neg_samples.shape[0] == X.shape[0])
+        assert(np.max(pos_samples) < self.key_count)
+        assert(np.max(neg_samples) < self.key_count)
         do_grad = 1 if do_grad else 0 # change to int for cython code
         # Cleanup debris from any previous feedforward
         self._cleanup()
@@ -417,6 +419,7 @@ class LUTLayer:
     def backprop(self, dLdY):
         """Backprop through this layer.
         """
+        assert(np.max(self.X) < self.key_count)
         self.grad_idx.update(self.X.ravel())
         # Add the gradients to the gradient accumulator
         if (self.n_gram == 1):
@@ -557,6 +560,7 @@ class CMLayer:
         """Backprop through this layer.
         """
         # Add the gradients to the gradient accumulators
+        assert (np.max(self.C) < self.key_count)
         self.grad_idx.update(self.C.ravel())
         self.dLdY = dLdY
         dLdYb, dLdYw = np.hsplit(dLdY, [self.bias_dim])

@@ -489,8 +489,12 @@ class W2VModel:
 
 
 
-def some_nearest_words(keys_to_words, sample_count, W1, W2):
-    W = np.hstack((W1, W2))
+def some_nearest_words(keys_to_words, sample_count, W1=None, W2=None):
+    assert(not (W1 is None))
+    if not (W2 is None):
+        W = np.hstack((W1, W2))
+    else:
+        W = W1
     norms = np.sqrt(np.sum(W**2.0,axis=1,keepdims=1))
     W = W / (norms + 1e-5)
     # 
@@ -512,13 +516,14 @@ def some_nearest_words(keys_to_words, sample_count, W1, W2):
     return [source_keys, neighbor_keys, source_words, neighbor_words]
 
 
+
 def test_PVModel_stb():
     """Hard-coded test on STB data, for development/debugging."""
     import DataLoaders as dl
     from sklearn import linear_model
      # Load tree data
     tree_dir = './trees'
-    stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
+    stb_data = dl.LoadSTB(tree_dir, min_freq=3)
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
     te_phrases = stb_data['dev_full_phrases']
@@ -558,7 +563,7 @@ def test_CAModel_stb():
     import DataLoaders as dl
      # Load tree data
     tree_dir = './trees'
-    stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
+    stb_data = dl.LoadSTB(tree_dir, min_freq=3)
     # Get the lists of full train and test phrases
     tr_phrases = stb_data['train_full_phrases']
     te_phrases = stb_data['dev_full_phrases']
@@ -601,7 +606,7 @@ def test_W2VModel_stb():
     import DataLoaders as dl
      # Load tree data
     tree_dir = './trees'
-    stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
+    stb_data = dl.LoadSTB(tree_dir, min_freq=3)
     w2k = stb_data['words_to_keys']
     k2w = stb_data['keys_to_words']
     # Get the lists of full train and test phrases
@@ -682,29 +687,28 @@ def test_W2VModel_1bw():
 
 if __name__ == '__main__':
     import DataLoaders as dl
-     # Load tree data
-    tree_dir = './trees'
-    stb_data = dl.LoadSTB(tree_dir, freq_cutoff=3)
+     # Load text phrase data
+    dataset = dl.Load1BWords('./training_text', file_count=4, min_freq=10)
+
     # Get the lists of full train and test phrases
-    tr_phrases = stb_data['train_full_phrases']
-    te_phrases = stb_data['dev_full_phrases']
+    tr_phrases = dataset['train_key_phrases']
+    te_phrases = dataset['dev_key_phrases']
+    k2w = dataset['keys_to_words']
     # Get the list of all word occurrences in the training phrases
     tr_words = []
     for phrase in tr_phrases:
-        tr_words.extend(phrase)
+        tr_words.extend([k for k in phrase])
     tr_words = np.asarray(tr_words).astype(np.uint32)
-    tr_phrases = [np.asarray(p).astype(np.uint32) for p in tr_phrases]
-    te_phrases = [np.asarray(p).astype(np.uint32) for p in te_phrases]
     # Record maximum required keys for the context layer's tables
-    max_wv_key = max(stb_data['words_to_keys'].values())
-    max_cv_key = len(tr_phrases) - 1
+    max_wv_key = max(dataset['words_to_keys'].values())
+    max_cv_key = 100
 
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 200
+    wv_dim = 256
     cv_dim = 50
-    lam_l2 = 1e-1
+    lam_l2 = 1e-3
 
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, lam_wv=lam_l2, \
                   lam_cv=lam_l2, lam_ns=lam_l2)
@@ -716,16 +720,13 @@ if __name__ == '__main__':
     neg_sampler = cu.NegSampler(neg_table=tr_words, neg_count=ns_count)
 
     # Train all parameters using the training set phrases
-    cam.train(pos_sampler, neg_sampler, 300, 50001, train_words=True, \
-              train_context=False, learn_rate=1e-3)
-    cam.train(pos_sampler, neg_sampler, 300, 50001, train_words=True, \
-              train_context=True, learn_rate=1e-3)
-    cl_train = cam.context_layer
-
-    # Infer new context vectors for the test set phrases
-    pos_sampler = cu.PosSampler(te_phrases, sg_window)
-    neg_sampler = cu.NegSampler(neg_table=tr_words, neg_count=ns_count)
-    cl_dev = cam.infer_context_vectors(pos_sampler, neg_sampler, 300, 10001, 1e-3)
+    for i in range(50):
+        cam.train(pos_sampler, neg_sampler, 300, 10001, train_words=True, \
+                  train_context=False, learn_rate=1e-2)
+        [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
+                  W1=cam.word_layer.params['W'], W2=None)
+        for w in range(10):
+            print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
 
 
 

@@ -13,6 +13,7 @@ import os
 import sys
 import heapq
 import time
+import random
 import itertools
 try:
     from queue import Queue
@@ -278,12 +279,12 @@ class PosSampler:
     This samples positive example pairs each comprising an anchor word and a
     near-by context word from its "skip-gram window".
     """
-    def __init__(self, phrase_list, max_window):
-        # phrase_list contains the phrases to sample from 
+    def __init__(self, phrase_list, max_window, max_phrase_key=20000):
+        # phrase_list contains the phrases to sample from
         self.max_window = max_window
         self.phrase_list = phrase_list
         self.phrase_table = self._make_table(self.phrase_list)
-        self.max_phrase_key = np.max(self.phrase_table)
+        self.max_phrase_key = max_phrase_key
         self.pt_size = self.phrase_table.size
         return
 
@@ -332,7 +333,7 @@ class PosSampler:
         # Sample negative examples from self.neg_table
         anc_keys = anc_keys.astype(np.uint32)
         pos_keys = pos_keys.astype(np.uint32)
-        phrase_keys = phrase_keys.astype(np.uint32)
+        phrase_keys = np.minimum(self.max_phrase_key, phrase_keys).astype(np.uint32)
         return [anc_keys, pos_keys, phrase_keys]
 
 class NegSampler:

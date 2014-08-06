@@ -148,6 +148,8 @@ class CAModel:
         self.class_layer.reset_moms(1.0)
         for b in range(batch_count):
             anc_keys, pos_keys, phrase_keys = pos_sampler.sample(batch_size)
+            for i in range(batch_size):
+                phrase_keys[i] = 0
             if self.use_ns:
                 param_1 = pos_keys
                 param_2 = var_param.sample(batch_size)
@@ -161,10 +163,12 @@ class CAModel:
             # apply l2 regularization, but not every round (to save flops)
             if ((b > 1) and ((b % self.reg_freq) == 0)):
                 reg_rate = learn_rate * self.reg_freq
-                self.word_layer.l2_regularize(lam_l2=(reg_rate*self.lam_wv))
-                self.context_layer.l2_regularize(lam_Wm=(reg_rate*self.lam_cv), \
-                                                 lam_Wb=(reg_rate*self.lam_cv))
-                self.class_layer.l2_regularize(lam_l2=(reg_rate*self.lam_cl))
+                if train_words:
+                    self.word_layer.l2_regularize(lam_l2=(reg_rate*self.lam_wv))
+                    self.class_layer.l2_regularize(lam_l2=(reg_rate*self.lam_cl))
+                if train_context:
+                    self.context_layer.l2_regularize(lam_Wm=(reg_rate*self.lam_cv), \
+                                                    lam_Wb=(reg_rate*self.lam_cv))
             # diagnostic display stuff...
             if ((b > 1) and ((b % 1000) == 0)):
                 Wm_info = self.context_layer.norm_info('Wm')
@@ -264,46 +268,45 @@ def some_nearest_words(keys_to_words, sample_count, W1=None, W2=None):
     return [source_keys, neighbor_keys, source_words, neighbor_words]
 
 if __name__=="__main__":
-    # Get info about the vocab and NS table, and HSM codes for some data
-    sentences = cu.SentenceFileIterator('./training_text')
-    vocab_info = cu.build_vocab(sentences, min_count=3, down_sample=0.0)
-    w2k = vocab_info['words_to_keys']
-    k2w = vocab_info['keys_to_words']
-    hs_tree = vocab_info['hs_tree']
-    ns_table = vocab_info['ns_table']
-    # Convert to a list of training phrases, filtered to change all words in
-    # the given corpus to *UNK* if they're not in the built vocabulary.
-    sentences = cu.SentenceFileIterator('./training_text')
-    train_phrases = []
-    for s in sentences:
-        train_phrases.append(np.array([(w2k[w] if (w in w2k) else w2k['*UNK*']) for w in s]).astype(np.uint32))
+    import DataLoaders as dl
+     # Load text phrase data
+    dataset = dl.Load1BWords('./training_text', file_count=4, min_freq=10)
 
+    # Get the lists of full train and test phrases
+    tr_phrases = dataset['train_key_phrases']
+    te_phrases = dataset['dev_key_phrases']
+    k2w = dataset['keys_to_words']
+    # Get the list of all word occurrences in the training phrases
+    tr_words = []
+    for phrase in tr_phrases:
+        tr_words.extend([k for k in phrase])
+    tr_words = np.asarray(tr_words).astype(np.uint32)
     # Record maximum required keys for the context layer's tables
-    max_wv_key = max(w2k.values())
-    max_cv_key = len(train_phrases) - 1
-    max_hs_key = hs_tree['max_code_key']
-    print("max_hs_key: {0:d}".format(max_hs_key))
+    max_wv_key = max(dataset['words_to_keys'].values())
+    max_cv_key = 100
 
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 200
-    cv_dim = 10
+    wv_dim = 256
+    cv_dim = 50
     lam_l2 = 1e-3
+
     cam = CAModel(wv_dim, cv_dim, max_wv_key, max_cv_key, \
-                  use_ns=True, max_hs_key=max_hs_key, \
-                  lam_wv=lam_l2, lam_cv=lam_l2, lam_cl=lam_l2)
+                use_ns=True, max_hs_key=0, \
+                lam_wv=lam_l2, lam_cv=lam_l2, lam_cl=lam_l2)
     cam.init_params(0.05)
     cam.set_noise(drop_rate=0.5, fuzz_scale=0.0)
 
-    pos_sampler = cu.PosSampler(train_phrases, sg_window)
-    neg_sampler = cu.NegSampler(ns_table)
+    # Initialize samplers for training
+    pos_sampler = cu.PosSampler(tr_phrases, sg_window)
+    neg_sampler = cu.NegSampler(neg_table=tr_words, neg_count=ns_count)
 
     # Train all parameters using the training set phrases
-    for i in range(20):
+    for i in range(50):
         cam.train(pos_sampler, neg_sampler, 300, 10001, train_words=True, \
                   train_context=False, learn_rate=1e-2)
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
-                W1=cam.word_layer.params['W'], W2=None)
+                  W1=cam.word_layer.params['W'], W2=None)
         for w in range(10):
             print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
