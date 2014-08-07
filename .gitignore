@@ -9,8 +9,8 @@
 *.pkl.gz
 *.png
 *.pyc
-*.DS_STORE
-*.DS_Store
+.DS_STORE
+.DS_Store
 *.lprof
 /general/data/*
 /general/test_results/*
