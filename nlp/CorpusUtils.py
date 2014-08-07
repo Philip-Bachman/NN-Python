@@ -133,9 +133,10 @@ def build_vocab(sentences, min_count=5, compute_hs_tree=True, \
     _precalc_downsampling(words_to_vocabs, down_sample=down_sample)
 
     result = {}
-    result['words_to_vocabs'] = words_to_vocabs
+    result['words_to_vocabs'] = [] #words_to_vocabs
     result['words_to_keys'] = words_to_keys
     result['keys_to_words'] = keys_to_words
+    result['unk_word'] = '*UNK*'
     result['hs_tree'] = None
     result['ns_table'] = None
     if compute_hs_tree:
@@ -187,7 +188,7 @@ def _make_table(w2v, k2w, w2k, table_size=10000000, power=0.75):
             d1 += w2v[k2w[widx]].count**power / power_sum
         if widx >= vocab_size:
             widx = vocab_size - 1
-    return table
+    return table.astype(np.uint32)
 
 
 def _create_binary_tree(w2v):
@@ -244,6 +245,21 @@ def _create_binary_tree(w2v):
     hsm_tree['keys_to_code_signs'] = code_signs.astype(np.float32)
     hsm_tree['max_code_key'] = max_code_key
     return hsm_tree
+
+def sample_phrases(text_stream, words_to_keys, unk_word='*UNK*', \
+                    max_phrases=100000):
+    phrases = []
+    for text_blob in text_stream:
+        p_keys = np.zeros((len(text_blob),), dtype=np.uint32)
+        for (i, word) in enumerate(text_blob):
+            if word in words_to_keys:
+                p_keys[i] = words_to_keys[word]
+            else:
+                p_keys[i] = words_to_keys[unk_word]
+        phrases.append(p_keys.astype(np.uint32))
+        if len(phrases) >= max_phrases:
+            break
+    return phrases
 
 ###################################
 # TRAINING EXAMPLE SAMPLING UTILS #
@@ -308,7 +324,7 @@ class PosSampler:
                 d1 += phrase_lens[widx] / len_sum
             if widx >= phrase_count:
                 widx = phrase_count - 1
-        return table
+        return table.astype(np.uint32)
 
     def sample(self, sample_count):
         """Draw a sample."""
