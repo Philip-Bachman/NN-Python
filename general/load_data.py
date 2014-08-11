@@ -83,8 +83,8 @@ def load_udm_ss(dataset, sup_count, rng):
     Xtr_un = np.vstack(Xtr_un)
     Ytr_un = np.vstack(Ytr_un)
     # Also keep "unsupervised" copies of the "supervised" data
-    Xtr_un = Xtr_un #np.vstack([Xtr_un, Xtr_su])
-    Ytr_un = 0 * Ytr_un #np.vstack([Ytr_un, Ytr_su])
+    Xtr_un = np.vstack([Xtr_un, Xtr_su])
+    Ytr_un = 0 * np.vstack([Ytr_un, Ytr_su])
 
     # Shuffle the rows so that observations are not grouped by class
     shuf_idx = rng.permutation(Xtr_su.shape[0])

@@ -154,7 +154,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         sgd_params['result_tag'] = "ss_dev_500x500_{0:d}".format(test_num)
         sgd_params['mlp_type'] = 'dev'
         mlp_params['dev_types'] = [1, 1, 2]
-        mlp_params['dev_lams'] = [0.1, 0.1, 1.5]
+        mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
         # Initialize a random number generator for this test
         rng = np.random.RandomState(test_num)
         # Construct the SS_DEV_NET object that we will be training
@@ -195,7 +195,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         sgd_params['result_tag'] = "ss_dev_500x500_s{0:d}_{1:d}".format(su_count,test_num)
         sgd_params['mlp_type'] = 'dev'
         sgd_params['start_rate'] = 0.02
-        # Train with weak DEV regularization
+        # Train with no DEV regularization
         sgd_params['epochs'] = 5
         NET.set_dev_lams([0.01, 0.01, 0.0])
         rng = np.random.RandomState(rng_seed)
@@ -271,6 +271,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
             train_dae(NET, i, mlp_params, sgd_params)
 
         # Run semisupervised training on the given MLP
+        sgd_params['batch_size'] = 100
         sgd_params['top_only'] = True
         sgd_params['mlp_type'] = 'dev'
         sgd_params['epochs'] = 10
@@ -354,14 +355,14 @@ if __name__ == '__main__':
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
     #batch_test_ss_mlp(test_count=10, su_count=100)
-    batch_test_ss_mlp(test_count=10, su_count=600)
+    #batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
     #batch_test_ss_mlp(test_count=10, su_count=3000)
     #batch_test_ss_mlp_gentle(test_count=20, su_count=100)
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining
-    #batch_test_ss_mlp_pt(test_count=30, su_count=100)
+    batch_test_ss_mlp_pt(test_count=30, su_count=100)
     #batch_test_ss_mlp_pt(test_count=10, su_count=600)
     #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
     #batch_test_ss_mlp_pt(test_count=10, su_count=3000)

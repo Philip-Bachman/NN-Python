@@ -14,5 +14,6 @@
 *.lprof
 /general/data/*
 /general/test_results/*
+/autodisc/data/*
 /nlp/trees/*
 /nlp/training_text/*
