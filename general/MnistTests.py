@@ -271,7 +271,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
             train_dae(NET, i, mlp_params, sgd_params)
 
         # Run semisupervised training on the given MLP
-        sgd_params['batch_size'] = 100
+        #sgd_params['batch_size'] = 50
         sgd_params['top_only'] = True
         sgd_params['mlp_type'] = 'dev'
         sgd_params['epochs'] = 10
