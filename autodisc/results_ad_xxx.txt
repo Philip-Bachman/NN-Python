@@ -1,5 +1,0 @@
-mlp_type: sde
-lam_l2a: 0.0010
-dev_types: [1, 1, 2]
-dev_lams: [0.1, 0.1, 2.0]
-4.6662 4.6584
