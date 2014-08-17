@@ -7,7 +7,7 @@ import theano
 import theano.tensor as T
 import theano.tensor.shared_randomstreams
 
-from FrankeNet import SS_DEV_NET
+from FrankeNet import SS_PEV_NET
 from load_data import load_udm, load_udm_ss, load_mnist
 import NetTrainers as NT
 
@@ -28,7 +28,7 @@ def train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count=1000):
         mlp_params=mlp_params, \
         sgd_params=sgd_params, \
         datasets=datasets)
-    return 1
+    return
 
 def train_mlp(NET, mlp_params, sgd_params):
     """Run mlp training test."""
@@ -49,7 +49,7 @@ def train_mlp(NET, mlp_params, sgd_params):
         mlp_params=mlp_params, \
         sgd_params=sgd_params, \
         datasets=datasets)
-    return 1
+    return
 
 def train_dae(NET, dae_layer, mlp_params, sgd_params):
     """Run DAE training test."""
@@ -64,47 +64,7 @@ def train_dae(NET, dae_layer, mlp_params, sgd_params):
         mlp_params=mlp_params, \
         sgd_params=sgd_params, \
         datasets=datasets)
-    return 1
-
-def test_dae(dae_layer=0, mlp_params=False, sgd_params=False):
-    """Setup basic test for semisupervised DEV-regularized MLP."""
-
-    if not sgd_params:
-        # Set some reasonable sgd parameters
-        sgd_params = {}
-        sgd_params['start_rate'] = 0.05
-        sgd_params['decay_rate'] = 0.998
-        sgd_params['wt_norm_bound'] = 5.0
-        sgd_params['epochs'] = 50
-        sgd_params['batch_size'] = 25
-        sgd_params['mlp_type'] = 'raw'
-        sgd_params['result_tag'] = 'xxx'
-    if not mlp_params:
-        # Set some reasonable mlp parameters
-        mlp_params = {}
-        mlp_params['layer_sizes'] = [28*28, 500, 11]
-        mlp_params['dev_types'] = [1, 2]
-        mlp_params['dev_lams'] = [0.1, 2.0]
-        mlp_params['lam_l2a'] = 1e-3
-        mlp_params['use_bias'] = 1
-
-    # Initialize a random number generator for this test
-    rng = np.random.RandomState(12345)
-
-    # Construct the SS_DEV_NET object that we will be training
-    x_in = T.matrix('x_in')
-    NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
-
-    # Initialize biases in each net layer (except final layer) to zero
-    for layer in NET.mlp_layers:
-        b_init = layer.b.get_value(borrow=False)
-        b_const = np.zeros(b_init.shape, dtype=theano.config.floatX) + 0.0
-        layer.b.set_value(b_const)
-
-    # Run semisupervised training on the given MLP
-    train_dae(NET, dae_layer, mlp_params, sgd_params)
-    return 1
-
+    return
 
 def batch_test_ss_mlp(test_count=10, su_count=1000):
     """Run multiple semisupervised learning tests."""
@@ -121,6 +81,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     mlp_params['layer_sizes'] = [28*28, 500, 500, 11]
     mlp_params['dev_types'] = [1, 1, 2]
     mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
+    mlp_params['dev_mix_rate'] = 0.5
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 
@@ -136,8 +97,8 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         mlp_params['dev_lams'] = [0., 0., 0.]
         # Initialize a random number generator for this test
         rng = np.random.RandomState(test_num)
-        # Construct the SS_DEV_NET object that we will be training
-        NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
+        # Construct the SS_PEV_NET object that we will be training
+        NET = SS_PEV_NET(rng=rng, input=x_in, params=mlp_params)
         rng = np.random.RandomState(test_num)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
         # Run test with standard dropout on supervised examples
@@ -145,8 +106,8 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         sgd_params['mlp_type'] = 'sde'
         # Initialize a random number generator for this test
         rng = np.random.RandomState(test_num)
-        # Construct the SS_DEV_NET object that we will be training
-        NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
+        # Construct the SS_PEV_NET object that we will be training
+        NET = SS_PEV_NET(rng=rng, input=x_in, params=mlp_params)
         rng = np.random.RandomState(test_num)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
         """
@@ -157,17 +118,17 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
         # Initialize a random number generator for this test
         rng = np.random.RandomState(test_num)
-        # Construct the SS_DEV_NET object that we will be training
-        NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
+        # Construct the SS_PEV_NET object that we will be training
+        NET = SS_PEV_NET(rng=rng, input=x_in, params=mlp_params)
         rng = np.random.RandomState(test_num)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
-    return 1
+    return
 
 def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     """Run multiple semisupervised learning tests."""
     # Set some reasonable sgd parameters
     sgd_params = {}
-    sgd_params['start_rate'] = 0.1
+    sgd_params['start_rate'] = 0.02
     sgd_params['decay_rate'] = 0.998
     sgd_params['wt_norm_bound'] = 3.5
     sgd_params['epochs'] = 1000
@@ -178,6 +139,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     mlp_params['layer_sizes'] = [28*28, 500, 500, 11]
     mlp_params['dev_types'] = [1, 1, 5]
     mlp_params['dev_lams'] = [0.1, 0.1, 0.2]
+    mlp_params['dev_mix_rate'] = 0.5
     mlp_params['lam_l2a'] = 1e-2
     mlp_params['use_bias'] = 1
 
@@ -189,8 +151,8 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         rng_seed = test_num
         # Initialize a random number generator for this test
         rng = np.random.RandomState(rng_seed)
-        # Construct the SS_DEV_NET object that we will be training
-        NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
+        # Construct the SS_PEV_NET object that we will be training
+        NET = SS_PEV_NET(rng=rng, input=x_in, params=mlp_params)
         # Run test with DEV regularization on unsupervised examples
         sgd_params['result_tag'] = "ss_dev_500x500_s{0:d}_{1:d}".format(su_count,test_num)
         sgd_params['mlp_type'] = 'dev'
@@ -233,7 +195,8 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     mlp_params = {}
     mlp_params['layer_sizes'] = [28*28, 500, 500, 11]
     mlp_params['dev_types'] = [1, 1, 5]
-    mlp_params['dev_lams'] = [0.1, 0.1, 0.1]
+    mlp_params['dev_lams'] = [0.1, 0.1, 0.2]
+    mlp_params['dev_mix_rate'] = 0.5
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 
@@ -244,9 +207,9 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         # Initialize a random number generator for this test
         rng = np.random.RandomState(rng_seed)
 
-        # Construct the SS_DEV_NET object that we will be training
+        # Construct the SS_PEV_NET object that we will be training
         x_in = T.matrix('x_in')
-        NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
+        NET = SS_PEV_NET(rng=rng, input=x_in, params=mlp_params)
 
         # Initialize biases in each net layer (except final layer) to small
         # positive constants (rather than their default zero initialization)
@@ -271,31 +234,28 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
             train_dae(NET, i, mlp_params, sgd_params)
 
         # Run semisupervised training on the given MLP
-        #sgd_params['batch_size'] = 50
-        sgd_params['top_only'] = True
+        sgd_params['result_tag'] = "ss_dev_500x500_pt_s{0:d}_{1:d}".format(su_count,test_num)
+        sgd_params['batch_size'] = 50
         sgd_params['mlp_type'] = 'dev'
-        sgd_params['epochs'] = 10
-        NET.set_dev_lams([0.005, 0.005, 0.005])
+        sgd_params['start_rate'] = 0.02
+        # Train with no DEV regularization
+        sgd_params['top_only'] = True
+        sgd_params['epochs'] = 5
+        NET.set_dev_lams([0.01, 0.01, 0.0])
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
+        # Train with more DEV regularization
         sgd_params['top_only'] = False
-        sgd_params['mlp_type'] = 'dev'
         sgd_params['epochs'] = 10
         NET.set_dev_lams([0.02, 0.02, 0.02])
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
-        sgd_params['mlp_type'] = 'dev'
+        # Train with more DEV regularization
         sgd_params['epochs'] = 10
-        NET.set_dev_lams([0.05, 0.05, 0.05])
+        NET.set_dev_lams([0.05, 0.05, 0.08])
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
-        sgd_params['mlp_type'] = 'dev'
-        sgd_params['epochs'] = 10
-        NET.set_dev_lams([0.1, 0.1, 0.1])
-        rng = np.random.RandomState(rng_seed)
-        train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
-        sgd_params['result_tag'] = "pt_dev_500x500_s{0:d}_{1:d}".format(su_count, test_num)
-        sgd_params['mlp_type'] = 'dev'
+        # Train with most DEV regularization
         sgd_params['epochs'] = 500
         NET.set_dev_lams([0.1, 0.1, 0.2])
         rng = np.random.RandomState(rng_seed)
@@ -321,15 +281,16 @@ def test_dropout_ala_original():
     mlp_params['layer_sizes'] = [28*28, 800, 800, 11]
     mlp_params['dev_types'] = [1, 1, 2]
     mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
+    mlp_params['dev_mix_rate'] = 0.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 
     # Initialize a random number generator for this test
     rng = np.random.RandomState(12345)
 
-    # Construct the SS_DEV_NET object that we will be training
+    # Construct the SS_PEV_NET object that we will be training
     x_in = T.matrix('x_in')
-    NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
+    NET = SS_PEV_NET(rng=rng, input=x_in, params=mlp_params)
 
     # Initialize biases in each net layer (except final layer) to small
     # positive constants (rather than their default zero initialization)
@@ -342,7 +303,7 @@ def test_dropout_ala_original():
 
     # Run training on the given MLP
     train_mlp(NET, mlp_params, sgd_params)
-    return 1
+    return
 
 if __name__ == '__main__':
 

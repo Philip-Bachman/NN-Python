@@ -288,11 +288,11 @@ class MPLayer(object):
 # NETWORK IMPLEMENTATION #
 ##########################
 
-class SS_DEV_NET(object):
+class SS_PEV_NET(object):
     """A multipurpose layer-based feedforward net.
 
     This class is capable of standard backprop training, training with
-    dropout, and training with Dropout Ensemble Variance regularization.
+    dropout, and training with Pseudo-Ensemble Variance regularization.
     """
     def __init__(self,
             rng,
@@ -324,18 +324,22 @@ class SS_DEV_NET(object):
         dev_lams = np.asarray(params['dev_lams'], dtype=theano.config.floatX)
         self.dev_lams_sum = np.sum(dev_lams)
         self.dev_lams = theano.shared(value=dev_lams, name='dev_lams')
+        try:
+            self.dev_mix_rate = theano.shared(value=np.asarray(params['dev_mix_rate'], \
+                    dtype=theano.config.floatX), name='dev_mix_rate')
+        except:
+            self.dev_mix_rate = theano.shared(value=np.asarray(0.0, \
+                    dtype=theano.config.floatX), name='dev_mix_rate')
         # Make a dict to tell which parameters are norm-boundable
         self.clip_params = {}
         # Set up all the hidden layers
         layer_connect_dims = zip(layer_sizes, layer_sizes[1:])
         self.mlp_layers = []
-        self.dev_layers_1 = []
-        self.dev_layers_2 = []
+        self.dev_layers = []
         # Initialize "next inputs", to be piped into new layers
         self.input = input
         next_raw_input = self.input
-        next_dev1_input = self.input
-        next_dev2_input = self.input
+        next_dev_input = self.input
         # Construct one drop-free MLP and two droppy child networks
         layer_num = 0
         for n_in, n_out in layer_connect_dims:
@@ -350,22 +354,14 @@ class SS_DEV_NET(object):
                     n_in=n_in, n_out=n_out, use_bias=use_bias))
             next_raw_input = self.mlp_layers[-1].output
             # Add a new layer to each perturbed model
-            self.dev_layers_1.append(HiddenLayer(rng=rng, \
-                    input=next_dev1_input, \
+            self.dev_layers.append(HiddenLayer(rng=rng, \
+                    input=next_dev_input, \
                     activation=activation, \
                     drop_rate=drop_prob, pool_size=4, \
                     n_in=n_in, n_out=n_out, use_bias=use_bias, \
                     W=self.mlp_layers[-1].W, \
                     b=self.mlp_layers[-1].b))
-            self.dev_layers_2.append(HiddenLayer(rng=rng, \
-                    input=next_dev2_input, \
-                    activation=activation, \
-                    drop_rate=drop_prob, pool_size=4, \
-                    n_in=n_in, n_out=n_out, use_bias=use_bias, \
-                    W=self.mlp_layers[-1].W, \
-                    b=self.mlp_layers[-1].b))
-            next_dev1_input = self.dev_layers_1[-1].output
-            next_dev2_input = self.dev_layers_2[-1].output
+            next_dev_input = self.dev_layers[-1].output
             # Set the parameters of these layers to be clipped
             self.clip_params[self.mlp_layers[-1].W] = 1
             self.clip_params[self.mlp_layers[-1].b] = 0
@@ -390,37 +386,33 @@ class SS_DEV_NET(object):
         self.raw_out_func = MCL2HingeSS(self.mlp_layers[-1])
         self.raw_class_loss = self.raw_out_func.loss_func
         self.raw_reg_loss = lam_l2a * T.sum([lay.act_l2_sum for lay in self.mlp_layers])
-        self.dev_reg_loss = lambda y: self.dev_cost(y, joint_loss=0)
         self.class_errors = self.raw_out_func.errors
 
         # Use the negative log likelihood of the logistic regression layer of
         # the first DEV clone as dropout optimization objective.
-        self.droppy_output_1 = MCL2HingeSS(self.dev_layers_1[-1])
-        self.droppy_output_2 = MCL2HingeSS(self.dev_layers_2[-1])
-        self.sde_class_loss = self.droppy_output_1.loss_func
-        self.sde_reg_loss = lam_l2a * T.sum([lay.act_l2_sum for lay in self.dev_layers_1])
+        self.dev_out_func = MCL2HingeSS(self.dev_layers[-1])
+        self.sde_class_loss = self.dev_out_func.loss_func
+        self.sde_reg_loss = lam_l2a * T.sum([lay.act_l2_sum for lay in self.dev_layers])
         self.sde_cost = lambda y: (self.sde_class_loss(y) + self.sde_reg_loss)
-        self.ss_dev_class_loss = lambda y: (self.droppy_output_1.loss_func(y) + \
-                self.droppy_output_2.loss_func(y)) / 2.0
+        self.ss_dev_class_loss = lambda y: self.sde_class_loss(y)
+        self.dev_reg_loss = lambda y: self.dev_cost(y, joint_loss=0)
 
     def dev_cost(self, y, joint_loss=1):
         """Wrapper for optimization with Theano."""
         if (self.dev_lams_sum > 1e-5):
             # Use a DEV-regularized cost if some DEV lams are > 0
-            class_loss = self.ss_dev_class_loss(y) if self.is_semisupervised \
-                    else self.raw_class_loss(y)
+            class_loss = (self.dev_mix_rate * self.raw_class_loss(y)) + \
+                    ((1.0 - self.dev_mix_rate) * self.sde_class_loss(y))
             dev_losses = []
             for i in range(self.layer_count):
                 if (i < (self.layer_count - 1)):
                     # DEV loss at hidden layers
                     x1 = self.mlp_layers[i].output
-                    x2 = self.dev_layers_1[i].output
-                    #x1 = self.dev_layers_2[i].output
+                    x2 = self.dev_layers[i].output
                 else:
                     # DEV loss at output layer
                     x1 = self.mlp_layers[i].linear_output
-                    x2 = self.dev_layers_1[i].linear_output
-                    #x1 = self.dev_layers_2[i].linear_output
+                    x2 = self.dev_layers[i].linear_output
                 dev_type = self.dev_types[i]
                 dev_loss = self.dev_lams[i] * self._dev_loss(x1, x2, y, dev_type)
                 dev_losses.append(dev_loss)
@@ -585,10 +577,8 @@ class SS_DEV_NET(object):
         """Set stochastic noise rate on the biases."""
         for layer in self.mlp_layers:
             layer.set_bias_noise(noise_lvl)
-        for layer in self.dev_layers_1:
-            layer.set_bias_noise(noise_lvl)
-        for layer in self.dev_layers_2:
-            layer.set_bias_noise(noise_lvl)
+        #for layer in self.dev_layers:
+        #    layer.set_bias_noise(noise_lvl)
         return 1
 
     def set_dev_lams(self, d_lams):
@@ -672,8 +662,10 @@ class DAELayer(object):
 
     def _compute_hidden_acts(self, X, W, b):
         """Compute activations at hidden layer."""
-        A_h = self.activation(T.dot(X, W) + b)
-        return A_h
+        A_p = T.dot(X, W) + b
+        A_h = A_p + self.srng.normal(size=A_p.shape, std=0.03, dtype=theano.config.floatX)
+        A_n = self.activation(A_h) + self.srng.normal(size=A_p.shape, std=0.02, dtype=theano.config.floatX)
+        return A_n
 
     def _compute_activations(self, X, W, b_h, b_v):
         """Compute activations of decoder (at visible layer)."""
