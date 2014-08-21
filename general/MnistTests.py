@@ -57,7 +57,7 @@ def train_mlp(NET, mlp_params, sgd_params):
         mlp_params=mlp_params, \
         sgd_params=sgd_params, \
         datasets=datasets)
-    return 1
+    return
 
 def train_dae(NET, dae_layer, mlp_params, sgd_params):
     """Run DAE training test."""
@@ -72,7 +72,7 @@ def train_dae(NET, dae_layer, mlp_params, sgd_params):
         mlp_params=mlp_params, \
         sgd_params=sgd_params, \
         datasets=datasets)
-    return 1
+    return
 
 def batch_test_ss_mlp(test_count=10, su_count=1000):
     """Run multiple semisupervised learning tests."""
@@ -102,7 +102,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     for test_num in range(test_count):
         """
         # Run test with no droppish regularization
-        sgd_params['result_tag'] = "ss_raw_500x500_{0:d}_s{1:d}".format(test_num,su_count)
+        sgd_params['result_tag'] = "ss_raw_s{0:d}_t{1:d}".format(test_num, su_count)
         sgd_params['mlp_type'] = 'raw'
         mlp_params['dev_lams'] = [0., 0., 0.]
         # Initialize a random number generator for this test
@@ -113,7 +113,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         rng = np.random.RandomState(test_num)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
         # Run test with standard dropout on supervised examples
-        sgd_params['result_tag'] = "ss_sde_500x500_{0:d}".format(test_num)
+        sgd_params['result_tag'] = "ss_sde_s{0:d}_t{1:d}".format(test_num, su_count)
         sgd_params['mlp_type'] = 'sde'
         # Initialize a random number generator for this test
         rng = np.random.RandomState(test_num)
@@ -124,7 +124,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
         """
         # Run test with DEV regularization on unsupervised examples
-        sgd_params['result_tag'] = "ss_dev_zero_mean_{0:d}_{1:d}".format(test_num, su_count)
+        sgd_params['result_tag'] = "ss_dev_s{0:d}_t{1:d}".format(test_num, su_count)
         sgd_params['mlp_type'] = 'dev'
         mlp_params['dev_types'] = [1, 1, 2]
         mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
@@ -146,6 +146,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     sgd_params['wt_norm_bound'] = 3.5
     sgd_params['epochs'] = 1000
     sgd_params['batch_size'] = 100
+    sgd_params['bias_noise'] = 0.2
     sgd_params['mlp_type'] = 'dev'
     # Set some reasonable mlp parameters
     mlp_params = {}
@@ -153,7 +154,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     mlp_params['dev_clones'] = 1
     mlp_params['dev_types'] = [1, 1, 5]
     mlp_params['dev_lams'] = [0.1, 0.1, 0.2]
-    mlp_params['dev_mix_rate'] = 0.
+    mlp_params['dev_mix_rate'] = 0.1
     mlp_params['lam_l2a'] = 1e-2
     mlp_params['use_bias'] = 1
 
@@ -169,7 +170,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         mlp_params['dev_types'] = [1, 1, 5]
         NET = SS_DEV_NET(rng=rng, input=x_in, params=mlp_params)
         # Run test with DEV regularization on unsupervised examples
-        sgd_params['result_tag'] = "ss_dev_gentle_s{0:d}_{1:d}".format(su_count,test_num)
+        sgd_params['result_tag'] = "ss_dev_gentle_s{0:d}_t{1:d}".format(su_count,test_num)
         sgd_params['mlp_type'] = 'dev'
         sgd_params['start_rate'] = 0.02
         # Train with weak DEV regularization
@@ -183,7 +184,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
         # Train with more DEV regularization
-        sgd_params['epochs'] = 10
+        sgd_params['epochs'] = 15
         NET.set_dev_lams([0.05, 0.05, 0.08])
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
