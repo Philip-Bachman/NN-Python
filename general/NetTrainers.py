@@ -32,6 +32,7 @@ def train_mlp(
     mlp_type = sgd_params['mlp_type']
     wt_norm_bound = sgd_params['wt_norm_bound']
     result_tag = sgd_params['result_tag']
+    bias_noise = sgd_params['bias_noise']
     txt_file_name = "results_mlp_{0}.txt".format(result_tag)
     img_file_name = "weights_mlp_{0}.png".format(result_tag)
 
@@ -218,7 +219,7 @@ def train_mlp(
         ######################################################
         # process some number of minibatches for this epoch. #
         ######################################################
-        NET.set_bias_noise(0.1)
+        NET.set_bias_noise(bias_noise)
         epoch_counter = epoch_counter + 1
         epoch_metrics = [0. for v in epoch_metrics]
         for b_idx in xrange(tr_batches):
@@ -302,6 +303,7 @@ def train_ss_mlp(
     mlp_type = sgd_params['mlp_type']
     wt_norm_bound = sgd_params['wt_norm_bound']
     result_tag = sgd_params['result_tag']
+    bias_noise = sgd_params['bias_noise']
     txt_file_name = "results_mlp_{0}.txt".format(result_tag)
     img_file_name = "weights_mlp_{0}.png".format(result_tag)
 
@@ -365,8 +367,10 @@ def train_ss_mlp(
     # build the expressions for the cost functions. if training without sde or
     # dev regularization, the dev loss/cost will be used, but the weights for
     # dev regularization on each layer will be set to 0 before training.
-    sde_cost = NET.sde_cost(y)
-    dev_cost = NET.dev_cost(y)
+    #ent_loss = 0.005 * NET._ent_loss(NET.mlp_layers[-1].linear_output, y, ent_type=1)
+    #g1_loss = 2.0 * NET.grad_losses[-1][0]
+    sde_cost = NET.sde_cost(y) #+ ent_loss #+ g1_loss
+    dev_cost = NET.dev_cost(y) #+ ent_loss #+ g1_loss
     NET_metrics = [NET.class_errors(y), NET.raw_class_loss(y), \
                    NET.dev_reg_loss(y), NET.raw_reg_loss]
 
@@ -416,7 +420,7 @@ def train_ss_mlp(
 
     # use a "smoothed" learning rate, to ease into optimization
     gentle_rate = ifelse(epoch < 5,
-            ((epoch / 5.)**1.) * learning_rate,
+            ((epoch / 5.)**2.) * learning_rate,
             learning_rate)
 
     # update the step direction using a momentus update
@@ -500,7 +504,7 @@ def train_ss_mlp(
         # process some number of minibatches for this epoch. #
         ######################################################
         # Set to training mode
-        NET.set_bias_noise(0.2)
+        NET.set_bias_noise(bias_noise)
         epoch_counter = epoch_counter + 1
         epoch_metrics = [0. for v in epoch_metrics]
         for b_idx in xrange(tr_batches):
@@ -632,6 +636,12 @@ def train_dae(
         dtype=theano.config.floatX))
 
     # Build the expressions for the cost functions.
+    #grd_loss = 0.5 * (NET.grad_losses[dae_layer][0] + 10.0*NET.grad_losses[dae_layer][1])
+    #sde_cost = NET.sde_dae_losses[dae_layer][0] + NET.sde_dae_losses[dae_layer][1] #+ grd_loss
+    #raw_cost = NET.raw_dae_losses[dae_layer][0] + NET.raw_dae_losses[dae_layer][1] #+ grd_loss
+    #NET_metrics = [raw_cost, NET.raw_dae_losses[dae_layer][0], \
+    #        NET.raw_dae_losses[dae_layer][1]]
+    sde_cost = NET.dae_costs[dae_layer][0] + NET.dae_costs[dae_layer][1]
     raw_cost = NET.dae_costs[dae_layer][0] + NET.dae_costs[dae_layer][1]
     NET_metrics = [raw_cost, NET.dae_costs[dae_layer][0], NET.dae_costs[dae_layer][1]]
     opt_params = NET.dae_params[dae_layer]
@@ -653,12 +663,17 @@ def train_dae(
     # Prepare momentum and gradient variables, and construct the updates that  #
     # Theano will perform on the network parameters.                           #
     ############################################################################
+    sde_grads = []
     raw_grads = []
     for param in opt_params:
+        sde_grads.append(T.grad(sde_cost, param))
         raw_grads.append(T.grad(raw_cost, param))
 
+    sde_moms = []
     raw_moms = []
     for param in opt_params:
+        sde_moms.append(theano.shared(np.zeros( \
+                param.get_value(borrow=True).shape, dtype=theano.config.floatX)))
         raw_moms.append(theano.shared(np.zeros( \
                 param.get_value(borrow=True).shape, dtype=theano.config.floatX)))
 
@@ -673,25 +688,37 @@ def train_dae(
         learning_rate)
 
     # Update the step direction using a momentus update
+    sde_updates = OrderedDict()
     raw_updates = OrderedDict()
     for i in range(len(opt_params)):
+        sde_updates[sde_moms[i]] = mom * sde_moms[i] + (1. - mom) * sde_grads[i]
         raw_updates[raw_moms[i]] = mom * raw_moms[i] + (1. - mom) * raw_grads[i]
 
     # ... and take a step along that direction
     for i in range(len(opt_params)):
         param = opt_params[i]
+        sde_param = param - (gentle_rate * sde_updates[sde_moms[i]])
         raw_param = param - (gentle_rate * raw_updates[raw_moms[i]])
         # Clip the updated param to bound its norm (where applicable)
         if (NET.clip_params.has_key(param) and \
                 (NET.clip_params[param] == 1)):
+            sde_norms = T.sum(sde_param**2, axis=1, keepdims=1)
+            sde_scale = T.clip(T.sqrt(wt_norm_bound / sde_norms), 0., 1.)
+            sde_updates[param] = sde_param * sde_scale
             raw_norms = T.sum(raw_param**2, axis=1, keepdims=1)
             raw_scale = T.clip(T.sqrt(wt_norm_bound / raw_norms), 0., 1.)
             raw_updates[param] = raw_param * raw_scale
         else:
+            sde_updates[param] = sde_param
             raw_updates[param] = raw_param
 
     # Compile theano functions for training.  These return the training cost
     # and update the model parameters.
+    train_sde = theano.function(inputs=[epoch, index], \
+        outputs=NET_metrics, \
+        updates=sde_updates, \
+        givens={ x: Xtr[tr_bidx[index,0]:tr_bidx[index,1],:] })
+
     train_raw = theano.function(inputs=[epoch, index], \
         outputs=NET_metrics, \
         updates=raw_updates, \
@@ -722,7 +749,7 @@ def train_dae(
     results_file.write("dev_lams: {0}\n".format(str(mlp_params['dev_lams'])))
     results_file.flush()
 
-    epoch_metrics = train_raw(1, 0)
+    epoch_metrics = train_sde(1, 0)
     while epoch_counter < n_epochs:
         ######################################################
         # Process some number of minibatches for this epoch. #
@@ -732,7 +759,10 @@ def train_dae(
         epoch_metrics = [0. for val in epoch_metrics]
         for minibatch_index in xrange(tr_batches):
             # Compute update for some joint supervised/unsupervised minibatch
-            batch_metrics = train_raw(epoch_counter, minibatch_index)
+            if ((mlp_type == 'sde') or (mlp_type == 'dev')):
+                batch_metrics = train_sde(epoch_counter, minibatch_index)
+            else:
+                batch_metrics = train_raw(epoch_counter, minibatch_index)
             epoch_metrics = [(em + bm) for (em, bm) in zip(epoch_metrics, batch_metrics)]
         epoch_metrics = [(val / tr_batches) for val in epoch_metrics]
 

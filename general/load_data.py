@@ -131,6 +131,16 @@ def load_udm(dataset, as_shared=True):
     #np.ndarray of 1 dimensions (vector)) that have the same length as
     #the number of rows in the input. It should give the target
     #target to the example with the same index in the input.
+    train_set = [v for v in train_set]
+    valid_set = [v for v in valid_set]
+    test_set = [v for v in test_set]
+    train_set[0] = np.asarray(train_set[0]).astype(np.float32)
+    valid_set[0] = np.asarray(valid_set[0]).astype(np.float32)
+    test_set[0] = np.asarray(test_set[0]).astype(np.float32)
+    obs_mean = 1.0 * np.mean(train_set[0], axis=0, keepdims=True)
+    train_set[0] = train_set[0] - obs_mean
+    valid_set[0] = valid_set[0] - obs_mean
+    test_set[0] = test_set[0] - obs_mean
     if as_shared:
         test_set_x, test_set_y = _shared_dataset((test_set[0],test_set[1]+1))
         valid_set_x, valid_set_y = _shared_dataset((valid_set[0],valid_set[1]+1))

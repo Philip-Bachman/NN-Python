@@ -48,7 +48,7 @@ def safe_softmax(x):
     return x_sm
 
 def smooth_softmax(x):
-    """Softmax that shouldn't overflow, with fake Laplace smoothing."""
+    """Softmax that shouldn't overflow, with Laplacish smoothing."""
     eps = 0.0001
     e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
     p = e_x / T.sum(e_x, axis=1, keepdims=True)
@@ -82,24 +82,6 @@ def smooth_cross_entropy(p, q):
     # This term is: entropy(p) + kl_divergence(p, q)
     ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
     return ce_sm
-
-def smooth_kld_sym(p, q):
-    """Measure the symmetrized KL-divergence."""
-    p_sm = smooth_softmax(p)
-    q_sm = smooth_softmax(q)
-    kl_pq = T.sum(((T.log(p_sm) - T.log(q_sm)) * p_sm), axis=1, keepdims=True)
-    kl_qp = T.sum(((T.log(q_sm) - T.log(p_sm)) * q_sm), axis=1, keepdims=True)
-    kl_sym = (kl_pq + kl_qp) / 2.0
-    return kl_sym
-
-def smooth_xent_sym(p, q):
-    """Measure the symmetrized cross-entropy."""
-    p_sm = smooth_softmax(p)
-    q_sm = smooth_softmax(q)
-    ce_pq = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
-    ce_qp = -T.sum((q_sm * T.log(p_sm)), axis=1, keepdims=True)
-    ce_sym = (ce_pq + ce_qp) / 2.0
-    return ce_sym
 
 ################################################################################
 # HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
@@ -136,6 +118,10 @@ class HiddenLayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
+            #W_init = np.asarray(rng.uniform(
+            #          low=-4 * np.sqrt(6. / (n_in + n_out)),
+            #          high=4 * np.sqrt(6. / (n_in + n_out)),
+            #          size=(n_in, n_out)), dtype=theano.config.floatX)
             W_init = np.asarray(0.01 * rng.standard_normal( \
                       size=(n_in, n_out)), dtype=theano.config.floatX)
             W = theano.shared(value=W_init, name='W')
@@ -152,13 +138,12 @@ class HiddenLayer(object):
             self.linear_output = T.dot(self.input, self.W) + self.b
         else:
             self.linear_output = T.dot(self.input, self.W)
-
         # Get a "fuzzy" version of the linear output, with the degree of fuzz
         # determined by self.noise_std. For values of self.noise_std > 0, this
         # may be a useful regularizer during learning. But, self.noise_std
         # should probably be set to 0 at validation/test time.
         self.noisy_linear = self.linear_output  + \
-                (self.noise_std * self.srng.normal(size=self.linear_output.shape, \
+                ((1.0 * self.noise_std) * self.srng.normal(size=self.linear_output.shape, \
                 dtype=theano.config.floatX))
 
         # Apply some non-linearity to compute "activation" for this layer
@@ -166,7 +151,9 @@ class HiddenLayer(object):
             self.output = T.sqrt( \
                     T.dot(self.input**2., abs(self.W)) + self.b)
         else:
-            self.output = self.activation(self.noisy_linear)
+            self.output = self.activation(self.noisy_linear) #+ \
+                    #((0.5 * self.noise_std) * self.srng.normal(size=self.noisy_linear.shape, \
+                    #dtype=theano.config.floatX))
 
         # Compute some sums of the activations, for regularizing
         self.act_l2_sum = T.sum(self.output**2.) / self.output.size
@@ -288,11 +275,11 @@ class MPLayer(object):
 # NETWORK IMPLEMENTATION #
 ##########################
 
-class SS_PEV_NET(object):
+class SS_DEV_NET(object):
     """A multipurpose layer-based feedforward net.
 
     This class is capable of standard backprop training, training with
-    dropout, and training with Pseudo-Ensemble Variance regularization.
+    dropout, and training with Dropout Ensemble Variance regularization.
     """
     def __init__(self,
             rng,
@@ -313,13 +300,16 @@ class SS_PEV_NET(object):
         ################################################
         layer_sizes = params['layer_sizes']
         lam_l2a = theano.shared(value=np.asarray(params['lam_l2a'], \
-                dtype=theano.config.floatX), name='lam_l2a')
+                dtype=theano.config.floatX), name='dev_mix_rate')
         use_bias = params['use_bias']
         self.is_semisupervised = 0
         # DEV-related parameters are as follows:
         #   dev_types: the transform to apply to the activations of each layer
         #              prior to computing dropout ensemble variance
         #   dev_lams: the weight for each layer's DEV regulariation
+        #   dev_mix_rate: the mixing ratio between the raw net output and the
+        #                 droppy net output for computing classification loss
+        #                 when training with DEV regularization.
         self.dev_types = params['dev_types']
         dev_lams = np.asarray(params['dev_lams'], dtype=theano.config.floatX)
         self.dev_lams_sum = np.sum(dev_lams)
@@ -339,8 +329,9 @@ class SS_PEV_NET(object):
         # Initialize "next inputs", to be piped into new layers
         self.input = input
         next_raw_input = self.input
-        next_dev_input = self.input
-        # Construct one drop-free MLP and two droppy child networks
+        next_drop_input = self.input
+        # Iteratively append layers to the RAW net and each of some number
+        # of droppy DEV clones.
         layer_num = 0
         for n_in, n_out in layer_connect_dims:
             last_layer = (layer_num == (len(layer_connect_dims)-1))
@@ -353,15 +344,15 @@ class SS_PEV_NET(object):
                     drop_rate=0., pool_size=4, \
                     n_in=n_in, n_out=n_out, use_bias=use_bias))
             next_raw_input = self.mlp_layers[-1].output
-            # Add a new layer to each perturbed model
+            # Add a new layer to the dropout model
             self.dev_layers.append(HiddenLayer(rng=rng, \
-                    input=next_dev_input, \
+                    input=next_drop_input, \
                     activation=activation, \
                     drop_rate=drop_prob, pool_size=4, \
                     n_in=n_in, n_out=n_out, use_bias=use_bias, \
                     W=self.mlp_layers[-1].W, \
                     b=self.mlp_layers[-1].b))
-            next_dev_input = self.dev_layers[-1].output
+            next_drop_input = self.dev_layers[-1].output
             # Set the parameters of these layers to be clipped
             self.clip_params[self.mlp_layers[-1].W] = 1
             self.clip_params[self.mlp_layers[-1].b] = 0
@@ -375,7 +366,7 @@ class SS_PEV_NET(object):
         # Build loss functions for denoising autoencoder training. This sets
         # up a cost function for training each layer in this net as a DAE with
         # inputs determined by the output of the preceeding layer.
-        self._construct_dae_layers(rng, lam_l1=0.2, nz_lvl=0.3)
+        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.3)
 
         # Build layers and functions for computing finite-differences-based
         # regularization of functional curvature.
@@ -386,23 +377,22 @@ class SS_PEV_NET(object):
         self.raw_out_func = MCL2HingeSS(self.mlp_layers[-1])
         self.raw_class_loss = self.raw_out_func.loss_func
         self.raw_reg_loss = lam_l2a * T.sum([lay.act_l2_sum for lay in self.mlp_layers])
+        self.dev_reg_loss = lambda y: self.dev_cost(y, joint_loss=0)
         self.class_errors = self.raw_out_func.errors
 
         # Use the negative log likelihood of the logistic regression layer of
         # the first DEV clone as dropout optimization objective.
-        self.dev_out_func = MCL2HingeSS(self.dev_layers[-1])
-        self.sde_class_loss = self.dev_out_func.loss_func
+        self.sde_out_func = MCL2HingeSS(self.dev_layers[-1])
+        self.sde_class_loss = self.sde_out_func.loss_func
         self.sde_reg_loss = lam_l2a * T.sum([lay.act_l2_sum for lay in self.dev_layers])
         self.sde_cost = lambda y: (self.sde_class_loss(y) + self.sde_reg_loss)
-        self.ss_dev_class_loss = lambda y: self.sde_class_loss(y)
-        self.dev_reg_loss = lambda y: self.dev_cost(y, joint_loss=0)
 
     def dev_cost(self, y, joint_loss=1):
         """Wrapper for optimization with Theano."""
+        dmr = self.dev_mix_rate
         if (self.dev_lams_sum > 1e-5):
             # Use a DEV-regularized cost if some DEV lams are > 0
-            class_loss = (self.dev_mix_rate * self.raw_class_loss(y)) + \
-                    ((1.0 - self.dev_mix_rate) * self.sde_class_loss(y))
+            class_loss = (dmr * self.raw_class_loss(y)) + ((1-dmr) * self.sde_class_loss(y))
             dev_losses = []
             for i in range(self.layer_count):
                 if (i < (self.layer_count - 1)):
@@ -416,7 +406,7 @@ class SS_PEV_NET(object):
                 dev_type = self.dev_types[i]
                 dev_loss = self.dev_lams[i] * self._dev_loss(x1, x2, y, dev_type)
                 dev_losses.append(dev_loss)
-            reg_loss = T.sum(dev_losses) + self.sde_reg_loss
+            reg_loss = T.sum(dev_losses) + (0.5 * (self.raw_reg_loss + self.sde_reg_loss))
         else:
             # Otherwise, use a standard feedforward MLP loss
             class_loss = self.raw_out_func.loss_func(y)
@@ -430,7 +420,7 @@ class SS_PEV_NET(object):
         return L
 
     def _dev_loss(self, X1, X2, Y, dev_type):
-        """Compute the Pseudo-Ensemble Variance regularizer.
+        """Compute the Dropout Ensemble Variance regularizer.
 
         Regularization is applied to the transformed activities of each
         layer in the network, with the preceeding layers' activities subject
@@ -452,8 +442,8 @@ class SS_PEV_NET(object):
         sigm_fun = lambda x1, x2: var_fun(T.nnet.sigmoid(x1), T.nnet.sigmoid(x2))
         bent_fun = lambda p, q: T.sum(ss_mask * T.nnet.binary_crossentropy( \
                 T.nnet.sigmoid(xo), T.nnet.sigmoid(xt))) / T.sum(ss_mask)
-        ment_fun = lambda p, q: T.sum(ss_mask * smooth_xent_sym(p, q)) / T.sum(ss_mask)
-        kl_fun = lambda p, q: T.sum(ss_mask * smooth_kld_sym(p, q)) / T.sum(ss_mask)
+        ment_fun = lambda p, q: T.sum(ss_mask * smooth_cross_entropy(p, q)) / T.sum(ss_mask)
+        kl_fun = lambda p, q: T.sum(ss_mask * smooth_kl_divergence(p, q)) / T.sum(ss_mask)
         if (dev_type == 1):
             # Unit-normalized variance (like fake cosine distance)
             dev_fun = norm_fun
@@ -662,10 +652,8 @@ class DAELayer(object):
 
     def _compute_hidden_acts(self, X, W, b):
         """Compute activations at hidden layer."""
-        A_p = T.dot(X, W) + b
-        A_h = A_p + self.srng.normal(size=A_p.shape, std=0.03, dtype=theano.config.floatX)
-        A_n = self.activation(A_h) + self.srng.normal(size=A_p.shape, std=0.02, dtype=theano.config.floatX)
-        return A_n
+        A_h = self.activation(T.dot(X, W) + b)
+        return A_h
 
     def _compute_activations(self, X, W, b_h, b_v):
         """Compute activations of decoder (at visible layer)."""
@@ -686,7 +674,6 @@ class DAELayer(object):
         # Cast mask from int to float32, to keep things on GPU
         noisy_input = input * noise_mask
         return [noisy_input, noise_mask]
-
 
 ##############
 # EYE BUFFER #
