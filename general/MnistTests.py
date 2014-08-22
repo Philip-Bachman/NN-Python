@@ -154,7 +154,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     mlp_params['dev_clones'] = 1
     mlp_params['dev_types'] = [1, 1, 5]
     mlp_params['dev_lams'] = [0.1, 0.1, 0.2]
-    mlp_params['dev_mix_rate'] = 0.1
+    mlp_params['dev_mix_rate'] = 0.5
     mlp_params['lam_l2a'] = 1e-2
     mlp_params['use_bias'] = 1
 
@@ -172,10 +172,10 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         # Run test with DEV regularization on unsupervised examples
         sgd_params['result_tag'] = "ss_dev_gentle_s{0:d}_t{1:d}".format(su_count,test_num)
         sgd_params['mlp_type'] = 'dev'
-        sgd_params['start_rate'] = 0.02
+        sgd_params['start_rate'] = 0.01
         # Train with weak DEV regularization
         sgd_params['epochs'] = 5
-        NET.set_dev_lams([0.01, 0.01, 0.0])
+        NET.set_dev_lams([0.0, 0.0, 0.0])
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
         # Train with more DEV regularization
@@ -184,8 +184,13 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
         # Train with more DEV regularization
-        sgd_params['epochs'] = 15
-        NET.set_dev_lams([0.05, 0.05, 0.08])
+        sgd_params['epochs'] = 10
+        NET.set_dev_lams([0.04, 0.04, 0.04])
+        rng = np.random.RandomState(rng_seed)
+        train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
+        # Train with more DEV regularization
+        sgd_params['epochs'] = 10
+        NET.set_dev_lams([0.06, 0.06, 0.06])
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, mlp_params, sgd_params, rng, su_count)
         # Train with most DEV regularization
@@ -317,14 +322,14 @@ if __name__ == '__main__':
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
     #batch_test_ss_mlp(test_count=10, su_count=100)
-    batch_test_ss_mlp(test_count=10, su_count=600)
+    #batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
     #batch_test_ss_mlp(test_count=10, su_count=3000)
     #batch_test_ss_mlp_gentle(test_count=20, su_count=100)
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining
-    #batch_test_ss_mlp_pt(test_count=30, su_count=100)
+    batch_test_ss_mlp_pt(test_count=30, su_count=100)
     #batch_test_ss_mlp_pt(test_count=10, su_count=600)
     #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
     #batch_test_ss_mlp_pt(test_count=10, su_count=3000)
