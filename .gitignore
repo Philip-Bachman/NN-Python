@@ -12,8 +12,10 @@
 .DS_STORE
 .DS_Store
 *.lprof
-/general/data/*
-/general/test_results/*
+/basic_sear/data/*
+/basic_sear/test_results/*
+/generalized_ear/data/*
+/generalized_ear/test_results/*
 /autodisc/data/*
 /nlp/trees/*
 /nlp/training_text/*
