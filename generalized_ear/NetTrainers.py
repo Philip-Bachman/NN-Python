@@ -172,7 +172,7 @@ def train_mlp(
 
     results_file = open(txt_file_name, 'wb')
     results_file.write("ensemble description: ")
-    results_file.write("  **TODO: Write code for this.**")
+    results_file.write("  **TODO: Write code for this.**\n")
     results_file.flush()
 
     e_time = time.clock()
@@ -218,7 +218,6 @@ def train_mlp(
         # Compute 'averaged' values over the minibatches
         test_error = 100 * (float(test_metrics[0]) / te_samples)
         test_loss = float(test_metrics[1]) / te_batches
-        test_loss = test_metrics[1]
         if (validation_error < min_validation_error):
             min_validation_error = validation_error
             min_test_error = test_error
@@ -229,7 +228,7 @@ def train_mlp(
         results_file.flush()
 
         # report and save progress.
-        print "epoch {0:d}: t_cost={1:.2f}, t_loss={2:.4f}, t_ear={3:.4f}, valid={4:.2f}{6}".format( \
+        print "epoch {0:d}: t_cost={1:.2f}, t_loss={2:.4f}, t_ear={3:.4f}, valid={4:.2f}{5}".format( \
                 epoch_counter, train_metrics[0], train_metrics[1], train_metrics[2], \
                 validation_error, tag)
         print "--time: {0:.4f}".format((time.clock() - e_time))
@@ -366,7 +365,7 @@ def train_ss_mlp(
 
     # use a "smoothed" learning rate, to ease into optimization
     gentle_rate = ifelse(epoch < 5,
-            ((epoch / 5.)**2.) * learning_rate,
+            ((epoch / 5.) * learning_rate),
             learning_rate)
 
     # update the step direction using a momentus update
@@ -417,7 +416,7 @@ def train_ss_mlp(
 
     results_file = open(txt_file_name, 'wb')
     results_file.write("ensemble description: ")
-    results_file.write("  **TODO: Write code for this.**")
+    results_file.write("  **TODO: Write code for this.**\n")
     results_file.flush()
 
     e_time = time.clock()
@@ -467,7 +466,6 @@ def train_ss_mlp(
         # Compute 'averaged' values over the minibatches
         test_error = 100 * (float(test_metrics[0]) / te_samples)
         test_loss = float(test_metrics[1]) / te_batches
-        test_loss = test_metrics[1]
         if (validation_error < min_validation_error):
             min_validation_error = validation_error
             min_test_error = test_error
@@ -590,7 +588,7 @@ def train_dae(
 
     # Use a "smoothed" learning rate, to ease into optimization
     gentle_rate = ifelse(epoch < 20,
-        ((epoch / 20.)**1.) * learning_rate,
+        ((epoch / 20.) * learning_rate),
         learning_rate)
 
     # Update the step direction using a momentus update
@@ -639,7 +637,7 @@ def train_dae(
 
     results_file = open(txt_file_name, 'wb')
     results_file.write("ensemble description: ")
-    results_file.write("  **TODO: Write code for this.**")
+    results_file.write("  **TODO: Write code for this.**\n")
     results_file.flush()
 
     train_metrics = train_NET(1, 0)

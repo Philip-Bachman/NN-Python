@@ -95,7 +95,7 @@ class HiddenLayer(object):
                  activation=None, pool_size=4, \
                  drop_rate=0., input_noise=0., preact_noise=0., \
                  W=None, b=None, \
-                 use_bias=True):
+                 use_bias=True, name=""):
 
         # Setup a shared random generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
@@ -139,10 +139,10 @@ class HiddenLayer(object):
         if W is None:
             W_init = np.asarray(0.01 * rng.standard_normal( \
                       size=(n_in, n_out)), dtype=theano.config.floatX)
-            W = theano.shared(value=W_init, name='W')
+            W = theano.shared(value=W_init, name="{0:s}_W".format(name))
         if b is None:
             b_init = np.zeros((n_out,), dtype=theano.config.floatX)
-            b = theano.shared(value=b_init, name='b')
+            b = theano.shared(value=b_init, name="{0:s}_b".format(name))
 
         # Set layer weights and biases
         self.W = W
@@ -189,6 +189,7 @@ class HiddenLayer(object):
 
 class JoinLayer(object):
     def __init__(self, input_layers):
+        print("making join layer over {0:d} layers...".format(len(input_layers)))
         il_los = [il.linear_output for il in input_layers]
         self.linear_output = T.mean(T.stack(*il_los), axis=0)
         return
@@ -225,17 +226,22 @@ class EAR_NET(object):
                 dtype=theano.config.floatX), name='ear_lam')
         self.spawn_weights = theano.shared(value=np.asarray(params['spawn_weights'], \
                 dtype=theano.config.floatX), name='spawn_weights')
+        # Compute some "structural" properties of this ensemble
+        self.max_proto_depth = max([len(pc) for pc in self.proto_configs])
+        self.spawn_count = len(self.spawn_configs)
+        self.ear_pairs = self.spawn_count * (self.spawn_count - 1)
         # Make a dict to tell which parameters are norm-boundable
         self.clip_params = {}
         # Initialize all of the proto-networks
         self.proto_nets = []
         self.input = input
         # Construct the proto-networks from which to generate spawn-sembles
-        for proto_config in self.proto_configs:
+        for (pn_num, proto_config) in enumerate(self.proto_configs):
             layer_sizes = [ls for ls in proto_config]
             layer_connect_dims = zip(layer_sizes, layer_sizes[1:])
             layer_num = 0
             proto_net = []
+            pn_name = "pn{0:d}".format(pn_num)
             next_input = self.input
             for n_in, n_out in layer_connect_dims:
                 last_layer = (layer_num == (len(layer_connect_dims) - 1))
@@ -247,7 +253,7 @@ class EAR_NET(object):
                         activation=activation, \
                         pool_size=4, \
                         drop_rate=0., input_noise=0., preact_noise=0., \
-                        n_in=n_in, n_out=n_out, use_bias=use_bias))
+                        n_in=n_in, n_out=n_out, use_bias=use_bias, name=pn_name))
                 next_input = proto_net[-1].output
                 # Set the non-bias parameters of this layer to be clipped
                 self.clip_params[proto_net[-1].W] = 1
@@ -264,6 +270,7 @@ class EAR_NET(object):
         self.spawn_nets = []
         for spawn_config in self.spawn_configs:
             proto_key = spawn_config['proto_key']
+            print("spawned from proto-net: {0:d} (of {1:d})".format(proto_key, len(self.proto_nets)))
             input_noise = spawn_config['input_noise']
             preact_noise = spawn_config['preact_noise']
             do_dropout = spawn_config['do_dropout']
@@ -308,7 +315,7 @@ class EAR_NET(object):
         # a cost function for each possible layer, as determined by the maximum
         # number of layers in any proto-network. The DAE cost for layer i will
         # be the mean DAE cost over all i'th layers in any proto-network.
-        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.3)
+        self._construct_dae_layers(rng, lam_l1=0.15, nz_lvl=0.30)
 
         # Use a combination of some classification loss, at the output layer of
         # each spawn network, and some regularization terms as an objective
@@ -330,10 +337,14 @@ class EAR_NET(object):
     def ear_cost(self, y):
         """Compute the cost of ensemble agreement regularization."""
         ear_losses = []
-        x1 = self.spawn_nets[0][-1].linear_output
-        x2 = self.spawn_nets[1][-1].linear_output
-        ear_loss = self.ear_lam[0] * self._ear_loss(x1, x2, y, self.ear_type)
-        ear_losses.append(ear_loss)
+        for i in range(self.spawn_count):
+            for j in range(self.spawn_count):
+                if not (i == j):
+                    x1 = self.spawn_nets[i][-1].linear_output
+                    x2 = self.spawn_nets[j][-1].linear_output
+                    ear_loss = self.ear_lam[0] * self._ear_loss(x1, x2, y, self.ear_type)
+                    ear_losses.append(ear_loss)
+        total_loss = T.sum(ear_losses) / self.ear_pairs
         return ear_loss
 
     def _ear_loss(self, X1, X2, Y, ear_type):
@@ -377,29 +388,39 @@ class EAR_NET(object):
         return ear_fun(X1, X2)
 
     def _construct_dae_layers(self, rng, lam_l1=0., nz_lvl=0.25):
-        """Build cost functions for training DAEs defined for all layers of
-        the proto-networks making up this gneeralized ensemble."""
+        """Build cost functions for training DAEs defined for all hidden
+        layers of the proto-networks making up this generalized ensemble. That
+        is, construct a DAE for every proto-layer that isn't a classification
+        layer."""
         # Construct a DAE for each hidden layer in this network.
-        self.dae_layers = []
         self.dae_params = []
         self.dae_costs = []
-        proto_net = self.proto_nets[0]
-        for i in range(len(proto_net)-1):
-            W_mlp = proto_net[i].W
-            b_mlp = proto_net[i].b
-            input_mlp = proto_net[i].input
-            vis_dim = proto_net[i].in_dim
-            hid_dim = proto_net[i].out_dim
-            # Construct the DAE layer object
-            dae_layer = DAELayer(rng=rng, \
-                    input=input_mlp, \
-                    n_in=vis_dim, n_out=hid_dim, \
-                    activation=self.act_fun, \
-                    input_noise=nz_lvl, \
-                    W=W_mlp, b_h=b_mlp, b_v=None)
-            self.dae_layers.append(dae_layer)
-            self.dae_params.append(dae_layer.params)
-            self.dae_costs.append(dae_layer.compute_costs(lam_l1))
+        for d in range(self.max_proto_depth - 2):
+            d_params = []
+            d_costs = []
+            for pn in self.proto_nets:
+                if (d < (len(pn) - 1)):
+                    # Construct a DAE for this proto-net hidden layer
+                    W_pn = pn[d].W
+                    b_pn = pn[d].b
+                    input_pn = pn[d].input
+                    vis_dim = pn[d].in_dim
+                    hid_dim = pn[d].out_dim
+                    # Construct the DAE layer object
+                    dae_layer = DAELayer(rng=rng, \
+                            input=input_pn, \
+                            n_in=vis_dim, n_out=hid_dim, \
+                            activation=self.act_fun, \
+                            input_noise=nz_lvl, \
+                            W=W_pn, b_h=b_pn, b_v=None)
+                    d_params.extend(dae_layer.params)
+                    d_costs.append(dae_layer.compute_costs(lam_l1))
+            # Record the set of all DAE params to-be-optimized at depth d
+            self.dae_params.append(d_params)
+            # Record the sum of reconstruction costs for DAEs at depth d (in
+            # self.dae_costs[d][0]) and the sum of sparse regularization costs
+            # for DAEs at depth d (in self.dae_costs[d][1]).
+            self.dae_costs.append([T.sum([c[0] for c in d_costs]), T.sum([c[1] for c in d_costs])])
         return
 
     def set_ear_lam(self, e_lam):
@@ -475,9 +496,8 @@ class DAELayer(object):
 
     def _noisy_W(self, W, noise_lvl=0.):
         """Noise weights, like blurring the energy surface."""
-        #W_nz = W + self.srng.normal(size=W.shape, avg=0., std=noise_lvl, \
-        #        dtype=theano.config.floatX)
-        W_nz = W
+        W_nz = W + self.srng.normal(size=W.shape, avg=0., std=noise_lvl, \
+                dtype=theano.config.floatX)
         return W_nz
 
     def _get_noisy_input(self, input, p):

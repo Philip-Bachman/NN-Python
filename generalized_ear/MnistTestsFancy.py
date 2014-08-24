@@ -79,20 +79,25 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     sgd_params['start_rate'] = 0.1
     sgd_params['decay_rate'] = 0.998
     sgd_params['wt_norm_bound'] = 3.5
-    sgd_params['epochs'] = 1000
+    sgd_params['epochs'] = 600
     sgd_params['batch_size'] = 128
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
     pc0 = [28*28, 500, 500, 11]
-    mlp_params['proto_configs'] = [pc0]
+    pc1 = [28*28, 500, 500, 11]
+    pc2 = [28*28, 500, 500, 11]
+    mlp_params['proto_configs'] = [pc0, pc1, pc2]
     # Set up some spawn networks
-    #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': False}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': True}
-    mlp_params['spawn_configs'] = [sc0, sc1]
-    mlp_params['spawn_weights'] = [0.5, 0.5]
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.0, 'do_dropout': False}
+    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
+    sc2 = {'proto_key': 1, 'input_noise': 0.1, 'preact_noise': 0.0, 'do_dropout': False}
+    sc3 = {'proto_key': 1, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
+    sc4 = {'proto_key': 2, 'input_noise': 0.1, 'preact_noise': 0.0, 'do_dropout': False}
+    sc5 = {'proto_key': 2, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
+    mlp_params['spawn_configs'] = [sc0, sc1, sc2, sc3, sc4, sc5]
+    mlp_params['spawn_weights'] = [(1.0 / len(mlp_params['spawn_configs'])) \
+            for sc in mlp_params['spawn_configs']]
     # Set remaining params
     mlp_params['ear_type'] = 2
     mlp_params['ear_lam'] = 2.0
@@ -105,7 +110,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     # Run tests with different sorts of regularization
     for test_num in range(test_count):
         # Run test with EAR regularization on unsupervised examples
-        sgd_params['result_tag'] = "ss_ear_s{0:d}_t{1:d}".format(su_count, test_num)
+        sgd_params['result_tag'] = "ss_gear_s{0:d}_t{1:d}".format(su_count, test_num)
         mlp_params['ear_type'] = 2
         mlp_params['ear_lam'] = 2.0
         # Initialize a random number generator for this test
@@ -146,7 +151,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
 
     for test_num in range(test_count):
         rng_seed = test_num
-        sgd_params['result_tag'] = "ss_ear_gentle_s{0:d}_t{1:d}".format(su_count, test_num)
+        sgd_params['result_tag'] = "ss_gear_gentle_s{0:d}_t{1:d}".format(su_count, test_num)
 
         # Initialize a random number generator for this test
         rng = np.random.RandomState(rng_seed)
@@ -206,10 +211,8 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.0, 'do_dropout': False}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.0, 'do_dropout': False}
+    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
@@ -233,7 +236,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         ##########################################
         # First, pretrain each layer in the mlp. #
         ##########################################
-        sgd_params['result_tag'] = "ss_ear_pt_s{0:d}_t{1:d}".format(su_count,test_num)
+        sgd_params['result_tag'] = "ss_gear_pt_s{0:d}_t{1:d}".format(su_count,test_num)
         sgd_params['batch_size'] = 25
         sgd_params['start_rate'] = 0.01
         sgd_params['epochs'] = 40
@@ -248,7 +251,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['start_rate'] = 0.02
         # Train with weak EAR regularization
         sgd_params['top_only'] = True
-        sgd_params['epochs'] = 10
+        sgd_params['epochs'] = 5
         NET.set_ear_lam(0.01)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
@@ -256,11 +259,6 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 10
         NET.set_ear_lam(0.02)
-        rng = np.random.RandomState(rng_seed)
-        train_ss_mlp(NET, sgd_params, rng, su_count)
-        # Train with more EAR regularization
-        sgd_params['epochs'] = 10
-        NET.set_ear_lam(0.04)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with more EAR regularization
@@ -324,14 +322,14 @@ if __name__ == '__main__':
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
     #batch_test_ss_mlp(test_count=10, su_count=100)
-    #batch_test_ss_mlp(test_count=10, su_count=600)
+    batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
     #batch_test_ss_mlp(test_count=10, su_count=3000)
     #batch_test_ss_mlp_gentle(test_count=20, su_count=100)
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining
-    batch_test_ss_mlp_pt(test_count=30, su_count=100)
+    #batch_test_ss_mlp_pt(test_count=30, su_count=100)
     #batch_test_ss_mlp_pt(test_count=10, su_count=600)
     #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
     #batch_test_ss_mlp_pt(test_count=10, su_count=3000)
