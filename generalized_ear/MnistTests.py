@@ -76,21 +76,21 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     """Run multiple semisupervised learning tests."""
     # Set some reasonable sgd parameters
     sgd_params = {}
-    sgd_params['start_rate'] = 0.1
+    sgd_params['start_rate'] = 0.066
     sgd_params['decay_rate'] = 0.998
     sgd_params['wt_norm_bound'] = 3.5
     sgd_params['epochs'] = 1000
-    sgd_params['batch_size'] = 128
+    sgd_params['batch_size'] = 100
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': False}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': True}
+    #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': False}
+    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
@@ -128,14 +128,15 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     sgd_params['epochs'] = 1000
     sgd_params['batch_size'] = 100
     sgd_params['result_tag'] = 'xxx'
+    sgd_params['top_only'] = False
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.1, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.1, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
@@ -160,8 +161,8 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         sgd_params['batch_size'] = 100
         sgd_params['start_rate'] = 0.02
         # Train with weak EAR regularization
-        sgd_params['top_only'] = True
-        sgd_params['epochs'] = 10
+        sgd_params['top_only'] = False
+        sgd_params['epochs'] = 5
         NET.set_ear_lam(0.00)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
@@ -173,16 +174,18 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with more EAR regularization
         sgd_params['top_only'] = False
-        sgd_params['epochs'] = 15
+        sgd_params['epochs'] = 10
         NET.set_ear_lam(0.04)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with more EAR regularization
-        sgd_params['epochs'] = 20
+        sgd_params['top_only'] = False
+        sgd_params['epochs'] = 10
         NET.set_ear_lam(0.08)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with most EAR regularization
+        sgd_params['top_only'] = False
         sgd_params['epochs'] = 50
         NET.set_ear_lam(0.20)
         rng = np.random.RandomState(rng_seed)
@@ -206,10 +209,10 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.0, 'do_dropout': False}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.05, 'do_dropout': True}
+    #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': False}
+    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
@@ -294,8 +297,8 @@ def test_dropout_ala_original():
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'preact_noise': 0.0, 'do_dropout': False}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'preact_noise': 0.0, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': False}
+    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
@@ -324,14 +327,14 @@ if __name__ == '__main__':
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
     #batch_test_ss_mlp(test_count=10, su_count=100)
-    #batch_test_ss_mlp(test_count=10, su_count=600)
+    batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
     #batch_test_ss_mlp(test_count=10, su_count=3000)
     #batch_test_ss_mlp_gentle(test_count=20, su_count=100)
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining
-    batch_test_ss_mlp_pt(test_count=30, su_count=100)
+    #batch_test_ss_mlp_pt(test_count=30, su_count=100)
     #batch_test_ss_mlp_pt(test_count=10, su_count=600)
     #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
     #batch_test_ss_mlp_pt(test_count=10, su_count=3000)
