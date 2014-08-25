@@ -100,7 +100,7 @@ if __name__=="__main__":
             for sc in mlp_params['spawn_configs']]
     # Set remaining params
     mlp_params['ear_type'] = 2
-    mlp_params['ear_lam'] = 2.0
+    mlp_params['ear_lam'] = 3.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 

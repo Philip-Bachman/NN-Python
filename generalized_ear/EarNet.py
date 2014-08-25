@@ -411,7 +411,7 @@ class EAR_NET(object):
                             self._ear_loss(x1, x2, y, self.ear_type)
                     ear_losses.append(ear_loss)
         total_loss = T.sum(ear_losses) / self.ear_pairs
-        return ear_loss
+        return total_loss
 
     def _ear_loss(self, X1, X2, Y, ear_type):
         """Compute Ensemble Agreement Regularization cost for outputs X1/X2.
