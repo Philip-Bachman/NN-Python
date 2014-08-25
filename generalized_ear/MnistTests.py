@@ -270,12 +270,12 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with more EAR regularization
         sgd_params['epochs'] = 10
-        NET.set_ear_lam(0.04)
+        NET.set_ear_lam(0.05)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with more EAR regularization
         sgd_params['epochs'] = 10
-        NET.set_ear_lam(0.08)
+        NET.set_ear_lam(0.10)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with most EAR regularization
@@ -334,14 +334,14 @@ if __name__ == '__main__':
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
     #batch_test_ss_mlp(test_count=10, su_count=100)
-    batch_test_ss_mlp(test_count=10, su_count=600)
+    #batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
     #batch_test_ss_mlp(test_count=10, su_count=3000)
     #batch_test_ss_mlp_gentle(test_count=20, su_count=100)
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining
-    #batch_test_ss_mlp_pt(test_count=30, su_count=100)
+    batch_test_ss_mlp_pt(test_count=30, su_count=100)
     #batch_test_ss_mlp_pt(test_count=10, su_count=600)
     #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
     #batch_test_ss_mlp_pt(test_count=10, su_count=3000)
