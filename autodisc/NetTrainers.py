@@ -8,42 +8,282 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.printing
-import numpy.random as npr
-import numpy as np
 
 import utils as utils
 
-def shuffle_rows(shitty_shared_var):
-    """Shuffle a matrix row-wise, which Theano seems to hate."""
-    np_var = shitty_shared_var.get_value(borrow=False)
+def shuffle_rows(theano_shared_var):
+    """Shuffle a matrix row-wise, but not in-place on GPU (unfortunately)."""
+    np_var = theano_shared_var.get_value(borrow=False)
     # Shuffle the np_var inplace, which is actually a very simple and somewhat
     # fundamental operation that Theano nonetheless discourages adamantly.
     npr.shuffle(np_var)
-    shitty_shared_var.set_value(np_var)
+    theano_shared_var.set_value(np_var)
     return
 
-def train_ad(
-    NET,
-    ad_layers,
-    mlp_params,
-    sgd_params,
-    datasets):
+def train_ss_mlp(
+        NET,
+        sgd_params,
+        datasets):
     """
-    Train some layer of NET as an autoencoder of its input source.
+    Train NET using a mix of labeled an unlabeled data.
 
-    Datasets should be a three-tuple, in which each item is a matrix of
-    observations. the first, second, and third matrices will be used for
-    training, validation, and testing, respectively.
+    Datasets should be a four-tuple, in which the first item is a matrix/vector
+    pair of inputs/labels for training, the second item is a matrix of
+    unlabeled inputs for training, the third item is a matrix/vector pair of
+    inputs/labels for validation, and the fourth is a matrix/vector pair of
+    inputs/labels for testing.
     """
     initial_learning_rate = sgd_params['start_rate']
     learning_rate_decay = sgd_params['decay_rate']
     n_epochs = sgd_params['epochs']
     batch_size = sgd_params['batch_size']
-    mlp_type = sgd_params['mlp_type']
     wt_norm_bound = sgd_params['wt_norm_bound']
     result_tag = sgd_params['result_tag']
-    txt_file_name = "results_ad_{0}.txt".format(result_tag)
-    img_file_name = "weights_ad_{0}.png".format(result_tag)
+    txt_file_name = "results_mlp_{0}.txt".format(result_tag)
+    img_file_name = "weights_mlp_{0}.png".format(result_tag)
+
+    # Get supervised and unsupervised portions of training data, and create
+    # arrays of start/end indices for easy minibatch slicing.
+    (Xtr_su, Ytr_su) = (datasets[0][0], T.cast(datasets[0][1], 'int32'))
+    (Xtr_un, Ytr_un) = (datasets[1][0], T.cast(datasets[1][1], 'int32'))
+    su_samples = Xtr_su.get_value(borrow=True).shape[0]
+    un_samples = Xtr_un.get_value(borrow=True).shape[0]
+    tr_batches = 250
+    su_bsize = batch_size / 2
+    un_bsize = batch_size - su_bsize
+    su_batches = int(np.ceil(float(su_samples) / su_bsize))
+    un_batches = int(np.ceil(float(un_samples) / un_bsize))
+    su_bidx = [[i*su_bsize, min(su_samples, (i+1)*su_bsize)] for i in range(su_batches)]
+    un_bidx = [[i*un_bsize, min(un_samples, (i+1)*un_bsize)] for i in range(un_batches)]
+    su_bidx = theano.shared(value=np.asarray(su_bidx, dtype=theano.config.floatX))
+    un_bidx = theano.shared(value=np.asarray(un_bidx, dtype=theano.config.floatX))
+    su_bidx = T.cast(su_bidx, 'int32')
+    un_bidx = T.cast(un_bidx, 'int32')
+    # get the validation and testing sets and create arrays of start/end
+    # indices for easy minibatch slicing
+    Xva, Yva = (datasets[2][0], T.cast(datasets[2][1], 'int32'))
+    Xte, Yte = (datasets[3][0], T.cast(datasets[3][1], 'int32'))
+    va_samples = Xva.get_value(borrow=True).shape[0]
+    te_samples = Xte.get_value(borrow=True).shape[0]
+    va_batches = int(np.ceil(va_samples / 100.))
+    te_batches = int(np.ceil(te_samples / 100.))
+    va_bidx = [[i*100, min(va_samples, (i+1)*100)] for i in range(va_batches)]
+    te_bidx = [[i*100, min(te_samples, (i+1)*100)] for i in range(te_batches)]
+    va_bidx = theano.shared(value=np.asarray(va_bidx, dtype=theano.config.floatX))
+    te_bidx = theano.shared(value=np.asarray(te_bidx, dtype=theano.config.floatX))
+    va_bidx = T.cast(va_bidx, 'int32')
+    te_bidx = T.cast(te_bidx, 'int32')
+
+    # Print some useful information about the dataset
+    print "dataset info:"
+    print "  supervised samples: {0:d}, unsupervised samples: {1:d}".format( \
+            su_samples, un_samples)
+    print "  samples/minibatch: {0:d}, minibatches/epoch: {1:d}".format( \
+            (su_bsize + un_bsize), tr_batches)
+    print "  validation samples: {0:d}, testing samples: {1:d}".format( \
+            va_samples, te_samples)
+
+    ######################
+    # build actual model #
+    ######################
+
+    print '... building the model'
+
+    # allocate symbolic variables for the data
+    index = T.lscalar()  # index to a [mini]batch
+    epoch = T.scalar()   # epoch counter
+    su_idx = T.lscalar() # symbolic batch index into supervised samples
+    un_idx = T.lscalar() # symbolic batch index into unsupervised samples
+    x = NET.input        # some observations have labels
+    y = T.ivector('y')   # the labels are presented as integer categories
+    learning_rate = theano.shared(np.asarray(initial_learning_rate, \
+        dtype=theano.config.floatX))
+
+    # build the expressions for the cost functions. if training without sde or
+    # dev regularization, the dev loss/cost will be used, but the weights for
+    # dev regularization on each layer will be set to 0 before training.
+    train_cost = NET.spawn_class_cost(y) + NET.spawn_reg_cost(y)
+    tr_outputs = [train_cost, NET.spawn_class_cost(y), NET.spawn_reg_cost(y)]
+    vt_outputs = [NET.proto_class_errors(y), NET.proto_class_loss(y)]
+
+    ############################################################################
+    # compile testing and validation models. these models are evaluated on     #
+    # batches of the same size as used in training. trying to jam a large      #
+    # validation or test set through the net may take too much memory.         #
+    ############################################################################
+    test_model = theano.function(inputs=[index], outputs=vt_outputs, \
+            givens={ \
+                x: Xte[te_bidx[index,0]:te_bidx[index,1],:], \
+                y: Yte[te_bidx[index,0]:te_bidx[index,1]]})
+
+    validate_model = theano.function(inputs=[index], outputs=vt_outputs, \
+            givens={ \
+                x: Xva[va_bidx[index,0]:va_bidx[index,1],:], \
+                y: Yva[va_bidx[index,0]:va_bidx[index,1]]})
+
+    ############################################################################
+    # prepare momentum and gradient variables, and construct the updates that  #
+    # theano will perform on the network parameters.                           #
+    ############################################################################
+    opt_params = NET.proto_params
+    if sgd_params.has_key('top_only'):
+        if sgd_params['top_only']:
+            opt_params = NET.class_params
+
+    NET_grads = []
+    for param in opt_params:
+        NET_grads.append(T.grad(train_cost, param))
+
+    NET_moms = []
+    for param in opt_params:
+        NET_moms.append(theano.shared(np.zeros( \
+                param.get_value(borrow=True).shape, dtype=theano.config.floatX)))
+
+    # compute momentum for the current epoch
+    mom = ifelse(epoch < 500,
+            0.5*(1. - epoch/500.) + 0.99*(epoch/500.),
+            0.99)
+
+    # use a "smoothed" learning rate, to ease into optimization
+    gentle_rate = ifelse(epoch < 5,
+            ((epoch / 5.) * learning_rate),
+            learning_rate)
+
+    # update the step direction using a momentus update
+    dev_updates = OrderedDict()
+    for i in range(len(opt_params)):
+        dev_updates[NET_moms[i]] = mom * NET_moms[i] + (1. - mom) * NET_grads[i]
+
+    # ... and take a step along that direction
+    for i in range(len(opt_params)):
+        param = opt_params[i]
+        dev_param = param - (gentle_rate * dev_updates[NET_moms[i]])
+        # clip the updated param to bound its norm (where applicable)
+        if (NET.clip_params.has_key(param) and \
+                (NET.clip_params[param] == 1)):
+            dev_norms = T.sum(dev_param**2, axis=1, keepdims=1)
+            dev_scale = T.clip(T.sqrt(wt_norm_bound / dev_norms), 0., 1.)
+            dev_updates[param] = dev_param * dev_scale
+        else:
+            dev_updates[param] = dev_param
+
+    # compile theano functions for training.  these return the training cost
+    # and update the model parameters.
+    train_dev = theano.function(inputs=[epoch, su_idx, un_idx], outputs=tr_outputs, \
+            updates=dev_updates, \
+            givens={ \
+                x: T.concatenate([Xtr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1],:], \
+                        Xtr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1],:]]),
+                y: T.concatenate([Ytr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1]], \
+                        Ytr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1]]])})
+
+    # theano function to decay the learning rate, this is separate from the
+    # training function because we only want to do this once each epoch instead
+    # of after each minibatch.
+    set_learning_rate = theano.function(inputs=[], outputs=learning_rate, \
+            updates={learning_rate: learning_rate * learning_rate_decay})
+
+    ###############
+    # train model #
+    ###############
+    print '... training'
+
+    validation_error = 100.
+    test_error = 100.
+    min_validation_error = 100.
+    min_test_error = 100.
+    epoch_counter = 0
+    start_time = time.clock()
+
+    results_file = open(txt_file_name, 'wb')
+    results_file.write("ensemble description: ")
+    results_file.write("  **TODO: Write code for this.**\n")
+    results_file.flush()
+
+    e_time = time.clock()
+    su_index = 0
+    un_index = 0
+    # get array of epoch metrics (on a single minibatch)
+    train_metrics = train_dev(0, 0, 0)
+    validation_metrics = validate_model(0)
+    test_metrics = test_model(0)
+    # compute metrics on testing set
+    while epoch_counter < n_epochs:
+        ######################################################
+        # process some number of minibatches for this epoch. #
+        ######################################################
+        epoch_counter = epoch_counter + 1
+        train_metrics = [0. for v in train_metrics]
+        for b_idx in xrange(tr_batches):
+            # compute update for some this minibatch
+            batch_metrics = train_dev(epoch_counter, su_index, un_index)
+            train_metrics = [(em + bm) for (em, bm) in zip(train_metrics, batch_metrics)]
+            su_index = (su_index + 1) if ((su_index + 1) < su_batches) else 0
+            un_index = (un_index + 1) if ((un_index + 1) < un_batches) else 0
+        # Compute 'averaged' values over the minibatches
+        train_metrics = [(float(v) / tr_batches) for v in train_metrics]
+        # update the learning rate
+        new_learning_rate = set_learning_rate()
+
+        ######################################################
+        # validation, testing, and general diagnostic stuff. #
+        ######################################################
+        # compute metrics on validation set
+        validation_metrics = [0. for v in validation_metrics]
+        for b_idx in xrange(va_batches):
+            batch_metrics = validate_model(b_idx)
+            validation_metrics = [(em + bm) for (em, bm) in zip(validation_metrics, batch_metrics)]
+        # Compute 'averaged' values over the minibatches
+        validation_error = 100 * (float(validation_metrics[0]) / va_samples)
+        validation_loss = float(validation_metrics[1]) / va_batches
+
+        # compute test error if new best validation error was found
+        tag = " "
+        # compute metrics on testing set
+        test_metrics = [0. for v in test_metrics]
+        for b_idx in xrange(te_batches):
+            batch_metrics = test_model(b_idx)
+            test_metrics = [(em + bm) for (em, bm) in zip(test_metrics, batch_metrics)]
+        # Compute 'averaged' values over the minibatches
+        test_error = 100 * (float(test_metrics[0]) / te_samples)
+        test_loss = float(test_metrics[1]) / te_batches
+        if (validation_error < min_validation_error):
+            min_validation_error = validation_error
+            min_test_error = test_error
+            tag = ", test={0:.2f}".format(test_error)
+        results_file.write("{0:.2f} {1:.2f} {2:.2f} {3:.4f} {4:.4f} {5:.4f}\n".format( \
+                train_metrics[2], validation_error, test_error, train_metrics[1], \
+                validation_loss, test_loss))
+        results_file.flush()
+
+        # report and save progress.
+        print "epoch {0:d}: t_cost={1:.2f}, t_loss={2:.4f}, t_ear={3:.4f}, valid={4:.2f}{5}".format( \
+                epoch_counter, train_metrics[0], train_metrics[1], train_metrics[2], \
+                validation_error, tag)
+        print "--time: {0:.4f}".format((time.clock() - e_time))
+        e_time = time.clock()
+        # save first layer weights to an image locally
+        utils.visualize(NET, 0, 0, img_file_name)
+
+    print("optimization complete. best validation error {0:.4f}, with test error {1:.4f}".format( \
+          (min_validation_error), (min_test_error)))
+
+def train_dex( \
+    NET=None, \
+    dex_layer=None, \
+    sgd_params=None, \
+    datasets=None):
+    """
+    Train this net like a deep unsupervised exemplar SVM.
+    """
+    initial_learning_rate = sgd_params['start_rate']
+    learning_rate_decay = sgd_params['decay_rate']
+    n_epochs = sgd_params['epochs']
+    batch_size = sgd_params['batch_size']
+    wt_norm_bound = sgd_params['wt_norm_bound']
+    result_tag = sgd_params['result_tag']
+    txt_file_name = "results_dex_{0}.txt".format(result_tag)
+    img_file_name = "weights_dex_{0}.png".format(result_tag)
 
     # Get the training data and create arrays of start/end indices for
     # easy minibatch slicing
@@ -88,17 +328,9 @@ def train_ad(
         dtype=theano.config.floatX))
 
     # Build the expressions for the cost functions.
-    sde_cost = sum([NET.ad_costs[adl][0] for adl in ad_layers]) + \
-               sum([NET.ad_costs[adl][1] for adl in range(ad_layers[-1]+1)])
-    raw_cost = sum([NET.ad_costs[adl][0] for adl in ad_layers]) + \
-               sum([NET.ad_costs[adl][1] for adl in range(ad_layers[-1]+1)])
-    NET_metrics = [raw_cost, NET.ad_costs[ad_layers[-1]][0], NET.ad_costs[ad_layers[-1]][1]]
-    opt_params = []
-    for adl in range(ad_layers[-1]+1):
-        if (adl in ad_layers):
-            opt_params.extend(NET.ad_params[adl])
-        else:
-            opt_params.extend(NET.mlp_layers[adl].params)
+    NET_cost = NET.dex_costs[dex_layer][0] + NET.dex_costs[dex_layer][1]
+    NET_metrics = [NET_cost, NET.dex_costs[dex_layer][0], NET.dex_costs[dex_layer][1]]
+    opt_params = NET.dex_params[dex_layer]
 
     ############################################################################
     # Compile testing and validation models. These models are evaluated on     #
@@ -117,18 +349,13 @@ def train_ad(
     # Prepare momentum and gradient variables, and construct the updates that  #
     # Theano will perform on the network parameters.                           #
     ############################################################################
-    sde_grads = []
-    raw_grads = []
+    NET_grads = []
     for param in opt_params:
-        sde_grads.append(T.grad(sde_cost, param))
-        raw_grads.append(T.grad(raw_cost, param))
+        NET_grads.append(T.grad(NET_cost, param))
 
-    sde_moms = []
-    raw_moms = []
+    NET_moms = []
     for param in opt_params:
-        sde_moms.append(theano.shared(np.zeros( \
-                param.get_value(borrow=True).shape, dtype=theano.config.floatX)))
-        raw_moms.append(theano.shared(np.zeros( \
+        NET_moms.append(theano.shared(np.zeros( \
                 param.get_value(borrow=True).shape, dtype=theano.config.floatX)))
 
     # Compute momentum for the current epoch
@@ -138,44 +365,33 @@ def train_ad(
 
     # Use a "smoothed" learning rate, to ease into optimization
     gentle_rate = ifelse(epoch < 20,
-        ((epoch / 20.)**1.) * learning_rate,
+        ((epoch / 20.) * learning_rate),
         learning_rate)
 
     # Update the step direction using a momentus update
-    sde_updates = OrderedDict()
-    raw_updates = OrderedDict()
+    NET_updates = OrderedDict()
     for i in range(len(opt_params)):
-        sde_updates[sde_moms[i]] = mom * sde_moms[i] + (1. - mom) * sde_grads[i]
-        raw_updates[raw_moms[i]] = mom * raw_moms[i] + (1. - mom) * raw_grads[i]
+        NET_updates[NET_moms[i]] = mom * NET_moms[i] + (1. - mom) * NET_grads[i]
 
     # ... and take a step along that direction
     for i in range(len(opt_params)):
         param = opt_params[i]
-        sde_param = param - (gentle_rate * sde_updates[sde_moms[i]])
-        raw_param = param - (gentle_rate * raw_updates[raw_moms[i]])
+        NET_param = param - (gentle_rate * NET_updates[NET_moms[i]])
         # Clip the updated param to bound its norm (where applicable)
         if (NET.clip_params.has_key(param) and \
                 (NET.clip_params[param] == 1)):
-            sde_norms = T.sum(sde_param**2, axis=1, keepdims=1)
-            sde_scale = T.clip(T.sqrt(wt_norm_bound / sde_norms), 0., 1.)
-            sde_updates[param] = sde_param * sde_scale
-            raw_norms = T.sum(raw_param**2, axis=1, keepdims=1)
-            raw_scale = T.clip(T.sqrt(wt_norm_bound / raw_norms), 0., 1.)
-            raw_updates[param] = raw_param * raw_scale
+            NET_norms = T.sum(NET_param**2, axis=1, keepdims=1)
+            NET_scale = T.clip(T.sqrt(wt_norm_bound / NET_norms), 0., 1.)
+            NET_updates[param] = NET_param * NET_scale
         else:
-            sde_updates[param] = sde_param
-            raw_updates[param] = raw_param
+            NET_updates[param] = NET_param
 
     # Compile theano functions for training.  These return the training cost
     # and update the model parameters.
-    train_sde = theano.function(inputs=[epoch, index], \
-        outputs=NET_metrics, \
-        updates=sde_updates, \
-        givens={ x: Xtr[tr_bidx[index,0]:tr_bidx[index,1],:] })
 
-    train_raw = theano.function(inputs=[epoch, index], \
+    train_NET = theano.function(inputs=[epoch, index], \
         outputs=NET_metrics, \
-        updates=raw_updates, \
+        updates=NET_updates, \
         givens={ x: Xtr[tr_bidx[index,0]:tr_bidx[index,1],:] })
 
     # Theano function to decay the learning rate, this is separate from the
@@ -197,33 +413,23 @@ def train_ad(
     start_time = time.clock()
 
     results_file = open(txt_file_name, 'wb')
-    results_file.write("mlp_type: {0}\n".format(mlp_type))
-    results_file.write("lam_l2a: {0:.4f}\n".format(mlp_params['lam_l2a']))
-    results_file.write("dev_types: {0}\n".format(str(mlp_params['dev_types'])))
-    results_file.write("dev_lams: {0}\n".format(str(mlp_params['dev_lams'])))
+    results_file.write("ensemble description: ")
+    results_file.write("  **TODO: Write code for this.**\n")
     results_file.flush()
 
-    rng = np.random.RandomState(123)
-    srng = theano.tensor.shared_randomstreams.RandomStreams(rng.randint(100000))
-    epoch_metrics = train_sde(1, 0)
+    train_metrics = train_NET(1, 0)
     while epoch_counter < n_epochs:
         ######################################################
         # Process some number of minibatches for this epoch. #
         ######################################################
         e_time = time.clock()
-        shuffle_rows(Xtr)
-        shuffle_rows(Xva)
-        shuffle_rows(Xte)
         epoch_counter = epoch_counter + 1
-        epoch_metrics = [0. for val in epoch_metrics]
+        train_metrics = [0. for val in train_metrics]
         for minibatch_index in xrange(tr_batches):
             # Compute update for some joint supervised/unsupervised minibatch
-            if ((mlp_type == 'sde') or (mlp_type == 'dev')):
-                batch_metrics = train_sde(epoch_counter, minibatch_index)
-            else:
-                batch_metrics = train_raw(epoch_counter, minibatch_index)
-            epoch_metrics = [(em + bm) for (em, bm) in zip(epoch_metrics, batch_metrics)]
-        epoch_metrics = [(val / tr_batches) for val in epoch_metrics]
+            batch_metrics = train_NET(epoch_counter, minibatch_index)
+            train_metrics = [(em + bm) for (em, bm) in zip(train_metrics, batch_metrics)]
+        train_metrics = [(val / tr_batches) for val in train_metrics]
 
         # Update the learning rate
         new_learning_rate = set_learning_rate()
@@ -250,10 +456,10 @@ def train_ad(
 
         # Report and save progress.
         print "epoch {0:d}: tr_loss={1:.4f}, tr_recon={2:.4f}, tr_sparse={3:.4f}, va_loss={4:.4f}{5}".format( \
-                epoch_counter, epoch_metrics[0], epoch_metrics[1], epoch_metrics[2], validation_loss, tag)
+                epoch_counter, train_metrics[0], train_metrics[1], train_metrics[2], validation_loss, tag)
         print "--time: {0:.4f}".format((time.clock() - e_time))
         # Save first layer weights to an image locally
-        utils.visualize(NET, 0, img_file_name)
+        utils.visualize(NET, 0, 0, img_file_name)
 
 
 

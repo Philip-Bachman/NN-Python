@@ -169,17 +169,17 @@ def plot_histograms(firings):
             ax.set_yticklabels([])
             plt.hist(firings[:,row*N+col],bins=50)
     plt.show()
+    return
 
-def visualize(MLP,layer_idx,file_name):
+def visualize(EN, proto_key, layer_num, file_name):
+    W = EN.proto_nets[proto_key][layer_num].W.get_value(borrow=True).T
+    size = int(np.sqrt(W.shape[1]))
+    # hist(W.flatten(),bins=50)
+    image = PIL.Image.fromarray(tile_raster_images(X=W, \
+            img_shape=(size, size), tile_shape=(10,W.shape[0]/10),tile_spacing=(1, 1)))
+    image.save(file_name)
+    return
 
-	W = MLP.layers[layer_idx].W.get_value(borrow=True).T
-
-	size = int(np.sqrt(W.shape[1]))
-
-	# hist(W.flatten(),bins=50)
-	image = PIL.Image.fromarray(tile_raster_images(X=W,
-		img_shape=(size, size), tile_shape=(10,W.shape[0]/10),tile_spacing=(1, 1)))
-	image.save(file_name)
 
 
 

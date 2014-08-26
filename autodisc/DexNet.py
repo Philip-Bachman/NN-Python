@@ -101,8 +101,6 @@ class HiddenLayer(object):
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
 
-        self.clean_input = input
-
         # Add gaussian noise to the input (if desired)
         if (input_noise > 1e-4):
             fuzzy_input = input + \
@@ -113,9 +111,9 @@ class HiddenLayer(object):
 
         # Apply masking noise to the input (if desired)
         if (drop_rate > 1e-4):
-            self.noisy_input = self._drop_from_input(fuzzy_input, drop_rate)
+            self.input = self._drop_from_input(fuzzy_input, drop_rate)
         else:
-            self.noisy_input = fuzzy_input
+            self.input = fuzzy_input
 
         # Apply noise in reverse order (i.e. masking -> fuzzing)
         COMMENT = """
@@ -127,11 +125,11 @@ class HiddenLayer(object):
 
         # Add gaussian noise to the masked input (if desired)
         if (input_noise > 1e-4):
-            self.noisy_input = droppy_input + \
+            self.input = droppy_input + \
                     (input_noise * self.srng.normal(size=input.shape, \
                     dtype=theano.config.floatX))
         else:
-            self.noisy_input = droppy_input
+            self.input = droppy_input
         """
 
         # Set some basic layer properties
@@ -154,9 +152,9 @@ class HiddenLayer(object):
 
         # Compute linear "pre-activation" for this layer
         if use_bias:
-            self.linear_output = T.dot(self.noisy_input, self.W) + self.b
+            self.linear_output = T.dot(self.input, self.W) + self.b
         else:
-            self.linear_output = T.dot(self.noisy_input, self.W)
+            self.linear_output = T.dot(self.input, self.W)
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output  + \
@@ -215,7 +213,7 @@ class JoinLayer(object):
 # NETWORK IMPLEMENTATION #
 ##########################
 
-class EAR_NET(object):
+class DEX_NET(object):
     """A multipurpose ensemble of noise-perturbed neural networks.
 
     Parameters:
@@ -319,10 +317,8 @@ class EAR_NET(object):
         # Initialize all of the spawned (i.e. noise-perturbed) networks #
         #################################################################
         self.spawn_nets = []
-        self.proto_keys = []
         for spawn_config in self.spawn_configs:
             proto_key = spawn_config['proto_key']
-            self.proto_keys.append(proto_key)
             print("spawned from proto-net: {0:d} (of {1:d})".format(proto_key, \
                     len(self.proto_nets)))
             input_noise = spawn_config['input_noise']
@@ -368,9 +364,9 @@ class EAR_NET(object):
 
         # Build loss functions for denoising autoencoder training. This sets up
         # a cost function for each possible layer, as determined by the maximum
-        # number of layers in any proto-network. The DAE cost for layer i will
-        # be the mean DAE cost over all i'th layers in the proto-networks.
-        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.30)
+        # number of layers in any proto-network. The DEX cost for layer i will
+        # be the mean DEX cost over all i'th layers in the proto-networks.
+        self._construct_dex_layers(rng, lam_l1=0.1, nz_lvl=0.25)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
@@ -461,46 +457,42 @@ class EAR_NET(object):
             ear_fun = var_fun
         return ear_fun(X1, X2)
 
-    def _construct_dae_layers(self, rng, lam_l1=0., nz_lvl=0.25):
-        """Build cost functions for training DAEs defined for all hidden
+    def _construct_dex_layers(self, rng, lam_l1=0., nz_lvl=0.25):
+        """Build cost functions for training DEXs defined for all hidden
         layers of the proto-networks making up this generalized ensemble. That
-        is, construct a DAE for every proto-layer that isn't a classification
+        is, construct a DEX for every proto-layer that isn't a classification
         layer."""
-        self.dae_params = []
-        self.dae_costs = []
+        self.dex_params = []
+        self.dex_costs = []
         # The number of hidden layers in each proto-network is depth-1, where
         # depth is the total number of layers in the network. This is because
         # we count the output layer along with the hidden layers.
         for d in range(self.max_proto_depth - 1):
             d_params = []
             d_costs = []
-            for pn_key in range(len(self.proto_nets)):
-                sn_key = self.proto_keys.index(pn_key)
-                sn = self.spawn_nets[sn_key]
-                if (d < (len(sn) - 1)):
-                    # Construct a DAE for this proto-net hidden layer
-                    W_sn = sn[d].W
-                    b_sn = sn[d].b
-                    ci_sn = sn[d].clean_input
-                    ni_sn = sn[d].noisy_input
-                    vis_dim = sn[d].in_dim
-                    hid_dim = sn[d].out_dim
-                    # Construct the DAE layer object
-                    dae_layer = DAELayer(rng=rng, \
-                            clean_input=ci_sn, \
-                            noisy_input=ni_sn, \
+            for pn in self.proto_nets:
+                if (d < (len(pn) - 1)):
+                    # Construct a DEX for this proto-net hidden layer
+                    W_pn = pn[d].W
+                    b_pn = pn[d].b
+                    input_pn = pn[d].input
+                    vis_dim = pn[d].in_dim
+                    hid_dim = pn[d].out_dim
+                    # Construct the DEX layer object
+                    dex_layer = DAELayer(rng=rng, \
+                            input=input_pn, \
                             n_in=vis_dim, n_out=hid_dim, \
                             activation=self.act_fun, \
                             input_noise=nz_lvl, \
-                            W=W_sn, b_h=b_sn, b_v=None)
-                    d_params.extend(dae_layer.params)
-                    d_costs.append(dae_layer.compute_costs(lam_l1))
-            # Record the set of all DAE params to-be-optimized at depth d
-            self.dae_params.append(d_params)
-            # Record the sum of reconstruction costs for DAEs at depth d (in
-            # self.dae_costs[d][0]) and the sum of sparse regularization costs
-            # for DAEs at depth d (in self.dae_costs[d][1]).
-            self.dae_costs.append([T.sum([c[0] for c in d_costs]), \
+                            W=W_pn, b_h=b_pn, b_v=None)
+                    d_params.extend(dex_layer.params)
+                    d_costs.append(dex_layer.compute_costs(lam_l1))
+            # Record the set of all DEX params to-be-optimized at depth d
+            self.dex_params.append(d_params)
+            # Record the sum of reconstruction costs for DEXs at depth d (in
+            # self.dex_costs[d][0]) and the sum of sparse regularization costs
+            # for DEXs at depth d (in self.dex_costs[d][1]).
+            self.dex_costs.append([T.sum([c[0] for c in d_costs]), \
                     T.sum([c[1] for c in d_costs])])
         return
 
@@ -514,11 +506,10 @@ class EAR_NET(object):
 # DENOISING AUTOENCODER IMPLEMENTATION... #
 ###########################################
 
-
 class DAELayer(object):
-    def __init__(self, rng, clean_input=None, noisy_input=None, \
-            n_in=0, n_out=0, activation=None, input_noise=0., \
-            W=None, b_h=None, b_v=None):
+    def __init__(self, rng, input, n_in, n_out, \
+                 activation=None, input_noise=0., \
+                 W=None, b_h=None, b_v=None):
 
         # Setup a shared random generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
@@ -526,10 +517,100 @@ class DAELayer(object):
 
         # Grab the layer input and perturb it with some sort of noise. This
         # is, afterall, a _denoising_ autoencoder...
-        self.clean_input = clean_input
-        self.noisy_input = noisy_input
-        #self.noisy_input, self.noise_mask = \
-        #        self._get_noisy_input(input, input_noise)
+        self.input = input
+        self.noisy_input, self.noise_mask = \
+                self._get_noisy_input(input, input_noise)
+
+        # Set some basic layer properties
+        self.activation = activation
+        self.in_dim = n_in
+        self.out_dim = n_out
+
+        # Get some random initial weights and biases, if not given
+        if W is None:
+            W_init = np.asarray(0.01 * rng.standard_normal( \
+                      size=(n_in, n_out)), dtype=theano.config.floatX)
+            W = theano.shared(value=W_init, name='W')
+        if b_h is None:
+            b_init = np.zeros((n_out,), dtype=theano.config.floatX)
+            b_h = theano.shared(value=b_init, name='b_h')
+        if b_v is None:
+            b_init = np.zeros((n_in,), dtype=theano.config.floatX)
+            b_v = theano.shared(value=b_init, name='b_v')
+
+        # Grab pointers to the now-initialized weights and biases
+        self.W = W
+        self.b_h = b_h
+        self.b_v = b_v
+
+        # Put the learnable/optimizable parameters into a list
+        self.params = [self.W, self.b_h, self.b_v]
+        # Layer construction complete...
+        return
+
+    def compute_costs(self, lam_l1=0.):
+        """Compute reconstruction and activation sparsity costs."""
+        # Get noise-perturbed encoder/decoder parameters
+        W_nz = self.W #self._noisy_params(self.W, 0.01)
+        b_nz = self._noisy_params(self.b_h, 0.1)
+        # Compute hidden and visible activations
+        A_v, A_h = self._compute_activations(self.noisy_input, \
+                W_nz, b_nz, self.b_v)
+        # Compute reconstruction error cost
+        recon_cost = T.sum((self.input - A_v)**2.0) / self.input.shape[0]
+        # Compute sparsity penalty
+        row_l1_sum = T.sum(abs(row_normalize(A_h))) / A_h.shape[0]
+        col_l1_sum = T.sum(abs(col_normalize(A_h))) / A_h.shape[1]
+        sparse_cost = lam_l1 * (row_l1_sum + col_l1_sum)
+        return [recon_cost, sparse_cost]
+
+    def _compute_hidden_acts(self, X, W, b_h):
+        """Compute activations of encoder (at hidden layer)."""
+        A_h = self.activation(T.dot(X, W) + b_h)
+        return A_h
+
+    def _compute_activations(self, X, W, b_h, b_v):
+        """Compute activations of decoder (at visible layer)."""
+        A_h = self._compute_hidden_acts(X, W, b_h)
+        A_v = T.dot(A_h, W.T) + b_v
+        return [A_v, A_h]
+
+    def _noisy_params(self, P, noise_lvl=0.):
+        """Noisy weights, like convolving energy surface with a gaussian."""
+        P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
+                dtype=theano.config.floatX)
+        return P_nz
+
+    def _get_noisy_input(self, input, p):
+        """p is the probability of dropping elements of input."""
+        # p=1-p because 1's indicate keep and p is prob of dropping
+        #noise_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
+        #        dtype=theano.config.floatX)
+        # Cast mask from int to float32, to keep things on GPU
+        #noisy_input = input * noise_mask
+        noise_mask = self.srng.normal(size=input.shape, avg=0.0, std=0.4, \
+            dtype=theano.config.floatX)
+        noisy_input = input + noise_mask
+        return [noisy_input, noise_mask]
+
+##########################
+# DEEP EXEMPLAR LAYER... #
+##########################
+
+class DEXLayer(object):
+    def __init__(self, rng, input, n_in, n_out, \
+                 activation=None, input_noise=0., \
+                 W=None, b_h=None, b_v=None):
+
+        # Setup a shared random generator for this layer
+        self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
+                rng.randint(100000))
+
+        # Grab the layer input and perturb it with some sort of noise. This
+        # is, afterall, a _denoising_ autoencoder...
+        self.input = input
+        self.noisy_input, self.noise_mask = \
+                self._get_noisy_input(input, input_noise)
 
         # Set some basic layer properties
         self.activation = activation
@@ -562,13 +643,12 @@ class DAELayer(object):
         """Compute reconstruction and activation sparsity costs."""
         # Get noise-perturbed encoder/decoder parameters
         W_nz = self._noisy_params(self.W, 0.01)
-        b_nz = self.b_h #self._noisy_params(self.b_h, 0.05)
+        b_nz = self._noisy_params(self.b_h, 0.05)
         # Compute hidden and visible activations
         A_v, A_h = self._compute_activations(self.noisy_input, \
                 W_nz, b_nz, self.b_v)
         # Compute reconstruction error cost
-        recon_cost = T.sum((self.clean_input - A_v)**2.0) / \
-                self.clean_input.shape[0]
+        recon_cost = T.sum((self.input - A_v)**2.0) / self.input.shape[0]
         # Compute sparsity penalty
         row_l1_sum = T.sum(abs(row_normalize(A_h))) / A_h.shape[0]
         col_l1_sum = T.sum(abs(col_normalize(A_h))) / A_h.shape[1]

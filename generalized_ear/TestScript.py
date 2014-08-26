@@ -89,12 +89,12 @@ if __name__=="__main__":
     pc2 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0, pc1, pc2]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': False}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
-    sc2 = {'proto_key': 1, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': False}
-    sc3 = {'proto_key': 1, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
-    sc4 = {'proto_key': 2, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': False}
-    sc5 = {'proto_key': 2, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
+    sc2 = {'proto_key': 1, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
+    sc3 = {'proto_key': 1, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
+    sc4 = {'proto_key': 2, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
+    sc5 = {'proto_key': 2, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1, sc2, sc3, sc4, sc5]
     mlp_params['spawn_weights'] = [(1.0 / len(mlp_params['spawn_configs'])) \
             for sc in mlp_params['spawn_configs']]
