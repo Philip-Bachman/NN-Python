@@ -78,9 +78,12 @@ def smooth_cross_entropy(p, q):
     encodings in terms of relative log-likelihoods into sum-to-one dists."""
     p_sm = smooth_softmax(p)
     q_sm = smooth_softmax(q)
+    ce_sm1 = T.nnet.categorical_crossentropy(p_sm, q_sm)
+    ce_sm2 = T.nnet.categorical_crossentropy(q_sm, p_sm)
+    ce_sm = (ce_sm1 + ce_sm2) / 2.0
     # This term is: entropy(p) + kl_divergence(p, q)
-    ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
-    return ce_sm
+    #ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
+    return ce_sm.reshape((ce_sm.size, 1))
 
 ################################################################################
 # HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
@@ -105,17 +108,17 @@ class HiddenLayer(object):
 
         # Add gaussian noise to the input (if desired)
         if (input_noise > 1e-4):
-            fuzzy_input = input + \
+            self.fuzzy_input = input + \
                     (input_noise * self.srng.normal(size=input.shape, \
                     dtype=theano.config.floatX))
         else:
-            fuzzy_input = input
+            self.fuzzy_input = input
 
         # Apply masking noise to the input (if desired)
         if (drop_rate > 1e-4):
-            self.noisy_input = self._drop_from_input(fuzzy_input, drop_rate)
+            self.noisy_input = self._drop_from_input(self.fuzzy_input, drop_rate)
         else:
-            self.noisy_input = fuzzy_input
+            self.noisy_input = self.fuzzy_input
 
         # Apply noise in reverse order (i.e. masking -> fuzzing)
         COMMENT = """
@@ -273,7 +276,8 @@ class EAR_NET(object):
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
         self.is_semisupervised = 0
-        self.ear_type = params['ear_type']
+        self.ear_type = theano.shared(value=np.asarray([params['ear_type']], \
+                dtype=np.uint8), name='ear_type')
         self.ear_lam = theano.shared(value=np.asarray([params['ear_lam']], \
                 dtype=theano.config.floatX), name='ear_lam')
         self.spawn_weights = theano.shared(\
@@ -370,7 +374,7 @@ class EAR_NET(object):
         # a cost function for each possible layer, as determined by the maximum
         # number of layers in any proto-network. The DAE cost for layer i will
         # be the mean DAE cost over all i'th layers in the proto-networks.
-        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.30)
+        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.3)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
@@ -412,8 +416,11 @@ class EAR_NET(object):
                     x1 = self.spawn_nets[i][-1].linear_output
                     x2 = self.spawn_nets[j][-1].linear_output
                     ear_loss = self.ear_lam[0] * \
-                            self._ear_loss(x1, x2, y, self.ear_type)
-                    ear_losses.append(ear_loss)
+                            self._ear_loss(x1, x2, y, self.ear_type[0])
+                    ent_loss = 0.1 * self.ear_lam[0] * \
+                            self._ent_loss(x1, y, ent_type=1)
+                    joint_loss = ear_loss + ent_loss
+                    ear_losses.append(joint_loss)
         total_loss = T.sum(ear_losses) / self.ear_pairs
         return total_loss
 
@@ -461,6 +468,24 @@ class EAR_NET(object):
             ear_fun = var_fun
         return ear_fun(X1, X2)
 
+    def _ent_loss(self, X, Y, ent_type=0):
+        """Compute the entropy regularizer. Either binary or multinomial."""
+        if not self.is_semisupervised:
+            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
+        else:
+            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
+        bent_fun = lambda x: T.sum((ss_mask * T.nnet.binary_crossentropy( \
+                T.nnet.sigmoid(x), T.nnet.sigmoid(x))) / T.sum(ss_mask))
+        ment_fun = lambda x: T.sum((ss_mask * smooth_cross_entropy( \
+                safe_softmax(x), safe_softmax(x))) / T.sum(ss_mask))
+        if (ent_type == 0):
+            # Binary cross-entropy
+            ent_fun = bent_fun
+        else:
+            # Multinomial cross-entropy
+            ent_fun = ment_fun
+        return ent_fun(X)
+
     def _construct_dae_layers(self, rng, lam_l1=0., nz_lvl=0.25):
         """Build cost functions for training DAEs defined for all hidden
         layers of the proto-networks making up this generalized ensemble. That
@@ -482,7 +507,7 @@ class EAR_NET(object):
                     W_sn = sn[d].W
                     b_sn = sn[d].b
                     ci_sn = sn[d].clean_input
-                    ni_sn = sn[d].noisy_input
+                    ni_sn = sn[d].fuzzy_input
                     vis_dim = sn[d].in_dim
                     hid_dim = sn[d].out_dim
                     # Construct the DAE layer object
@@ -509,6 +534,10 @@ class EAR_NET(object):
         self.ear_lam.set_value(np.asarray([e_lam], dtype=theano.config.floatX))
         return
 
+    def set_ear_type(self, e_type):
+        """Set the Ensemble Agreement Regularization weight."""
+        self.ear_type.set_value(np.asarray([e_type], dtype=np.uint8))
+        return
 
 ###########################################
 # DENOISING AUTOENCODER IMPLEMENTATION... #
@@ -527,9 +556,8 @@ class DAELayer(object):
         # Grab the layer input and perturb it with some sort of noise. This
         # is, afterall, a _denoising_ autoencoder...
         self.clean_input = clean_input
-        self.noisy_input = noisy_input
-        #self.noisy_input, self.noise_mask = \
-        #        self._get_noisy_input(input, input_noise)
+        self.noisy_input, self.noise_mask = \
+                self._get_noisy_input(noisy_input, input_noise)
 
         # Set some basic layer properties
         self.activation = activation

@@ -43,7 +43,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     """Run multiple semisupervised learning tests."""
     # Set some reasonable sgd parameters
     sgd_params = {}
-    sgd_params['start_rate'] = 0.05
+    sgd_params['start_rate'] = 0.1
     sgd_params['decay_rate'] = 0.998
     sgd_params['wt_norm_bound'] = 3.5
     sgd_params['epochs'] = 750
@@ -63,13 +63,13 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     sc4 = {'proto_key': 2, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
     sc5 = {'proto_key': 2, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1, sc2, sc3, sc4, sc5]
-    mlp_params['spawn_weights'] = [0.5 for sc in mlp_params['spawn_configs']]
+    mlp_params['spawn_weights'] = [(1.0 / len(mlp_params['spawn_configs'])) \
+            for sc in mlp_params['spawn_configs']]
     # Set remaining params
     mlp_params['ear_type'] = 2
-    mlp_params['ear_lam'] = 4.0
+    mlp_params['ear_lam'] = 3.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
-
     # Goofy symbolic sacrament to Theano
     x_in = T.matrix('x_in')
 
