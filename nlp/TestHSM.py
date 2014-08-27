@@ -42,6 +42,7 @@ class CAModel:
         self.drop_rate = 0.0
         self.fuzz_scale = 0.0
         # Create layers to use during training
+        self.tanh_layer = nlml.TanhLayer()
         self.word_layer = nlml.LUTLayer(max_wv_key, wv_dim)
         self.context_layer = nlml.CMLayer(max_key=max_cv_key, \
                                           source_dim=wv_dim, \
@@ -103,13 +104,15 @@ class CAModel:
         # Feedforward through the various layers of this model
         Xb = self.word_layer.feedforward(anc_keys)
         Xc = self.context_layer.feedforward(Xb, phrase_keys)
-        Xn = self.noise_layer.feedforward(Xc)
+        Xt = self.tanh_layer.feedforward(Xc)
+        Xn = self.noise_layer.feedforward(Xt)
 
         # Turn the corner with feedforward and backprop at class layer
         dLdXn, L = self.class_layer.ff_bp(Xn, param_1, param_2, do_grad=True)
 
         # Backprop through layers based on feedforward result
-        dLdXc = self.noise_layer.backprop(dLdXn)
+        dLdXt = self.noise_layer.backprop(dLdXn)
+        dLdXc = self.noise_layer.backprop(dLdXt)
         dLdXb = self.context_layer.backprop(dLdXc)
         self.word_layer.backprop(dLdXb)
 
@@ -283,7 +286,7 @@ if __name__=="__main__":
     # max_wv_key = max(dataset['words_to_keys'].values())
     # max_cv_key = 100
     sentences = cu.SentenceFileIterator('./training_text')
-    key_dicts = cu.build_vocab(sentences, min_count=20, compute_hs_tree=True, \
+    key_dicts = cu.build_vocab(sentences, min_count=5, compute_hs_tree=True, \
                             compute_ns_table=True, down_sample=0.0)
     w2k = key_dicts['words_to_keys']
     k2w = key_dicts['keys_to_words']
@@ -299,7 +302,7 @@ if __name__=="__main__":
     # Choose some simple hyperparameters for the model
     sg_window = 6
     ns_count = 10
-    wv_dim = 256
+    wv_dim = 80
     cv_dim = 10
     lam_l2 = 1e-3
 
@@ -316,7 +319,7 @@ if __name__=="__main__":
     # Train all parameters using the training set phrases
     for i in range(50):
         cam.train(pos_sampler, neg_sampler, 300, 10001, train_words=True, \
-                  train_context=False, learn_rate=1e-2)
+                  train_context=False, learn_rate=3e-3)
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
                   W1=cam.word_layer.params['W'], W2=None)
         for w in range(10):
