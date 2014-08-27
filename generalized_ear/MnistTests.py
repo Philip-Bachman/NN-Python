@@ -31,7 +31,7 @@ def train_ss_mlp(NET, sgd_params, rng, su_count=1000):
 
     # Tell the net that it's semi-supervised, which will force it to use only
     # unlabeled examples when computing the EA regularizer.
-    NET.is_semisupervised = 0
+    NET.is_semisupervised = 1
 
     # Run training on the given NET
     NT.train_ss_mlp(NET=NET, \
@@ -87,8 +87,6 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': False}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
     sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
@@ -135,8 +133,8 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.2, 'do_dropout': False}
+    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
@@ -162,32 +160,32 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         sgd_params['start_rate'] = 0.1
         # Train with weak EAR regularization
         sgd_params['top_only'] = False
-        sgd_params['epochs'] = 5
-        NET.set_ear_lam(0.2)
+        sgd_params['epochs'] = 50
+        NET.set_ear_lam(1.0)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with more EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 10
-        NET.set_ear_lam(0.4)
+        NET.set_ear_lam(1.5)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with more EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 15
-        NET.set_ear_lam(0.8)
+        NET.set_ear_lam(2.0)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with more EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 10
-        NET.set_ear_lam(2.0)
+        NET.set_ear_lam(3.0)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
         # Train with most EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 50
-        NET.set_ear_lam(3.0)
+        NET.set_ear_lam(4.0)
         rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, rng, su_count)
     return
@@ -202,15 +200,13 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     sgd_params['wt_norm_bound'] = 2.0
     sgd_params['epochs'] = 1000
     sgd_params['batch_size'] = 100
-    sgd_params['result_tag'] = 'xxx'
+    sgd_params['result_tag'] = '---'
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': False}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': False}
     sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
@@ -297,15 +293,15 @@ def test_dropout_ala_original():
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks to spawn from
-    pc0 = [28*28, 500, 500, 11]
+    pc0 = [28*28, 800, 800, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': False}
+    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': False}
     sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
-    mlp_params['spawn_weights'] = [0.5, 0.5]
+    mlp_params['spawn_weights'] = [1.0, 0.0]
     # Set remaining params
-    mlp_params['ear_type'] = 2
+    mlp_params['ear_type'] = 6
     mlp_params['ear_lam'] = 1.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1

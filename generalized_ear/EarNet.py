@@ -50,8 +50,8 @@ def smooth_softmax(x):
     """Softmax that shouldn't overflow, with Laplacish smoothing."""
     eps = 0.0001
     e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
-    p = e_x / T.sum(e_x, axis=1, keepdims=True)
-    p_sm = (p + eps) / T.sum((p + eps), axis=1, keepdims=True)
+    p = (e_x / T.sum(e_x, axis=1, keepdims=True)) + eps
+    p_sm = p / T.sum(p, axis=1, keepdims=True)
     return p_sm
 
 def smooth_entropy(p):
@@ -59,8 +59,8 @@ def smooth_entropy(p):
     encoding in terms of relative log-likelihoods into an encoding as a
     sum-to-one distribution."""
     p_sm = smooth_softmax(p)
-    e_sm = -T.sum((T.log(p_sm) * p_sm), axis=1, keepdims=True)
-    return kl_sm
+    ent_sm = -T.sum((T.log(p_sm) * p_sm), axis=1, keepdims=True)
+    return ent_sm
 
 def smooth_kl_divergence(p, q):
     """Measure the KL-divergence from "approximate" distribution q to "true"
@@ -78,12 +78,11 @@ def smooth_cross_entropy(p, q):
     encodings in terms of relative log-likelihoods into sum-to-one dists."""
     p_sm = smooth_softmax(p)
     q_sm = smooth_softmax(q)
-    ce_sm1 = T.nnet.categorical_crossentropy(p_sm, q_sm)
-    ce_sm2 = T.nnet.categorical_crossentropy(q_sm, p_sm)
-    ce_sm = (ce_sm1 + ce_sm2) / 2.0
     # This term is: entropy(p) + kl_divergence(p, q)
+    ce_cce = T.nnet.categorical_crossentropy(q_sm, p_sm)
+    ce_sm = ce_cce.reshape((ce_cce.size,1))
     #ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
-    return ce_sm.reshape((ce_sm.size, 1))
+    return ce_sm
 
 ################################################################################
 # HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
@@ -383,6 +382,7 @@ class EAR_NET(object):
         # generalized spawn-semble.
         self.spawn_class_cost = lambda y: self._spawn_class_cost(y)
         self.spawn_reg_cost = lambda y: self._ear_cost(y)
+        self.spawn_ent_cost = lambda lam_ent, y: self._ent_cost(lam_ent, y)
         return
 
     def _proto_metrics(self):
@@ -417,10 +417,7 @@ class EAR_NET(object):
                     x2 = self.spawn_nets[j][-1].linear_output
                     ear_loss = self.ear_lam[0] * \
                             self._ear_loss(x1, x2, y, self.ear_type[0])
-                    ent_loss = 0.1 * self.ear_lam[0] * \
-                            self._ent_loss(x1, y, ent_type=1)
-                    joint_loss = ear_loss + ent_loss
-                    ear_losses.append(joint_loss)
+                    ear_losses.append(ear_loss)
         total_loss = T.sum(ear_losses) / self.ear_pairs
         return total_loss
 
@@ -468,6 +465,16 @@ class EAR_NET(object):
             ear_fun = var_fun
         return ear_fun(X1, X2)
 
+    def _ent_cost(self, lam_ent, y):
+        """Compute the cost of entropy regularization."""
+        ent_losses = []
+        for i in range(self.spawn_count):
+            x = self.spawn_nets[i][-1].linear_output
+            ent_loss = lam_ent * self.ear_lam[0] * self._ent_loss(x, y, 1)
+            ent_losses.append(ent_loss)
+        total_loss = T.sum(ent_losses) / self.spawn_count
+        return total_loss
+
     def _ent_loss(self, X, Y, ent_type=0):
         """Compute the entropy regularizer. Either binary or multinomial."""
         if not self.is_semisupervised:
@@ -476,15 +483,15 @@ class EAR_NET(object):
             ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
         bent_fun = lambda x: T.sum((ss_mask * T.nnet.binary_crossentropy( \
                 T.nnet.sigmoid(x), T.nnet.sigmoid(x))) / T.sum(ss_mask))
-        ment_fun = lambda x: T.sum((ss_mask * smooth_cross_entropy( \
-                safe_softmax(x), safe_softmax(x))) / T.sum(ss_mask))
+        ment_fun = lambda x: T.sum((ss_mask * smooth_cross_entropy(x, x))) / \
+                T.sum(ss_mask)
         if (ent_type == 0):
-            # Binary cross-entropy
-            ent_fun = bent_fun
+            # Binary self cross-entropy
+            masked_ent = bent_fun(X)
         else:
-            # Multinomial cross-entropy
-            ent_fun = ment_fun
-        return ent_fun(X)
+            # Multinomial self cross-entropy
+            masked_ent = ment_fun(X)
+        return masked_ent
 
     def _construct_dae_layers(self, rng, lam_l1=0., nz_lvl=0.25):
         """Build cost functions for training DAEs defined for all hidden
@@ -500,6 +507,7 @@ class EAR_NET(object):
             d_params = []
             d_costs = []
             for pn_key in range(len(self.proto_nets)):
+                # Get the "first" spawn-net spawned from this proto-net
                 sn_key = self.proto_keys.index(pn_key)
                 sn = self.spawn_nets[sn_key]
                 if (d < (len(sn) - 1)):
@@ -507,13 +515,13 @@ class EAR_NET(object):
                     W_sn = sn[d].W
                     b_sn = sn[d].b
                     ci_sn = sn[d].clean_input
-                    ni_sn = sn[d].fuzzy_input
+                    fi_sn = sn[d].fuzzy_input
                     vis_dim = sn[d].in_dim
                     hid_dim = sn[d].out_dim
                     # Construct the DAE layer object
                     dae_layer = DAELayer(rng=rng, \
                             clean_input=ci_sn, \
-                            noisy_input=ni_sn, \
+                            fuzzy_input=fi_sn, \
                             n_in=vis_dim, n_out=hid_dim, \
                             activation=self.act_fun, \
                             input_noise=nz_lvl, \
@@ -535,7 +543,7 @@ class EAR_NET(object):
         return
 
     def set_ear_type(self, e_type):
-        """Set the Ensemble Agreement Regularization weight."""
+        """Set the Ensemble Agreement Regularization type."""
         self.ear_type.set_value(np.asarray([e_type], dtype=np.uint8))
         return
 
@@ -545,7 +553,7 @@ class EAR_NET(object):
 
 
 class DAELayer(object):
-    def __init__(self, rng, clean_input=None, noisy_input=None, \
+    def __init__(self, rng, clean_input=None, fuzzy_input=None, \
             n_in=0, n_out=0, activation=None, input_noise=0., \
             W=None, b_h=None, b_v=None):
 
@@ -557,7 +565,7 @@ class DAELayer(object):
         # is, afterall, a _denoising_ autoencoder...
         self.clean_input = clean_input
         self.noisy_input, self.noise_mask = \
-                self._get_noisy_input(noisy_input, input_noise)
+                self._get_noisy_input(fuzzy_input, input_noise)
 
         # Set some basic layer properties
         self.activation = activation
