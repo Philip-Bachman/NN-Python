@@ -79,9 +79,7 @@ def smooth_cross_entropy(p, q):
     p_sm = smooth_softmax(p)
     q_sm = smooth_softmax(q)
     # This term is: entropy(p) + kl_divergence(p, q)
-    ce_cce = T.nnet.categorical_crossentropy(q_sm, p_sm)
-    ce_sm = ce_cce.reshape((ce_cce.size,1))
-    #ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
+    ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
     return ce_sm
 
 ################################################################################
@@ -275,8 +273,7 @@ class EAR_NET(object):
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
         self.is_semisupervised = 0
-        self.ear_type = theano.shared(value=np.asarray([params['ear_type']], \
-                dtype=np.uint8), name='ear_type')
+        self.ear_type = params['ear_type']
         self.ear_lam = theano.shared(value=np.asarray([params['ear_lam']], \
                 dtype=theano.config.floatX), name='ear_lam')
         self.spawn_weights = theano.shared(\
@@ -373,7 +370,7 @@ class EAR_NET(object):
         # a cost function for each possible layer, as determined by the maximum
         # number of layers in any proto-network. The DAE cost for layer i will
         # be the mean DAE cost over all i'th layers in the proto-networks.
-        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.3)
+        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.2)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
@@ -381,8 +378,10 @@ class EAR_NET(object):
         # Get loss functions to optimize based on the spawned-nets in this
         # generalized spawn-semble.
         self.spawn_class_cost = lambda y: self._spawn_class_cost(y)
-        self.spawn_reg_cost = lambda y: self._ear_cost(y)
+        self.spawn_reg_cost = lambda y: self._ear_cost(y, self.ear_type)
+        self.spawn_reg_cost_alt = lambda y, t: self._ear_cost(y, self.ear_type)
         self.spawn_ent_cost = lambda lam_ent, y: self._ent_cost(lam_ent, y)
+        self.act_reg_cost = lam_l2a * self._act_reg_cost()
         return
 
     def _proto_metrics(self):
@@ -395,8 +394,21 @@ class EAR_NET(object):
         proto_out_func = MCL2HingeSS(JoinLayer(proto_out_layers))
         return [proto_out_func.loss_func, proto_out_func.errors]
 
+    def _act_reg_cost(self):
+        """Apply L2 regularization to the activations in each spawn-net."""
+        act_sq_sums = []
+        for i in range(self.spawn_count):
+            sn = self.spawn_nets[i]
+            for snl in sn:
+                act_sq_sums.append(snl.act_l2_sum)
+        full_act_sq_sum = T.sum(act_sq_sums) / self.spawn_count
+        return full_act_sq_sum
+
     def _spawn_class_cost(self, y):
-        """Compute the weighted sum of class losses over the spawned-nets."""
+        """Compute the weighted sum of class losses over the spawn-nets.
+
+        Classification cost/loss is computed for each spawn-net in this
+        generalized pseudo-ensemble."""
         spawn_class_losses = []
         for i in range(self.spawn_count):
             spawn_net = self.spawn_nets[i]
@@ -407,7 +419,7 @@ class EAR_NET(object):
         total_loss = T.sum(spawn_class_losses)
         return total_loss
 
-    def _ear_cost(self, y):
+    def _ear_cost(self, y, ear_type):
         """Compute the cost of ensemble agreement regularization."""
         ear_losses = []
         for i in range(self.spawn_count):
@@ -416,13 +428,19 @@ class EAR_NET(object):
                     x1 = self.spawn_nets[i][-1].linear_output
                     x2 = self.spawn_nets[j][-1].linear_output
                     ear_loss = self.ear_lam[0] * \
-                            self._ear_loss(x1, x2, y, self.ear_type[0])
+                            self._ear_loss(x1, x2, y, ear_type)
                     ear_losses.append(ear_loss)
         total_loss = T.sum(ear_losses) / self.ear_pairs
         return total_loss
 
     def _ear_loss(self, X1, X2, Y, ear_type):
         """Compute Ensemble Agreement Regularization cost for outputs X1/X2.
+
+        This regularizes for agreement among members of a 'pseudo-ensemble'.
+        Y is used to generate a mask on EAR costs, restricting optimization of
+        the regularizer to only unlabelled examples whenever the EAR_NET
+        instance is operating in 'semi-supervised' mode. The particular type
+        of EAR to apply is selected by 'ear_type'.
         """
         if not self.is_semisupervised:
             # Compute EAR regularizer using _all_ observations, not just those
@@ -466,7 +484,7 @@ class EAR_NET(object):
         return ear_fun(X1, X2)
 
     def _ent_cost(self, lam_ent, y):
-        """Compute the cost of entropy regularization."""
+        """Compute cost for entropy regularization, weighted by lam_ent."""
         ent_losses = []
         for i in range(self.spawn_count):
             x = self.spawn_nets[i][-1].linear_output
@@ -476,7 +494,11 @@ class EAR_NET(object):
         return total_loss
 
     def _ent_loss(self, X, Y, ent_type=0):
-        """Compute the entropy regularizer. Either binary or multinomial."""
+        """Compute the entropy regularizer. Either binary or multinomial.
+
+        Note: entropy can be computed as the cross-entropy of a distribution
+               with itself.
+        """
         if not self.is_semisupervised:
             ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
         else:
@@ -497,12 +519,14 @@ class EAR_NET(object):
         """Build cost functions for training DAEs defined for all hidden
         layers of the proto-networks making up this generalized ensemble. That
         is, construct a DAE for every proto-layer that isn't a classification
-        layer."""
+        layer. Inputs to each DAE are taken from the clean and post-fuzzed
+        inputs of the spawn-net layer for the 'first' spawn-net spawned from
+        any given proto-net."""
         self.dae_params = []
         self.dae_costs = []
         # The number of hidden layers in each proto-network is depth-1, where
         # depth is the total number of layers in the network. This is because
-        # we count the output layer along with the hidden layers.
+        # we count the output layer as well as the hidden layers.
         for d in range(self.max_proto_depth - 1):
             d_params = []
             d_costs = []
@@ -511,11 +535,11 @@ class EAR_NET(object):
                 sn_key = self.proto_keys.index(pn_key)
                 sn = self.spawn_nets[sn_key]
                 if (d < (len(sn) - 1)):
-                    # Construct a DAE for this proto-net hidden layer
+                    # Construct a DAE for this proto/spawn-net hidden layer
                     W_sn = sn[d].W
                     b_sn = sn[d].b
-                    ci_sn = sn[d].clean_input
-                    fi_sn = sn[d].fuzzy_input
+                    ci_sn = sn[d].clean_input # the input to be reconstructed
+                    fi_sn = sn[d].fuzzy_input # the input to reconstruct from
                     vis_dim = sn[d].in_dim
                     hid_dim = sn[d].out_dim
                     # Construct the DAE layer object
@@ -542,11 +566,6 @@ class EAR_NET(object):
         self.ear_lam.set_value(np.asarray([e_lam], dtype=theano.config.floatX))
         return
 
-    def set_ear_type(self, e_type):
-        """Set the Ensemble Agreement Regularization type."""
-        self.ear_type.set_value(np.asarray([e_type], dtype=np.uint8))
-        return
-
 ###########################################
 # DENOISING AUTOENCODER IMPLEMENTATION... #
 ###########################################
@@ -564,8 +583,7 @@ class DAELayer(object):
         # Grab the layer input and perturb it with some sort of noise. This
         # is, afterall, a _denoising_ autoencoder...
         self.clean_input = clean_input
-        self.noisy_input, self.noise_mask = \
-                self._get_noisy_input(fuzzy_input, input_noise)
+        self.noisy_input = self._get_noisy_input(fuzzy_input, input_noise)
 
         # Set some basic layer properties
         self.activation = activation
@@ -591,7 +609,7 @@ class DAELayer(object):
 
         # Put the learnable/optimizable parameters into a list
         self.params = [self.W, self.b_h, self.b_v]
-        # Layer construction complete...
+        # Beep boop... layer construction complete...
         return
 
     def compute_costs(self, lam_l1=0.):
@@ -605,7 +623,7 @@ class DAELayer(object):
         # Compute reconstruction error cost
         recon_cost = T.sum((self.clean_input - A_v)**2.0) / \
                 self.clean_input.shape[0]
-        # Compute sparsity penalty
+        # Compute sparsity penalty (over both population and lifetime)
         row_l1_sum = T.sum(abs(row_normalize(A_h))) / A_h.shape[0]
         col_l1_sum = T.sum(abs(col_normalize(A_h))) / A_h.shape[1]
         sparse_cost = lam_l1 * (row_l1_sum + col_l1_sum)
@@ -635,7 +653,9 @@ class DAELayer(object):
                 dtype=theano.config.floatX)
         # Cast mask from int to float32, to keep things on GPU
         noisy_input = input * noise_mask
-        return [noisy_input, noise_mask]
+        return noisy_input
+
+
 
 
 

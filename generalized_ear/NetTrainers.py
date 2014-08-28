@@ -267,7 +267,7 @@ def train_ss_mlp(
     (Xtr_un, Ytr_un) = (datasets[1][0], T.cast(datasets[1][1], 'int32'))
     su_samples = Xtr_su.get_value(borrow=True).shape[0]
     un_samples = Xtr_un.get_value(borrow=True).shape[0]
-    tr_batches = 25 #250
+    tr_batches = 250
     su_bsize = batch_size / 2
     un_bsize = batch_size - su_bsize
     su_batches = int(np.ceil(float(su_samples) / su_bsize))
@@ -322,9 +322,18 @@ def train_ss_mlp(
     # dev regularization, the dev loss/cost will be used, but the weights for
     # dev regularization on each layer will be set to 0 before training.
     #train_cost = NET.spawn_class_cost(y) + NET.spawn_reg_cost(y)
-    ec_wrapper = lambda y: NET.spawn_ent_cost(0.1, y)
-    train_cost = NET.spawn_class_cost(y) + NET.spawn_reg_cost(y) + ec_wrapper(y)
-    tr_outputs = [train_cost, NET.spawn_class_cost(y), NET.spawn_reg_cost(y), ec_wrapper(y)]
+    class_cost = NET.spawn_class_cost(y)
+    if ('ear_type' in sgd_params):
+        ear_reg_cost = NET.spawn_reg_cost_alt(y, sgd_params['ear_type'])
+    else:
+        ear_reg_cost = NET.spawn_reg_cost(y)
+    act_reg_cost = NET.act_reg_cost
+    if ('ent_lam' in sgd_params):
+        train_cost = class_cost + ear_reg_cost + act_reg_cost + \
+                NET.spawn_ent_cost(sgd_params['ent_lam'], y)
+    else:
+        train_cost = class_cost + ear_reg_cost + act_reg_cost
+    tr_outputs = [train_cost, class_cost, ear_reg_cost, act_reg_cost]
     vt_outputs = [NET.proto_class_errors(y), NET.proto_class_loss(y)]
 
     ############################################################################
@@ -352,35 +361,8 @@ def train_ss_mlp(
             opt_params = NET.class_params
 
     NET_grads = []
-    REG_grads = []
-    ENT_grads = []
-    CLS_grads = []
     for param in opt_params:
         NET_grads.append(T.grad(train_cost, param))
-        REG_grads.append(theano.function( \
-                inputs=[su_idx, un_idx], \
-                outputs=T.grad(NET.spawn_reg_cost(y), param), \
-                givens={ \
-                    x: T.concatenate([Xtr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1],:], \
-                            Xtr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1],:]]),
-                    y: T.concatenate([Ytr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1]], \
-                            Ytr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1]]])}))
-        ENT_grads.append(theano.function( \
-                inputs=[su_idx, un_idx], \
-                outputs=T.grad(ec_wrapper(y), param), \
-                givens={ \
-                    x: T.concatenate([Xtr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1],:], \
-                            Xtr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1],:]]),
-                    y: T.concatenate([Ytr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1]], \
-                            Ytr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1]]])}))
-        CLS_grads.append(theano.function( \
-                inputs=[su_idx, un_idx], \
-                outputs=T.grad(NET.spawn_class_cost(y), param), \
-                givens={ \
-                    x: T.concatenate([Xtr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1],:], \
-                            Xtr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1],:]]),
-                    y: T.concatenate([Ytr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1]], \
-                            Ytr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1]]])}))
 
     NET_moms = []
     for param in opt_params:
@@ -466,29 +448,8 @@ def train_ss_mlp(
             # compute update for some this minibatch
             batch_metrics = train_dev(epoch_counter, su_index, un_index)
             train_metrics = [(em + bm) for (em, bm) in zip(train_metrics, batch_metrics)]
-            COMMENT = """
-            print("====================")
-            print("====================")
-            for (i, param) in enumerate(opt_params):
-                rg_func = REG_grads[i]
-                rg_vals = rg_func(su_index, un_index)
-                print("param {0:s}, rg norm: {1:.6f}".format(\
-                        str(param), np.sqrt(np.sum(rg_vals**2.0))))
-            print("====================")
-            for (i, param) in enumerate(opt_params):
-                eg_func = ENT_grads[i]
-                eg_vals = eg_func(su_index, un_index)
-                print("param {0:s}, eg norm: {1:.6f}".format(\
-                        str(param), np.sqrt(np.sum(eg_vals**2.0))))
-            print("====================")
-            for (i, param) in enumerate(opt_params):
-                cg_func = CLS_grads[i]
-                cg_vals = cg_func(su_index, un_index)
-                print("param {0:s}, cg norm: {1:.6f}".format(\
-                        str(param), np.sqrt(np.sum(cg_vals**2.0))))
             su_index = (su_index + 1) if ((su_index + 1) < su_batches) else 0
-            un_index = (un_index + 1) if ((un_index + 1) < un_batches) else 0
-            """
+            un_index = (un_index + 1) if ((un_index + 1) < un_batches) else 0            
         # Compute 'averaged' values over the minibatches
         train_metrics = [(float(v) / tr_batches) for v in train_metrics]
         # update the learning rate
@@ -526,7 +487,7 @@ def train_ss_mlp(
         results_file.flush()
 
         # report and save progress.
-        print "epoch {0:d}: t_cost={1:.2f}, t_loss={2:.4f}, t_ear={3:.4f}, t_ent={6:.4f}, valid={4:.2f}{5}".format( \
+        print "epoch {0:d}: t_cost={1:.2f}, t_loss={2:.4f}, t_ear={3:.4f}, t_act={6:.4f}, valid={4:.2f}{5}".format( \
                 epoch_counter, train_metrics[0], train_metrics[1], train_metrics[2], \
                 validation_error, tag, train_metrics[3])
         print "--time: {0:.4f}".format((time.clock() - e_time))
