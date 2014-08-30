@@ -26,12 +26,17 @@ def _shared_dataset(data_xy):
     # (``shared_y`` does exactly that).
     return shared_x, shared_y
 
-def load_mnist(path):
+def load_mnist(path, zero_mean=True):
     mnist = np.load(path)
     train_set_x = mnist['train_data']
     train_set_y = mnist['train_labels'] + 1
     test_set_x = mnist['test_data']
     test_set_y = mnist['test_labels'] + 1
+
+    if zero_mean:
+        obs_mean = np.mean(train_set_x, axis=0, keepdims=True)
+        train_set_x = train_set_x - obs_mean
+        test_set_x = test_set_x - obs_mean
 
     train_set_x, train_set_y = _shared_dataset((train_set_x, train_set_y))
     test_set_x, test_set_y = _shared_dataset((test_set_x, test_set_y))
@@ -41,7 +46,7 @@ def load_mnist(path):
             (test_set_x, test_set_y)]
     return rval
 
-def load_udm_ss(dataset, sup_count, rng):
+def load_udm_ss(dataset, sup_count, rng, zero_mean=True):
     """Load semi-supervised version of the standard UdM MNIST data.
 
     For this, the training data is split into labeled and unlabeled portions.
@@ -54,7 +59,7 @@ def load_udm_ss(dataset, sup_count, rng):
     compared to their standard value, as 'un-classed' examples take label 0.
     """
 
-    udm_data = load_udm(dataset,as_shared=False)
+    udm_data = load_udm(dataset, as_shared=False, zero_mean=zero_mean)
     Xtr = udm_data[0][0]
     Ytr = udm_data[0][1][:,np.newaxis]
 
@@ -104,7 +109,7 @@ def load_udm_ss(dataset, sup_count, rng):
 
     return rval
 
-def load_udm(dataset, as_shared=True):
+def load_udm(dataset, as_shared=True, zero_mean=True):
     """Loads the UdM train/validate/test split of MNIST."""
 
     #############
@@ -137,10 +142,11 @@ def load_udm(dataset, as_shared=True):
     train_set[0] = np.asarray(train_set[0]).astype(np.float32)
     valid_set[0] = np.asarray(valid_set[0]).astype(np.float32)
     test_set[0] = np.asarray(test_set[0]).astype(np.float32)
-    obs_mean = 1.0 * np.mean(train_set[0], axis=0, keepdims=True)
-    train_set[0] = train_set[0] - obs_mean
-    valid_set[0] = valid_set[0] - obs_mean
-    test_set[0] = test_set[0] - obs_mean
+    if zero_mean:
+        obs_mean = np.mean(train_set[0], axis=0, keepdims=True)
+        train_set[0] = train_set[0] - obs_mean
+        valid_set[0] = valid_set[0] - obs_mean
+        test_set[0] = test_set[0] - obs_mean
     if as_shared:
         test_set_x, test_set_y = _shared_dataset((test_set[0],test_set[1]+1))
         valid_set_x, valid_set_y = _shared_dataset((valid_set[0],valid_set[1]+1))
