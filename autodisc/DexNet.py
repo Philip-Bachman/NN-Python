@@ -529,6 +529,7 @@ class DEX_NET(object):
         # we count the output layer as well as the hidden layers.
         for d in range(self.max_proto_depth - 1):
             d_params = []
+            s_params = []
             d_costs = []
             for pn_key in range(len(self.proto_nets)):
                 # Get the "first" spawn-net spawned from this proto-net
@@ -551,6 +552,7 @@ class DEX_NET(object):
                             input_noise=nz_lvl, \
                             W=W_sn, b_h=b_sn, b_v=None)
                     d_params.extend(dae_layer.params)
+                    s_params.extend([W_sn, b_sn])
                     d_costs.append(dae_layer.compute_costs(lam_l1))
             # Record the set of all DAE params to-be-optimized at depth d
             self.dae_params.append(d_params)
@@ -582,7 +584,8 @@ class DAELayer(object):
         # Grab the layer input and perturb it with some sort of noise. This
         # is, afterall, a _denoising_ autoencoder...
         self.clean_input = clean_input
-        self.noisy_input = self._get_noisy_input(fuzzy_input, input_noise)
+        self.noisy_input, self.noise_mask = \
+                self._get_noisy_input(fuzzy_input, input_noise)
 
         # Set some basic layer properties
         self.activation = activation
@@ -613,9 +616,12 @@ class DAELayer(object):
 
     def _magic_cost(self, sim_mat, sim_scale=1.0):
         """Compute auto-discrimination cost."""
-        sim_sm = smooth_softmax(sim_scale * sim_mat)
-        L = -T.mean(T.log(sim_sm[T.arange(sim_mat.shape[0]), T.arange(sim_mat.shape[0])]))
-        return L
+        exp_mat = T.exp(sim_mat - T.max(sim_mat,axis=1,keepdims=1))
+        self_exps = T.diag(exp_mat).reshape((exp_mat.shape[0],1))
+        denoms = exp_mat + self_exps
+        probs = self_exps / denoms
+        L = (1.0 - T.identity_like(probs)) * T.log(probs)
+        return -T.mean(L)
 
     def compute_costs(self, lam_l1=0.):
         """Compute reconstruction and activation sparsity costs."""
@@ -626,24 +632,26 @@ class DAELayer(object):
         A_v, A_h = self._compute_activations(self.noisy_input, \
                 W_nz, b_nz, self.b_v)
         # Compute auto-discriminative reconstruction cost
-        Xi = self.clean_input
-        Xr = self._drop_from_input(A_v, 0.5)
+        Xi = (1.0 - self.noise_mask) * self.clean_input
+        Xr =  A_v
         #Xi2 = T.sum(Xi**2.0, axis=1, keepdims=True)
         #Xr2 = T.sum(Xr**2.0, axis=1, keepdims=True)
         #Xr_Xi_T = T.dot(Xr, Xi.T)
-        #d_Xi_Xr = -1.0 * ((Xi2.T + Xr2) - (2.0 * Xr_Xi_T))
-        d_Xi_Xr = T.dot(Xr, Xi.T)
+        #d_Xi_Xr = -0.02 * ((Xi2.T + Xr2) - (2.0 * Xr_Xi_T))
+        d_Xi_Xr = 0.2 * T.dot(Xr, Xi.T)
         ad_cost = self._magic_cost(d_Xi_Xr)
         # Compute sparsity penalty (over both population and lifetime)
+        act_l2_reg = T.mean(A_h**2.0)
         row_l1_sum = T.sum(abs(row_normalize(A_h))) / A_h.shape[0]
         col_l1_sum = T.sum(abs(col_normalize(A_h))) / A_h.shape[1]
-        sparse_cost = lam_l1 * (row_l1_sum + col_l1_sum)
+        sparse_cost = lam_l1 * (row_l1_sum + col_l1_sum) + (0.5 * act_l2_reg)
         return [ad_cost, sparse_cost]
 
     def _compute_hidden_acts(self, X, W, b_h):
         """Compute activations of encoder (at hidden layer)."""
         A_h = self.activation(T.dot(X, W) + b_h)
-        return A_h
+        A_h_d = self._drop_from_input(A_h, 0.5)
+        return A_h_d
 
     def _compute_activations(self, X, W, b_h, b_v):
         """Compute activations of decoder (at visible layer)."""
@@ -664,7 +672,7 @@ class DAELayer(object):
                 dtype=theano.config.floatX)
         # Cast mask from int to float32, to keep things on GPU
         noisy_input = input * noise_mask
-        return noisy_input
+        return [noisy_input, noise_mask]
 
     def _drop_from_input(self, input, p):
         """p is the probability of dropping elements of input."""
@@ -676,6 +684,79 @@ class DAELayer(object):
         # apply dropout mask and rescaling factor to the input
         droppy_input = drop_scale * input * drop_mask
         return droppy_input
+
+#################################
+# EXEMPLAR LAYER IMPLEMENTATION #
+#################################
+
+class XMPLayer(object):
+    def __init__(self, rng, clean_input=None, noisy_input=None, \
+            vec_dim=0, max_key=0, W=None, b=None):
+
+        # Setup a shared random generator for this layer
+        self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
+                rng.randint(100000))
+
+        # Grab the layer input and perturb it with some sort of noise. This
+        # is, afterall, a _denoising_ autoencoder...
+        self.clean_input = clean_input
+        self.noisy_input = noisy_input
+
+        # Set some basic layer properties
+        self.vec_dim = vec_dim
+        self.max_key = max_key
+
+        # Get some random initial weights and biases, if not given
+        if W is None:
+            W_init = np.asarray(0.01 * rng.standard_normal( \
+                      size=(max_key+10, vec_dim)), dtype=theano.config.floatX)
+            W = theano.shared(value=W_init, name='W')
+        if b is None:
+            b_init = np.zeros((max_key+10, 1), dtype=theano.config.floatX)
+            b = theano.shared(value=b_init, name='b')
+
+        # Grab pointers to the now-initialized weights and biases
+        self.W = W
+        self.b = b
+
+        # Put the learnable/optimizable parameters into a list
+        self.params = [self.W, self.b]
+        # Beep boop... layer construction complete...
+        return
+
+    def _xmp_cost(self, X, W_x, b_x, neg_weight):
+        """Compute exemplar SVM (w/binomial deviance loss) cost."""
+        # Compute prediction by each exemplar SVM for each input, with the
+        # inputs splayed across columns and the SVMs splayed across rows.
+        F = T.dot(W_x, X.T) + b_x
+        # The diagonal entries of F now correspond to the predictions where
+        # the "target class" is positive, and all other entries correspond
+        # to predictions where the target class is negative.
+        O = T.ones_like(F)
+        I = T.identity_like(F)
+        Y = (2.0 * I) - O
+        L = T.log(1.0 + T.exp(-Y * F))
+        # Get a scale for weighing positive examples against negative ones
+        neg_scale = neg_weight / (X.shape[0] - 1.0)
+        # Sum the loss on positive examples and the reweighted loss on
+        # negative examples.
+        L_weighted = T.sum(I * L) + (neg_scale * T.sum((O - I) * L))
+        return L_weighted / X.shape[0]
+
+    def compute_costs(self, obs_keys, lam_l2=0.):
+        """Compute."""
+        # Get the current input, and validate for consistency
+        X = self.noisy_input
+        assert(X.shape[0] == obs_keys.size)
+        assert(T.max(obs_keys) <= self.max_key)
+        # Get classifier parameters for the relevant "exemplar SVMs"
+        W_x = self.W.take(obs_keys, axis=0)
+        b_x = self.b.take(obs_keys, axis=0)
+        # Get noise-perturbed encoder/decoder parameters
+        L_svm = self._xmp_cost(X, W_x, b_x)
+        L_reg = lam_l2 * T.sum(W_x**2.0)
+        L_all = L_svm + L_reg
+        return L_all
 
 
 

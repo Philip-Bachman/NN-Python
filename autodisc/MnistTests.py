@@ -209,7 +209,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     # Set remaining params
     mlp_params['ear_type'] = 5
     mlp_params['ear_lam'] = 0.2
-    mlp_params['lam_l2a'] = 1e-3
+    mlp_params['lam_l2a'] = 1e-2
     mlp_params['use_bias'] = 1
 
     for test_num in range(test_count):
@@ -231,9 +231,9 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         # First, pretrain each layer in the mlp. #
         ##########################################
         sgd_params['result_tag'] = "ss_ear_pt_s{0:d}_t{1:d}".format(su_count,test_num)
-        sgd_params['batch_size'] = 25
-        sgd_params['start_rate'] = 0.1
-        sgd_params['epochs'] = 40
+        sgd_params['batch_size'] = 50
+        sgd_params['start_rate'] = 0.05
+        sgd_params['epochs'] = 50
         for i in range(len(NET.dae_costs)):
             print("==================================================")
             print("Pretraining hidden layer(s) at depth {0:d}".format(i+1))
@@ -248,34 +248,30 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['start_rate'] = 0.02
         # Train with weak EAR regularization
         sgd_params['top_only'] = True
-        sgd_params['epochs'] = 10
+        sgd_params['epochs'] = 5
         NET.set_ear_lam(1.0)
-        rng = np.random.RandomState(rng_seed)
-        train_ss_mlp(NET, sgd_params, rng, su_count)
+        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
         # Train with more EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 10
         NET.set_ear_lam(1.0)
-        rng = np.random.RandomState(rng_seed)
-        train_ss_mlp(NET, sgd_params, rng, su_count)
+        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
         # Train with more EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 15
+        NET.set_ear_lam(1.5)
+        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        # Train with more EAR regularization
+        sgd_params['top_only'] = False
+        sgd_params['epochs'] = 20
         NET.set_ear_lam(2.0)
-        rng = np.random.RandomState(rng_seed)
-        train_ss_mlp(NET, sgd_params, rng, su_count)
-        # Train with more EAR regularization
-        sgd_params['top_only'] = False
-        sgd_params['epochs'] = 15
-        NET.set_ear_lam(3.0)
-        rng = np.random.RandomState(rng_seed)
-        train_ss_mlp(NET, sgd_params, rng, su_count)
+        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
         # Train with most EAR regularization
         sgd_params['top_only'] = False
-        sgd_params['epochs'] = 150
-        NET.set_ear_lam(4.0)
-        rng = np.random.RandomState(rng_seed)
-        train_ss_mlp(NET, sgd_params, rng, su_count)
+        sgd_params['epochs'] = 100
+        sgd_params['start_rate'] = 0.01
+        NET.set_ear_lam(3.0)
+        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
     return
 
 def test_dropout_ala_original():

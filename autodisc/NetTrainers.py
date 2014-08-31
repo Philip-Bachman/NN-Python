@@ -571,10 +571,24 @@ def train_dae(
     learning_rate = theano.shared(np.asarray(initial_learning_rate,
         dtype=theano.config.floatX))
 
-    # Build the expressions for the cost functions.
-    NET_cost = NET.dae_costs[dae_layer][0] + NET.dae_costs[dae_layer][1]
-    NET_metrics = [NET_cost, NET.dae_costs[dae_layer][0], NET.dae_costs[dae_layer][1]]
+    # Collect the parameters to-be-optimized
     opt_params = NET.dae_params[dae_layer]
+    if dae_layer > 0:
+        for i in range(dae_layer):
+            opt_params.extend(NET.dae_params[i])
+    # Build the cost to-be-optimized
+    rec_costs = [ NET.dae_costs[dae_layer][0] ]
+    reg_costs = [ NET.dae_costs[dae_layer][1] ]
+    if dae_layer > 0:
+        for i in range(dae_layer):
+            rec_costs.append(NET.dae_costs[i][0])
+            reg_costs.append(NET.dae_costs[i][1])
+
+    # Build the expressions for the cost functions
+    NET_rec_cost = T.sum(rec_costs)
+    NET_reg_cost = T.sum(reg_costs)
+    NET_cost = NET_rec_cost + NET_reg_cost
+    NET_metrics = [NET_cost, NET_rec_cost, NET_reg_cost]
 
     ############################################################################
     # Compile testing and validation models. These models are evaluated on     #
@@ -608,8 +622,8 @@ def train_dae(
         0.99)
 
     # Use a "smoothed" learning rate, to ease into optimization
-    gentle_rate = ifelse(epoch < 20,
-        ((epoch / 20.) * learning_rate),
+    gentle_rate = ifelse(epoch < 10,
+        ((epoch / 10.) * learning_rate),
         learning_rate)
 
     # Update the step direction using a momentus update
