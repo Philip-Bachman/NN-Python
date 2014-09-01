@@ -649,7 +649,7 @@ class GPUNoiseLayer:
         self.fuzz_scale = fuzz_scale
         return
 
-    def feedforward(self, X):
+    def feedforward(self, X, return_on_gpu=False):
         """Perform feedforward through this layer.
         """
         # Cleanup debris from any previous feedforward
@@ -669,6 +669,8 @@ class GPUNoiseLayer:
             self.Y = drop_mask * (self.X + fuzz_bump)
         else:
             self.Y = drop_mask * self.X
+        if not return_on_gpu:
+            self.Y = gp.as_numpy_array(self.Y)
         return self.Y
 
     def backprop(self, dLdY, return_on_gpu=False):

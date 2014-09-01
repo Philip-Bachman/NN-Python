@@ -110,7 +110,7 @@ class PVModel:
         # Feedforward through look-up-table, noise, and prediction layers
         Xw = self.word_layer.feedforward(pre_keys)
         Xc = self.context_layer.feedforward(Xw, phrase_keys)
-        Xn = self.noise_layer.feedforward(Xc)
+        Xn = self.noise_layer.feedforward(Xc, return_on_gpu=False)
         Yn = self.class_layer.feedforward(Xn)
         # Backprop through the layers in reverse order
         dLdXn = self.class_layer.backprop(post_keys, L_ary=L, return_on_gpu=True)
@@ -236,8 +236,8 @@ class CAModel:
                                           source_dim=wv_dim, \
                                           bias_dim=cv_dim, \
                                           do_rescale=True)
-        self.noise_layer = nlml.NoiseLayer(drop_rate=self.drop_rate, \
-                                           fuzz_scale=self.fuzz_scale)
+        self.noise_layer = nlml.GPUNoiseLayer(drop_rate=self.drop_rate, \
+                                              fuzz_scale=self.fuzz_scale)
         self.class_layer = nlml.NSLayer(in_dim=(self.cv_dim + self.wv_dim), \
                                         max_out_key=self.max_wv_key)
         return
@@ -282,13 +282,13 @@ class CAModel:
         # Feedforward through the various layers of this model
         Xb = self.word_layer.feedforward(anc_keys)
         Xc = self.context_layer.feedforward(Xb, phrase_keys)
-        Xn = self.noise_layer.feedforward(Xc)
+        Xn = self.noise_layer.feedforward(Xc, return_on_gpu=False)
 
         # Turn the corner with feedforward and backprop at class layer
         dLdXn, L = self.class_layer.ff_bp(Xn, pos_keys, neg_keys, do_grad=True)
 
         # Backprop through layers based on feedforward result
-        dLdXc = self.noise_layer.backprop(dLdXn)
+        dLdXc = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
         dLdXb = self.context_layer.backprop(dLdXc)
         self.word_layer.backprop(dLdXb)
 
