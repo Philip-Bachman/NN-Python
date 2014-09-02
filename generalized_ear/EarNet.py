@@ -36,6 +36,18 @@ def relu_actfun(x):
     x_relu = T.maximum(0., x)
     return x_relu
 
+def maxout_actfun(input, pool_size, filt_count):
+    """Apply maxout over non-overlapping sets of values."""
+    last_start = filt_count - pool_size
+    mp_vals = None
+    for i in xrange(pool_size):
+        cur = input[:,i:(last_start+i+1):pool_size]
+        if mp_vals is None:
+            mp_vals = cur
+        else:
+            mp_vals = T.maximum(mp_vals, cur)
+    return mp_vals
+
 def noop_actfun(x):
     """Do nothing activation. For output layer probably."""
     return x
@@ -82,6 +94,7 @@ def smooth_cross_entropy(p, q):
     ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
     return ce_sm
 
+
 ################################################################################
 # HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
 # with non-linear activation transform and a max-pooling (a.k.a. Maxout) layer #
@@ -91,8 +104,8 @@ def smooth_cross_entropy(p, q):
 ################################################################################
 
 class HiddenLayer(object):
-    def __init__(self, rng, input, n_in, n_out, \
-                 activation=None, pool_size=4, \
+    def __init__(self, rng, input, in_dim, out_dim, \
+                 activation=None, pool_size=0, \
                  drop_rate=0., input_noise=0., bias_noise=0., \
                  W=None, b=None, \
                  use_bias=True, name=""):
@@ -135,17 +148,46 @@ class HiddenLayer(object):
         """
 
         # Set some basic layer properties
-        self.activation = activation
-        self.in_dim = n_in
-        self.out_dim = n_out
+        self.pool_size = pool_size
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        if self.pool_size <= 1:
+            self.filt_count = self.out_dim
+        else:
+            self.filt_count = self.out_dim * self.pool_size
+        self.pool_count = self.filt_count / max(self.pool_size, 1)
+        if activation:
+            self.activation = activation
+        else:
+            if self.pool_size <= 1:
+                self.activation = lambda x: relu_actfun(x)
+            else:
+                self.activation = lambda x: \
+                        maxout_actfun(x, self.pool_size, self.filt_count)
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            W_init = np.asarray(0.01 * rng.standard_normal( \
-                      size=(n_in, n_out)), dtype=theano.config.floatX)
+            if self.pool_size <= 1:
+                # Generate random initial filters in a typical way
+                W_init = np.asarray(0.01 * rng.standard_normal( \
+                          size=(self.in_dim, self.filt_count)), \
+                          dtype=theano.config.floatX)
+            else:
+                # Generate groups of random filters to pool over such that
+                # intra-group correlations are stronger than inter-group
+                # correlations, to encourage pooling over similar filters...
+                filters = []
+                for g_num in range(self.pool_count):
+                    g_filt = 0.01 * rng.standard_normal(size=(self.in_dim,1))
+                    for f_num in range(self.pool_size):
+                        f_filt = g_filt + (0.002 * rng.standard_normal( \
+                                size=(self.in_dim,1)))
+                        filters.append(f_filt)
+                W_init = np.hstack(filters).astype(theano.config.floatX)
+
             W = theano.shared(value=W_init, name="{0:s}_W".format(name))
         if b is None:
-            b_init = np.zeros((n_out,), dtype=theano.config.floatX)
+            b_init = np.zeros((self.filt_count,), dtype=theano.config.floatX)
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
 
         # Set layer weights and biases
@@ -255,8 +297,6 @@ class EAR_NET(object):
         # First, setup a shared random number generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
             rng.randint(100000))
-        # Set the activation function
-        self.act_fun = lambda x: relu_actfun(x)
         ################################################
         # Process user-suplied parameters for this net #
         ################################################
@@ -291,23 +331,34 @@ class EAR_NET(object):
         self.input = input
         # Construct the proto-networks from which to generate spawn-sembles
         for (pn_num, proto_config) in enumerate(self.proto_configs):
-            layer_sizes = [ls for ls in proto_config]
-            layer_connect_dims = zip(layer_sizes, layer_sizes[1:])
+            layer_defs = [ld for ld in proto_config]
+            layer_connect_defs = zip(layer_defs[:-1], layer_defs[1:])
             layer_num = 0
             proto_net = []
             next_input = self.input
-            for n_in, n_out in layer_connect_dims:
-                last_layer = (layer_num == (len(layer_connect_dims) - 1))
+            for in_def, out_def in layer_connect_defs:
+                last_layer = (layer_num == (len(layer_connect_defs) - 1))
                 pnl_name = "pn{0:d}l{1:d}".format(pn_num, layer_num)
-                activation = (lambda x: noop_actfun(x)) if last_layer \
-                        else self.act_fun
+                if (type(in_def) is list) or (type(in_def) is tuple):
+                    # Receiving input from a poolish layer...
+                    in_dim = in_def[0]
+                else:
+                    # Receiving input from a normal layer...
+                    in_dim = in_def
+                if (type(out_def) is list) or (type(out_def) is tuple):
+                    # Applying some sort of pooling in this layer...
+                    out_dim = out_def[0]
+                    pool_size = out_def[1]
+                else:
+                    # Not applying any pooling in this layer...
+                    out_dim = out_def
+                    pool_size = 0
                 # Add a new layer to the regular model
                 proto_net.append(HiddenLayer(rng=rng, \
                         input=next_input, \
-                        activation=activation, \
-                        pool_size=4, \
+                        activation=None, pool_size=pool_size, \
                         drop_rate=0., input_noise=0., bias_noise=0., \
-                        n_in=n_in, n_out=n_out, use_bias=use_bias, \
+                        in_dim=in_dim, out_dim=out_dim, use_bias=use_bias, \
                         name=pnl_name))
                 next_input = proto_net[-1].output
                 # Set the non-bias parameters of this layer to be clipped
@@ -339,17 +390,17 @@ class EAR_NET(object):
                 d_prob = self.vis_drop if (layer_num == 0) else self.hid_drop
                 drop_prob = d_prob if do_dropout else 0.0
                 # Get important properties from the relevant proto-layer
-                activation = proto_layer.activation
+                actfun = proto_layer.activation
+                pool_size = proto_layer.pool_size
                 in_dim = proto_layer.in_dim
                 out_dim = proto_layer.out_dim
                 # Add a new layer to the regular model
                 spawn_net.append(HiddenLayer(rng=rng, \
-                        input=next_input, \
-                        activation=activation, \
-                        pool_size=4, drop_rate=drop_prob, \
+                        input=next_input, activation=actfun, \
+                        pool_size=pool_size, drop_rate=drop_prob, \
                         input_noise=input_noise, bias_noise=bias_noise, \
                         W=proto_layer.W, b=proto_layer.b, \
-                        n_in=in_dim, n_out=out_dim, use_bias=use_bias))
+                        in_dim=in_dim, out_dim=out_dim, use_bias=use_bias))
                 next_input = spawn_net[-1].output
                 layer_num = layer_num + 1
             # Add this network to the list of spawn-networks
@@ -430,7 +481,13 @@ class EAR_NET(object):
                     ear_loss = self.ear_lam[0] * \
                             self._ear_loss(x1, x2, y, ear_type)
                     ear_losses.append(ear_loss)
-        total_loss = T.sum(ear_losses) / self.ear_pairs
+        if (self.spawn_count > 1):
+            total_loss = T.sum(ear_losses) / self.ear_pairs
+        else:
+            x1 = self.spawn_nets[0][-1].linear_output
+            x2 = self.spawn_nets[0][-1].linear_output
+            total_loss = 0.0 * \
+                self._ear_loss(x1, x2, y, ear_type)
         return total_loss
 
     def _ear_loss(self, X1, X2, Y, ear_type):
@@ -524,6 +581,7 @@ class EAR_NET(object):
         any given proto-net."""
         self.dae_params = []
         self.dae_costs = []
+        ACT_FUN = lambda x: relu_actfun(x)
         # The number of hidden layers in each proto-network is depth-1, where
         # depth is the total number of layers in the network. This is because
         # we count the output layer as well as the hidden layers.
@@ -541,13 +599,13 @@ class EAR_NET(object):
                     ci_sn = sn[d].clean_input # the input to be reconstructed
                     fi_sn = sn[d].fuzzy_input # the input to reconstruct from
                     vis_dim = sn[d].in_dim
-                    hid_dim = sn[d].out_dim
+                    hid_dim = sn[d].filt_count
                     # Construct the DAE layer object
                     dae_layer = DAELayer(rng=rng, \
                             clean_input=ci_sn, \
                             fuzzy_input=fi_sn, \
-                            n_in=vis_dim, n_out=hid_dim, \
-                            activation=self.act_fun, \
+                            in_dim=vis_dim, out_dim=hid_dim, \
+                            activation=ACT_FUN, \
                             input_noise=nz_lvl, \
                             W=W_sn, b_h=b_sn, b_v=None)
                     d_params.extend(dae_layer.params)
@@ -573,7 +631,7 @@ class EAR_NET(object):
 
 class DAELayer(object):
     def __init__(self, rng, clean_input=None, fuzzy_input=None, \
-            n_in=0, n_out=0, activation=None, input_noise=0., \
+            in_dim=0, out_dim=0, activation=None, input_noise=0., \
             W=None, b_h=None, b_v=None):
 
         # Setup a shared random generator for this layer
@@ -587,19 +645,19 @@ class DAELayer(object):
 
         # Set some basic layer properties
         self.activation = activation
-        self.in_dim = n_in
-        self.out_dim = n_out
+        self.in_dim = in_dim
+        self.out_dim = out_dim
 
         # Get some random initial weights and biases, if not given
         if W is None:
             W_init = np.asarray(0.01 * rng.standard_normal( \
-                      size=(n_in, n_out)), dtype=theano.config.floatX)
+                      size=(in_dim, out_dim)), dtype=theano.config.floatX)
             W = theano.shared(value=W_init, name='W')
         if b_h is None:
-            b_init = np.zeros((n_out,), dtype=theano.config.floatX)
+            b_init = np.zeros((out_dim,), dtype=theano.config.floatX)
             b_h = theano.shared(value=b_init, name='b_h')
         if b_v is None:
-            b_init = np.zeros((n_in,), dtype=theano.config.floatX)
+            b_init = np.zeros((in_dim,), dtype=theano.config.floatX)
             b_v = theano.shared(value=b_init, name='b_v')
 
         # Grab pointers to the now-initialized weights and biases

@@ -22,7 +22,7 @@ def init_biases(NET, b_init=0.0):
             proto_layer.b.set_value(b_const)
     return
 
-def train_ss_mlp(NET, sgd_params, rng, su_count, datasets):
+def train_ss_mlp(NET, sgd_params, datasets):
     """Run semi-supervised EA-regularized test."""
     # Tell the net that it's semi-supervised, which will force it to use only
     # unlabeled examples when computing the EA regularizer.
@@ -33,7 +33,7 @@ def train_ss_mlp(NET, sgd_params, rng, su_count, datasets):
         sgd_params=sgd_params, \
         datasets=datasets)
     return
- 
+
 def train_mlp(NET, sgd_params, datasets):
     """Run mlp training test."""
     # Tell the net that it's not semi-supervised, which will force it to use
@@ -97,7 +97,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         # Construct the EAR_NET object that we will be training
         NET = EAR_NET(rng=rng, input=x_in, params=mlp_params)
         init_biases(NET, b_init=0.1)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
     return
 
 def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
@@ -151,24 +151,24 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         sgd_params['start_rate'] = 0.1
         sgd_params['epochs'] = 5
         NET.set_ear_lam(0.0)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with weak EAR regularization
         sgd_params['epochs'] = 10
         NET.set_ear_lam(1.0)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
         sgd_params['epochs'] = 10
         NET.set_ear_lam(1.5)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
         sgd_params['epochs'] = 15
         NET.set_ear_lam(2.0)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
         sgd_params['epochs'] = 40
         sgd_params['start_rate'] = 0.05
         NET.set_ear_lam(3.0)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
     return
 
 def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
@@ -237,28 +237,28 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['epochs'] = 5
         NET.set_ear_lam(0.0)
         rng = np.random.RandomState(rng_seed)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with weak EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 5
         NET.set_ear_lam(0.0)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with weak EAR regularization
         sgd_params['epochs'] = 10
         NET.set_ear_lam(1.0)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
         sgd_params['epochs'] = 10
         NET.set_ear_lam(1.5)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
         sgd_params['epochs'] = 15
         NET.set_ear_lam(2.0)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
         sgd_params['epochs'] = 80
         NET.set_ear_lam(3.0)
-        train_ss_mlp(NET, sgd_params, rng, su_count, datasets)
+        train_ss_mlp(NET, sgd_params, datasets)
     return
 
 def test_dropout_ala_original():
@@ -272,21 +272,21 @@ def test_dropout_ala_original():
     sgd_params['wt_norm_bound'] = 3.5
     sgd_params['epochs'] = 1000
     sgd_params['batch_size'] = 100
-    sgd_params['result_tag'] = 'dropout'
+    sgd_params['result_tag'] = 'supervised'
 
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks to spawn from
-    pc0 = [28*28, 800, 800, 11]
+    pc0 = [28*28, (128, 4), (128, 4), 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': False}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
-    mlp_params['spawn_configs'] = [sc0, sc1]
-    mlp_params['spawn_weights'] = [1.0, 0.0]
+    sc0 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.1, 'do_dropout': True}
+    #sc1 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.1, 'do_dropout': True}
+    mlp_params['spawn_configs'] = [sc0] #, sc1]
+    mlp_params['spawn_weights'] = [1.0] #, 0.0]
     # Set remaining params
     mlp_params['ear_type'] = 6
-    mlp_params['ear_lam'] = 1.0
+    mlp_params['ear_lam'] = 0.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 
@@ -308,7 +308,7 @@ def test_dropout_ala_original():
 if __name__ == '__main__':
 
     # Run standard dropout with parameters to reproduce Hinton et. al
-    #test_dropout_ala_original()
+    test_dropout_ala_original()
 
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
@@ -320,7 +320,7 @@ if __name__ == '__main__':
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining
-    batch_test_ss_mlp_pt(test_count=30, su_count=100)
+    #batch_test_ss_mlp_pt(test_count=30, su_count=100)
     #batch_test_ss_mlp_pt(test_count=10, su_count=600)
     #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
     #batch_test_ss_mlp_pt(test_count=10, su_count=3000)
