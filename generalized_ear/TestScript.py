@@ -31,7 +31,7 @@ def train_ss_mlp(NET, sgd_params, rng, su_count=1000):
 
     # Tell the net that it's semi-supervised, which will force it to use only
     # unlabeled examples when computing the EA regularizer.
-    NET.is_semisupervised = 1
+    NET.reg_all_obs = 1
 
     # Run training on the given NET
     NT.train_ss_mlp(NET=NET, \
@@ -50,7 +50,7 @@ def train_mlp(NET, sgd_params):
 
     # Tell the net that it's not semi-supervised, which will force it to use
     # _all_ examples when computing the EAR regularizer.
-    NET.is_semisupervised = 0
+    NET.reg_all_obs = 1
 
     # Train the net
     NT.train_mlp(NET=NET, \

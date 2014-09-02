@@ -272,7 +272,7 @@ class DEX_NET(object):
             self.hid_drop = 0.5
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
-        self.is_semisupervised = 0
+        self.reg_all_obs = 1
         self.ear_type = params['ear_type']
         self.ear_lam = theano.shared(value=np.asarray([params['ear_lam']], \
                 dtype=theano.config.floatX), name='ear_lam')
@@ -442,7 +442,7 @@ class DEX_NET(object):
         instance is operating in 'semi-supervised' mode. The particular type
         of EAR to apply is selected by 'ear_type'.
         """
-        if not self.is_semisupervised:
+        if self.reg_all_obs:
             # Compute EAR regularizer using _all_ observations, not just those
             # with class label 0. (assume -1 is not a class label...)
             ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
@@ -499,7 +499,7 @@ class DEX_NET(object):
         Note: entropy can be computed as the cross-entropy of a distribution
                with itself.
         """
-        if not self.is_semisupervised:
+        if self.reg_all_obs:
             ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
         else:
             ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
