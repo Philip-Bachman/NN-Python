@@ -167,7 +167,7 @@ class HiddenLayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            if self.pool_size <= 1:
+            if self.pool_size <= 10:
                 # Generate random initial filters in a typical way
                 W_init = np.asarray(0.01 * rng.standard_normal( \
                           size=(self.in_dim, self.filt_count)), \
@@ -421,7 +421,7 @@ class EAR_NET(object):
         # a cost function for each possible layer, as determined by the maximum
         # number of layers in any proto-network. The DAE cost for layer i will
         # be the mean DAE cost over all i'th layers in the proto-networks.
-        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.2)
+        self._construct_dae_layers(rng, lam_l1=0.15, nz_lvl=0.2)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
@@ -673,7 +673,7 @@ class DAELayer(object):
     def compute_costs(self, lam_l1=0.):
         """Compute reconstruction and activation sparsity costs."""
         # Get noise-perturbed encoder/decoder parameters
-        W_nz = self._noisy_params(self.W, 0.01)
+        W_nz = self.W #self._noisy_params(self.W, 0.01)
         b_nz = self.b_h #self._noisy_params(self.b_h, 0.05)
         # Compute hidden and visible activations
         A_v, A_h = self._compute_activations(self.noisy_input, \

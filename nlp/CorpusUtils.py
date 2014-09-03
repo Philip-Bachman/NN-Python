@@ -268,7 +268,6 @@ def sample_phrases(text_stream, words_to_keys, unk_word='*UNK*', \
 @numba.jit("void(u4[:], i8, i8, i8, u4[:], u4[:], u4[:], u4[:])")
 def fast_pair_sample(phrase, max_window, i, repeats, anc_keys, pos_keys, rand_pool, ri):
     phrase_len = phrase.size
-    max_key_idx = anc_keys.shape[0]
     for r in range(repeats):
         j = i + r
         a_idx = rand_pool[ri[0]] % phrase_len
@@ -290,10 +289,34 @@ def fast_pair_sample(phrase, max_window, i, repeats, anc_keys, pos_keys, rand_po
         pos_keys[j] = phrase[c_idx]
     return
 
-class PosSampler:
+@numba.jit("void(u4[:], i8, i8, u4[:], i8, u4[:,:], u4[:], u4[:])")
+def fast_seq_sample(phrase, gram_n, pad_key, i, repeats, key_seqs, rand_pool, ri):
+    phrase_len = phrase.size
+    for r in range(repeats):
+        j = i + r
+        # Get a random stopping point for the n-gram. For now, assume that
+        # n-grams containing fewer than 2 valid words, i.e. a context word and
+        # a predicted word, are not desired.
+        stop_idx = (rand_pool[ri[0]] % (phrase_len - 1)) + 1
+        ri[0] += 1
+        # Get the start index of the n-gram (maybe negative)
+        start_idx = stop_idx - gram_n + 1
+        cur_pos = 0
+        while (cur_pos < gram_n):
+            # Record the word LUT keys for this n-gram, substituting the
+            # "padding key" as required due to phrase length
+            if ((start_idx + cur_pos) < 0):
+                key_seqs[j,cur_pos] = pad_key[0]
+            else:
+                key_seqs[j,cur_pos] = phrase[start_idx+cur_pos]
+            cur_pos += 1
+    return
+
+class PhraseSampler:
     """
     This samples positive example pairs each comprising an anchor word and a
-    near-by context word from its "skip-gram window".
+    near-by context word from its "skip-gram window". This can also samples
+    n_gram sequences from the managed collection of phrases.
     """
     def __init__(self, phrase_list, max_window, max_phrase_key=20000):
         # phrase_list contains the phrases to sample from
@@ -326,7 +349,7 @@ class PosSampler:
                 widx = phrase_count - 1
         return table.astype(np.uint32)
 
-    def sample(self, sample_count):
+    def sample_pairs(self, sample_count):
         """Draw a sample."""
         anc_keys = np.zeros((sample_count,), dtype=np.uint32)
         pos_keys = np.zeros((sample_count,), dtype=np.uint32)
@@ -343,7 +366,7 @@ class PosSampler:
         for i in range(0, sample_count, repeats):
             pt_idx = rand_pool[ri[0]]
             ri[0] = ri[0] + 1
-            phrase_keys[i] = self.phrase_table[pt_idx]
+            phrase_keys[i:(i+repeats)] = self.phrase_table[pt_idx]
             fast_pair_sample(self.phrase_list[phrase_keys[i]], self.max_window, \
                              i, repeats, anc_keys, pos_keys, rand_pool, ri)
         # Sample negative examples from self.neg_table
@@ -351,6 +374,31 @@ class PosSampler:
         pos_keys = pos_keys.astype(np.uint32)
         phrase_keys = np.minimum(self.max_phrase_key, phrase_keys).astype(np.uint32)
         return [anc_keys, pos_keys, phrase_keys]
+
+    def sample_ngrams(self, sample_count, gram_n=5, pad_key=None):
+        """Draw a sample."""
+        key_seqs = np.zeros((sample_count, gram_n), dtype=np.uint32)
+        phrase_keys = np.zeros((sample_count,), dtype=np.uint32)
+        pad_key = np.asarray([pad_key]).astype(np.uint32)
+        # we will use a "precomputed" table of random ints, to save overhead
+        # on calls through numpy.random. the location of the next fresh random
+        # int in rand_pool is given by ri[0]
+        rand_pool = npr.randint(0, high=self.pt_size, \
+                size=(10*sample_count,)).astype(np.uint32)
+        ri = np.asarray([0]).astype(np.uint32) # index into rand_pool
+        repeats = 5
+        while not ((sample_count % repeats) == 0):
+            repeats -= 1
+        for i in range(0, sample_count, repeats):
+            pt_idx = rand_pool[ri[0]]
+            ri[0] = ri[0] + 1
+            phrase_keys[i:(i+repeats)] = self.phrase_table[pt_idx]
+            fast_seq_sample(self.phrase_list[phrase_keys[i]], gram_n, pad_key, \
+                    i, repeats, key_seqs, rand_pool, ri)
+        # Sample negative examples from self.neg_table
+        key_seqs = key_seqs.astype(np.uint32)
+        phrase_keys = np.minimum(self.max_phrase_key, phrase_keys).astype(np.uint32)
+        return [key_seqs, phrase_keys]
 
 class NegSampler:
     """

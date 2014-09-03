@@ -323,7 +323,7 @@ class CAModel:
         self.context_layer.reset_moms(1.0)
         self.class_layer.reset_moms(1.0)
         for b in range(batch_count):
-            anc_keys, pos_keys, phrase_keys = pos_sampler.sample(batch_size)
+            anc_keys, pos_keys, phrase_keys = pos_sampler.sample_pairs(batch_size)
             neg_keys = neg_sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
                                    train_words=train_words, train_context=train_context, \
@@ -371,7 +371,7 @@ class CAModel:
         print("Training new context vectors:")
         L = 0.0
         for b in range(batch_count):
-            anc_keys, pos_keys, phrase_keys = pos_sampler.sample(batch_size)
+            anc_keys, pos_keys, phrase_keys = pos_sampler.sample_pairs(batch_size)
             neg_keys = neg_sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, phrase_keys, \
                                    train_words=False, train_context=True, \
@@ -462,7 +462,7 @@ class W2VModel:
         L = 0.0
         print("Training all parameters:")
         for b in range(batch_count):
-            anc_keys, pos_keys, phrase_keys = pos_sampler.sample(batch_size)
+            anc_keys, pos_keys, phrase_keys = pos_sampler.sample_pairs(batch_size)
             neg_keys = neg_sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, learn_rate=learn_rate)
             if ((b > 1) and ((b % self.reg_freq) == 0)):
@@ -481,7 +481,7 @@ class W2VModel:
             neg_sampler: sampler for generating contrastive examples
             test_samples: number of samples to check loss for
         """
-        anc_keys, pos_keys, phrase_keys = pos_sampler.sample(test_samples)
+        anc_keys, pos_keys, phrase_keys = pos_sampler.sample_pairs(test_samples)
         neg_keys = neg_sampler.sample(test_samples)
         L = self.w2v_layer.batch_test(anc_keys, pos_keys, neg_keys)
         print("Test loss: {0:.4f}".format(L / test_samples))
@@ -588,7 +588,7 @@ def test_CAModel_stb():
                   lam_wv=lam_l2, lam_cv=lam_l2, lam_ns=lam_l2)
     cam.init_params(0.05)
     cam.set_noise(drop_rate=0.5, fuzz_scale=0.02)
-    pos_sampler = cu.PosSampler(tr_phrases, sg_window)
+    pos_sampler = cu.PhraseSampler(tr_phrases, sg_window)
     neg_sampler = cu.NegSampler(tr_words)
 
     # Train all parameters using the training set phrases
@@ -632,7 +632,7 @@ def test_W2VModel_stb():
     lam_l2 = 1e-4
     # Initialize the model and some sample samplers for training
     w2v_model = W2VModel(wv_dim, max_wv_key, lam_l2=lam_l2)
-    pos_sampler = cu.PosSampler(tr_phrases, sg_window)
+    pos_sampler = cu.PhraseSampler(tr_phrases, sg_window)
     neg_sampler = cu.NegSampler(tr_words)
 
     alpha = 1e-2
@@ -669,7 +669,7 @@ def test_W2VModel_1bw():
     wv_dim = 200
     lam_l2 = 1e-4
     w2v_model = W2VModel(wv_dim, max_wv_key, lam_l2=lam_l2)
-    pos_sampler = cu.PosSampler(tr_phrases, sg_window)
+    pos_sampler = cu.PhraseSampler(tr_phrases, sg_window)
     neg_sampler = cu.NegSampler(tr_words)
 
     print("Corpus word count: {0:d}".format(tr_words.size))
@@ -716,7 +716,7 @@ if __name__ == '__main__':
     cam.set_noise(drop_rate=0.5, fuzz_scale=0.0)
 
     # Initialize samplers for training
-    pos_sampler = cu.PosSampler(tr_phrases, sg_window)
+    pos_sampler = cu.PhraseSampler(tr_phrases, sg_window)
     neg_sampler = cu.NegSampler(neg_table=tr_words, neg_count=ns_count)
 
     # Train all parameters using the training set phrases

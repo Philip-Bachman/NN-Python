@@ -174,10 +174,30 @@ class HSMLayer:
         # Cleanup debris from any previous feedforward
         self._cleanup()
         # Do feedforward and backprop all in one go
-        L = zeros((1,))
+        
         dLdX = zeros(X.shape)
+        L_all = zeros((X.shape[0],code_keys.shape[1]))
+        for i in range(X.shape[0]):
+            x = X[i,:]
+            for j in range(code_keys.shape[1]):
+                code_key = code_keys[i,j]
+                if (code_key < MAX_HSM_KEY):
+                    code_vec = self.params['W'][code_key,:]
+                    neg_label = -1.0 * code_signs[i,j]
+                    y = np.dot(x, code_vec.T) + self.params['b'][code_key]
+                    exp_y = np.exp(neg_label * y)
+                    L_all[i,j] = np.log(1.0 + exp_y)
+                    g = neg_label * (exp_y / (1.0 + exp_y))
+                    self.grads['W'][code_key] += g * x
+                    self.grads['b'][code_key] += g
+                    dLdX[i] += g * code_vec
+        L_slow = np.sum(L_all)
+        ######
+        L = zeros((1,))
         hsm_ff_bp(code_keys, code_signs, X, self.params['W'], self.params['b'], \
-                  dLdX, self.grads['W'], self.grads['b'], L, do_grad)
+                  dLdX, self.grads['W'], self.grads['b'], L, 0) #do_grad)
+        L_fast = L[0]
+        print("L_slow: {0:.4f}, L_fast: {1:.4f}".format(L_slow, L_fast))
         # Derp dorp
         L = L[0]
         if do_grad:
