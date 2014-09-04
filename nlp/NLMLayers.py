@@ -8,8 +8,9 @@ import numexpr as ne
 
 # Imports of my stuff
 from HelperFuncs import randn, ones, zeros
-from CythonFuncs import w2v_ff_bp, nsl_ff_bp, hsm_ff_bp, lut_bp, \
-                        ag_update_2d, ag_update_1d
+from CythonFuncs import w2v_ff_bp, nsl_ff_bp, lut_bp, \
+                        ag_update_2d, ag_update_1d, hsm_ff_bp
+#from NumbaFuncs import hsm_ff_bp
 
 ADA_EPS = 1e-3
 MAX_HSM_KEY = 12345678
@@ -38,7 +39,7 @@ class NSLayer:
         self.dLdX = []
         self.dLdY = []
         self.samp_keys = []
-        self.grad_idx = set()
+        self.grad_idx = []
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -61,28 +62,39 @@ class NSLayer:
 
     def ff_bp(self, X, pos_samples, neg_samples, do_grad=True):
         """Perform feedforward and then backprop for this layer."""
+        # check array types, to avoid "silent" type errors in Cython code
+        assert(type(X[0,0]) == np.float32)
+        assert(type(pos_samples[0]) == np.uint32)
+        assert(type(neg_samples[0,0]) == np.uint32)
+        # check for valid input shapes
         assert(X.shape[1] == self.params['W'].shape[1])
         assert(pos_samples.shape[0] == X.shape[0])
         assert(neg_samples.shape[0] == X.shape[0])
+        # check that requested target keys are all valid
         assert(np.max(pos_samples) < self.key_count)
         assert(np.max(neg_samples) < self.key_count)
-        do_grad = 1 if do_grad else 0 # change to int for cython code
         # Cleanup debris from any previous feedforward
         self._cleanup()
-        # Record inputs and keys for positive/negative sample examples
+        # change from boolean to int, for Cython code
+        do_grad = 1 if do_grad else 0
+        # record inputs and keys for positive/negative examples
         pos_samples = pos_samples[:,np.newaxis]
-        samp_keys = np.hstack((pos_samples, neg_samples)).astype(np.uint32)
+        samp_keys = np.hstack((pos_samples, neg_samples))
         samp_sign = -1.0 * ones(samp_keys.shape)
         samp_sign[:,0] = 1.0
-        # Do feedforward and backprop all in one go
-        L = zeros((1,))
+        # do feedforward and backprop all in one go
+        L = zeros(samp_keys.shape)
         dLdX = zeros(X.shape)
         nsl_ff_bp(samp_keys, samp_sign, X, self.params['W'], self.params['b'], \
                   dLdX, self.grads['W'], self.grads['b'], L, do_grad)
-        # Derp dorp
-        L = L[0]
+        # derp dorp
+        L = np.sum(L)
         if do_grad:
-            self.grad_idx.update(samp_keys.ravel())
+            if len(self.grad_idx) == 0:
+                self.grad_idx = np.unique(code_keys)
+            else:
+                self.grad_idx = np.unique(np.concatenate( \
+                        (self.grad_idx, np.unique(code_keys)) ))
         return [dLdX, L]
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -93,12 +105,12 @@ class NSLayer:
 
     def apply_grad(self, learn_rate=1e-2):
         """Apply the current accumulated gradients, with adagrad."""
-        nz_idx = np.asarray([i for i in self.grad_idx]).astype(np.uint32)
+        nz_idx = self.grad_idx[self.grad_idx < self.key_count]
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
                      self.moms['W'], learn_rate)
         ag_update_1d(nz_idx, self.params['b'], self.grads['b'], \
                      self.moms['b'], learn_rate)
-        self.grad_idx = set()
+        self.grad_idx = []
         return
 
     def reset_moms(self, ada_init=1e-3):
@@ -147,7 +159,7 @@ class HSMLayer:
         self.Y = []
         self.dLdX = []
         self.dLdY = []
-        self.grad_idx = set()
+        self.grad_idx = []
         return
 
     def init_params(self, w_scale=0.01, b_scale=0.0):
@@ -168,40 +180,39 @@ class HSMLayer:
         self.params['W'] = M * m_scales[:,np.newaxis]
         return
 
+    @profile
     def ff_bp(self, X, code_keys, code_signs, do_grad=True):
-        """Perform feedforward and then backprop for this layer."""
-        do_grad = 1 if do_grad else 0 # change to int for cython code
-        # Cleanup debris from any previous feedforward
+        """Perform feedforward and then backprop for this layer.
+
+        By setting do_grad to False, we can just compute the loss, without
+        making modifications to the gradient accumulators (i.e. no backprop).
+        """
+        # check array types, to avoid "silent" type errors in Cython code
+        assert(type(X[0,0]) == np.float32)
+        assert(type(code_keys[0,0]) == np.uint32)
+        assert(type(code_signs[0,0]) == np.float32)
+        # check for valid input shapes
+        assert(X.shape[1] == self.params['W'].shape[1])
+        assert(code_keys.shape[0] == X.shape[0])
+        assert(code_signs.shape[0] == X.shape[0])
+        # cleanup debris from any previous feedforward
         self._cleanup()
-        # Do feedforward and backprop all in one go
-        
+        # change from boolean to int, for Cython code
+        do_grad = 1 if do_grad else 0
+        # do feedforward and backprop all in one go
         dLdX = zeros(X.shape)
-        L_all = zeros((X.shape[0],code_keys.shape[1]))
-        for i in range(X.shape[0]):
-            x = X[i,:]
-            for j in range(code_keys.shape[1]):
-                code_key = code_keys[i,j]
-                if (code_key < MAX_HSM_KEY):
-                    code_vec = self.params['W'][code_key,:]
-                    neg_label = -1.0 * code_signs[i,j]
-                    y = np.dot(x, code_vec.T) + self.params['b'][code_key]
-                    exp_y = np.exp(neg_label * y)
-                    L_all[i,j] = np.log(1.0 + exp_y)
-                    g = neg_label * (exp_y / (1.0 + exp_y))
-                    self.grads['W'][code_key] += g * x
-                    self.grads['b'][code_key] += g
-                    dLdX[i] += g * code_vec
-        L_slow = np.sum(L_all)
-        ######
-        L = zeros((1,))
+        L_cy = zeros(code_keys.shape)
         hsm_ff_bp(code_keys, code_signs, X, self.params['W'], self.params['b'], \
-                  dLdX, self.grads['W'], self.grads['b'], L, 0) #do_grad)
-        L_fast = L[0]
-        print("L_slow: {0:.4f}, L_fast: {1:.4f}".format(L_slow, L_fast))
+                  dLdX, self.grads['W'], self.grads['b'], L_cy, do_grad)
+        L_cy_sum = np.sum(L_cy)
         # Derp dorp
-        L = L[0]
+        L = L_cy_sum
         if do_grad:
-            self.grad_idx.update(code_keys.ravel())
+            if len(self.grad_idx) == 0:
+                self.grad_idx = np.unique(code_keys)
+            else:
+                self.grad_idx = np.unique(np.concatenate( \
+                        (self.grad_idx, np.unique(code_keys)) ))
         return [dLdX, L]
 
     def l2_regularize(self, lam_l2=1e-5):
@@ -210,14 +221,15 @@ class HSMLayer:
         self.params['b'] -= lam_l2 * self.params['b']
         return 1
 
+    @profile
     def apply_grad(self, learn_rate=1e-2):
         """Apply the current accumulated gradients, with adagrad."""
-        nz_idx = np.asarray([i for i in self.grad_idx if (i < self.key_count)]).astype(np.uint32)
+        nz_idx = self.grad_idx[self.grad_idx < self.key_count]
         ag_update_2d(nz_idx, self.params['W'], self.grads['W'], \
                      self.moms['W'], learn_rate)
         ag_update_1d(nz_idx, self.params['b'], self.grads['b'], \
                      self.moms['b'], learn_rate)
-        self.grad_idx = set()
+        self.grad_idx = []
         return
 
     def reset_moms(self, ada_init=1e-3):
@@ -436,6 +448,7 @@ class LUTLayer:
                 self.Y[:,s_idx:e_idx] = self.params['W'].take(self.X[:,i], axis=0)
         return self.Y
 
+    @profile
     def backprop(self, dLdY):
         """Backprop through this layer.
         """
@@ -446,10 +459,9 @@ class LUTLayer:
             lut_bp(self.X, dLdY, self.grads['W'])
         else:
             # Backprop for each of the predictor words
+            dLdY_chunks = np.hsplit(dLdY, self.n_gram)
             for i in range(self.n_gram):
-                s_idx = i * self.embed_dim
-                e_idx = s_idx + self.embed_dim
-                lut_bp(self.X[:,i], dLdY[:,s_idx:e_idx], self.grads['W'])
+                lut_bp(self.X[:,i], dLdY_chunks[i], self.grads['W'])
         return 1
 
     def l2_regularize(self, lam_l2=1e-5):

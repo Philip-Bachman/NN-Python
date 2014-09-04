@@ -238,7 +238,7 @@ cdef void cy_nsl_ff_bp0(
                 # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]
                 y = <REAL_t>dsdot(&vec_dim, &X[row1], &ONE, &W[row2], &ONE) + b[W_key]
                 exp_pns_y = <REAL_t>exp(neg_label * y) # this is used for loss/grad
-                L[0] = L[0] + log(1.0 + exp_pns_y) # record the loss
+                L[X_key*pn_size + j] = log(1.0 + exp_pns_y) # record the loss
                 if (do_grad == 1):
                     # Compute gradient and update gradient accumulators
                     g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))
@@ -273,7 +273,7 @@ cdef void cy_nsl_ff_bp1(
                 # compute prediction y as np.dot(X[X_key], W[W_key].T) + b[W_key]
                 y = <REAL_t>sdot(&vec_dim, &X[row1], &ONE, &W[row2], &ONE) + b[W_key]
                 exp_pns_y = <REAL_t>exp(neg_label * y) # this is used for loss/grad
-                L[0] = L[0] + log(1.0 + exp_pns_y) # record the loss
+                L[X_key*pn_size + j] = log(1.0 + exp_pns_y) # record the loss
                 if (do_grad == 1):
                     # Compute gradient and update gradient accumulators
                     g = neg_label * (exp_pns_y / (1.0 + exp_pns_y))

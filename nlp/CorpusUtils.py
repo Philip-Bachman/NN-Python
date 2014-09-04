@@ -73,7 +73,6 @@ def build_vocab(sentences, min_count=5, compute_hs_tree=True, \
     """
     Build vocabulary from a sequence of sentences (can be a once-only generator stream).
     Each sentence must be an iterable sequence of hashable objects.
-
     """
     # scan the given corpus of sentences and count the occurrences of each word
     sentence_no = -1
@@ -115,10 +114,10 @@ def build_vocab(sentences, min_count=5, compute_hs_tree=True, \
             keys_to_words[idx] = word
             idx += 1
         else:
-            # this word is too infrequent and is not *UNK*
+            # collect count for a word that will become *UNK*
             unk_count += v.count
     if '*UNK*' in raw_vocab:
-        # *UNK* will have been processed in the above loop
+        # *UNK* must have been processed in the above loop
         words_to_vocabs['*UNK*'].count += unk_count
     else:
         # *UNK* was not processed by the above loop, so add it now
@@ -132,8 +131,47 @@ def build_vocab(sentences, min_count=5, compute_hs_tree=True, \
     # objects in words_to_vocabs
     _precalc_downsampling(words_to_vocabs, down_sample=down_sample)
 
+    #
+    # The objects returned after building the vocabulary are as follows:
+    #
+    #   words_to_vocabs: map from textish words to their Vocab objects, which
+    #                    we keep because the Vocab object contains the word's
+    #                    count (i.e. # appearances in corpus) and its computed
+    #                    downsampling frequency for use in training.
+    #
+    #   words_to_keys: map from textish words to the LUT keys that we will use
+    #                  to fetch their various embedding vectors/parameters
+    #
+    #   keys_to_words: map from LUT keys to the textish words that they will
+    #                  stand in for during model training
+    #
+    #   unk_word: the textish representation that stands in for words that
+    #             aren't included in the "trained" vocabulary
+    #
+    #   ns_table: a large list of word LUT keys such that sampling keys
+    #             uniformly at random from the list samples the keys nearly in
+    #             proportion to the frequency of their corresponding words
+    #
+    #   hs_tree: dict containing containing three items: 'keys_to_code_keys',
+    #            'keys_to_code_signs', and 'max_code_key'.
+    #     keys_to_code_keys: this maps word LUT keys to their corresponding
+    #                        sequence of keys into a LUT containing HSM code
+    #                        vectors. 
+    #     keys_to_code_signs: like keys_to_code_keys, but maps to the target
+    #                         predictions (i.e. +/- 1) for each HSM code.
+    #     max_code_key: the maximum key required by the HSM codes recorded in
+    #                   keys_to_code_keys.
+    #
+    #     NOTE: All HSM code keys/signs are stored in a key/sign matrix, so all
+    #           codes have the same length, in some sense. However, to be most
+    #           efficient, HSM codes should be variable length. So, each row in
+    #           the key/sign matrix is not entirely filled with valid values.
+    #           Unused entries in the key matrix are set to > MAX_HSM_KEY, and
+    #           unused entries in the sign matrix are set to 0. This lets us
+    #           use the "fixed-length" codes just like variable-length codes.
+    #                            
     result = {}
-    result['words_to_vocabs'] = [] #words_to_vocabs
+    result['words_to_vocabs'] = words_to_vocabs
     result['words_to_keys'] = words_to_keys
     result['keys_to_words'] = keys_to_words
     result['unk_word'] = '*UNK*'
@@ -163,13 +201,12 @@ def _precalc_downsampling(w2v, down_sample=0.0):
         v.sample_prob = min(prob, 1.0)
     return
 
-def _make_table(w2v, k2w, w2k, table_size=10000000, power=0.75):
+def _make_table(w2v, k2w, w2k, table_size=20000000, power=0.75):
     """
     Create a table using stored vocabulary word counts for drawing random words
-    in the negative sampling training routines.
+    in parts of training based on 'negative sampling'.
 
     Called from `build_vocab()`.
-
     """
     # table (= list of words) of noise distribution for negative sampling
     vocab_size = len(k2w)
@@ -197,7 +234,7 @@ def _create_binary_tree(w2v):
     will have shorter binary codes. Called internally from `build_vocab()`.
 
     The codes (presumably for use in a Hierarchical Softmax Layer) are stored
-    directly into the Vocab ojects that are the values in the passed w2v dict.
+    directly into the Vocab ojects that are the values in the dict param 'w2v'.
     """
     # build the huffman tree
     heap = list(itervalues(w2v))
@@ -318,20 +355,19 @@ class PhraseSampler:
     near-by context word from its "skip-gram window". This can also samples
     n_gram sequences from the managed collection of phrases.
     """
-    def __init__(self, phrase_list, max_window, max_phrase_key=20000):
+    def __init__(self, phrase_list, max_window, max_phrase_key=50000):
         # phrase_list contains the phrases to sample from
         self.max_window = max_window
         self.phrase_list = phrase_list
         self.phrase_table = self._make_table(self.phrase_list)
-        self.max_phrase_key = max_phrase_key
+        self.max_phrase_key = min(len(self.phrase_list), max_phrase_key)
         self.pt_size = self.phrase_table.size
         return
 
-    def _make_table(self, p_list, table_size=10000000):
+    def _make_table(self, p_list, table_size=20000000):
         """
         Create a table for quickly drawing phrase indices in proportion to
         the length of each phrase.
-
         """
         phrase_count = len(p_list)
         phrase_lens = np.asarray([p.size for p in p_list]).astype(np.float64)
@@ -407,7 +443,6 @@ class NegSampler:
     def __init__(self, neg_table=None, neg_count=10):
         # phrase_list contains the phrases to sample from 
         self.neg_table = neg_table
-        self.neg_table.reshape((self.neg_table.size,))
         self.neg_table_size = self.neg_table.size
         self.neg_count = neg_count
         return

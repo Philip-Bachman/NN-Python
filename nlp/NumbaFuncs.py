@@ -5,7 +5,7 @@ import numpy.random as npr
 import threading
 import numba
 from math import exp, log, sqrt
-from numba import jit, void, i4, f4
+from numba import jit, void, i4, f4, u4
 from ctypes import pythonapi, c_void_p
 
 ADA_EPS = 0.001
@@ -181,6 +181,34 @@ lut_st = jit(fn_sig_5, nopython=True)(lut_sp)
 lut_bp = make_multithread(lut_st, THREAD_NUM)
 
 
+def hsm_ff_bp_sp(sp_idx, X, code_keys, code_signs, W, b, dLdX, dLdW, dLdb, L):
+    threadstate = savethread()
+    obs_count = sp_idx.shape[0]
+    code_len = code_keys.shape[1]
+    vec_dim = X.shape[1]
+    for spi in range(obs_count):
+        i = sp_idx[spi]
+        for j in range(code_len):
+            code_key = code_keys[i,j]
+            if code_key < 1234567:
+                y = b[code_key]
+                # for speed, this needs to change to sdot via BLAS
+                for k in range(vec_dim):
+                    y += X[i,k] * W[code_key,k]
+                neg_label = -1.0 * code_signs[i,j]
+                exp_y = exp(neg_label * y)
+                L[i,j] = log(1.0 + exp_y)
+                g = neg_label * (exp_y / (1.0 + exp_y))
+                dLdb[code_key] += g
+                # for speed, this needs to change to saxpy via BLAS
+                for k in range(vec_dim):
+                    dLdX[i,k] += g * W[code_key,k]
+                    dLdW[code_key,k] += g * X[i,k]
+    restorethread(threadstate)
+    return
+fn_sig_6 = void(i4[:], f4[:,:], u4[:,:], f4[:,:], f4[:,:], f4[:], f4[:,:], f4[:,:], f4[:], f4[:,:])
+hsm_ff_bp_st = jit(fn_sig_6, nopython=True)(hsm_ff_bp_sp)
+hsm_ff_bp = make_multithread(hsm_ff_bp_st, THREAD_NUM)
 
 ##############
 # EYE BUFFER #

@@ -67,7 +67,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
-    pc0 = [28*28, 500, 500, 500, 11]
+    pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.05, 'do_dropout': True}

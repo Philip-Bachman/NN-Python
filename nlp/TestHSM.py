@@ -31,7 +31,7 @@ class PVModel:
       pre_words: # of previous words to use in forward-prediction
       lam_wv: l2 regularization parameter for word vectors
       lam_cv: l2 regularization parameter for context vectors
-      lam_sm: l2 regularization parameter for weights in softmax layer
+      lam_cl: l2 regularization parameter for weights in classification layer
 
     Note: This implementation also passes the word/context vectors through
           an extra "noise layer" prior to the HSM layer. The noise layer adds
@@ -39,7 +39,7 @@ class PVModel:
           noise for stronger regularization.
     """
     def __init__(self, wv_dim, cv_dim, max_wv_key, max_cv_key, max_hs_key, \
-                 pre_words=5, lam_wv=1e-4, lam_cv=1e-4, lam_sm=1e-4):
+                 pre_words=5, lam_wv=1e-4, lam_cv=1e-4, lam_cl=1e-4):
         # Record options/parameters
         self.wv_dim = wv_dim
         self.cv_dim = cv_dim
@@ -51,7 +51,8 @@ class PVModel:
         self.pre_words = pre_words
         self.lam_wv = lam_wv
         self.lam_cv = lam_cv
-        self.lam_sm = lam_sm
+        self.lam_cl = lam_cl
+        self.reg_freq = 25
         # Set noise layer parameters (for better regularization)
         self.drop_rate = 0.0
         self.fuzz_scale = 0.0
@@ -62,8 +63,8 @@ class PVModel:
                                           source_dim=wv_dim, \
                                           bias_dim=cv_dim, \
                                           do_rescale=False)
-        self.noise_layer = nlml.GPUNoiseLayer(drop_rate=self.drop_rate, \
-                                              fuzz_scale=self.fuzz_scale)
+        self.noise_layer = nlml.NoiseLayer(drop_rate=self.drop_rate, \
+                                           fuzz_scale=self.fuzz_scale)
         assert(self.max_hs_key > 0)
         self.class_layer = nlml.HSMLayer(\
                 in_dim=(self.cv_dim + (self.pre_words * self.wv_dim)), \
@@ -92,54 +93,45 @@ class PVModel:
         self.class_layer.reset_moms(ada_init)
         return
 
+    @profile
     def batch_update(self, pre_keys, post_code_keys, post_code_signs, \
-            phrase_keys, learn_rate=1e-3, train_context=False, \
-            train_other=False):
+            phrase_keys, train_context=True, train_words=True, \
+            learn_rate=1e-3):
         """Perform a single "minibatch" update of the model parameters.
 
         Parameters:
             pre_keys: keys for the n-1 items in each n-gram to predict with
             post_code_keys: hsm code LUT keys for the words to-be-predicted
             post_code_signs: hsm code signs for the words to-be-predicted
-            learn_rate: learning rate to use in parameter updates
+            phrase_keys: LUT keys for context/phrase vectors
             train_context: train bias and modulator params in context layer
-            train_other: train the basic word and classification params
+            train_words: train the basic word input/output vectors
+            learn_rate: learning rate to use in parameter updates
         """
-        #print("pre_keys.shape: {0:s}".format(str(pre_keys.shape)))
-        #print("post_code_keys.shape: {0:s}".format(str(post_code_keys.shape)))
-        #print("post_code_signs.shape: {0:s}".format(str(post_code_signs.shape)))
-        #print("phrase_keys.shape: {0:s}".format(str(phrase_keys.shape)))
-        #for i in range(10):
-        #    print("************************************************************")
-        #    print("pre_keys[i]: {0:s}".format(str(pre_keys[i])))
-        #    print("post_code_keys[i]: {0:s}".format(str(post_code_keys[i])))
-        #    print("post_code_signs[i]: {0:s}".format(str(post_code_signs[i])))
-        #    print("phrase_keys[i]: {0:s}".format(str(phrase_keys[i])))
-        L = zeros((1,))
         # Feedforward through look-up-table, noise, and prediction layers
         Xw = self.word_layer.feedforward(pre_keys)
         Xc = self.context_layer.feedforward(Xw, phrase_keys)
-        Xn = self.noise_layer.feedforward(Xc, return_on_gpu=False)
+        Xn = self.noise_layer.feedforward(Xc)
 
         # Turn the corner with feedforward and backprop at class layer
         dLdXn, L = self.class_layer.ff_bp(Xn, post_code_keys, \
                 post_code_signs, do_grad=True)
 
         # Backprop through remaining layers
-        dLdXc = self.noise_layer.backprop(dLdXn, return_on_gpu=False)
+        dLdXc = self.noise_layer.backprop(dLdXn)
         dLdXw = self.context_layer.backprop(dLdXc)
         self.word_layer.backprop(dLdXw)
 
         # Apply the gradient updates computed during backprop
-        if train_other:
+        if train_words:
             self.class_layer.apply_grad(learn_rate=learn_rate)
             self.word_layer.apply_grad(learn_rate=learn_rate)
         if train_context:
             self.context_layer.apply_grad(learn_rate=learn_rate)
         return L
 
-    def train_all_params(self, ngram_sampler, hsm_code_keys, hsm_code_signs, \
-            batch_size, batch_count, learn_rate=1e-3):
+    def train(self, ngram_sampler, hsm_code_keys, hsm_code_signs, batch_size, \
+            batch_count, train_context=True, train_words=True, learn_rate=1e-3):
         """Train all parameters in the model using the given phrases.
 
         Parameters:
@@ -149,6 +141,8 @@ class PVModel:
             hsm_code_signs: table mapping word keys to their hsm code signs
             batch_size: size of minibatches for each update
             batch_count: number of minibatch updates to perform
+            train_context: whether to train context/phrase vectors
+            train_words: whether to train word input/output vectors
             learn_rate: learning rate to use for updates
         """
         L = 0.0
@@ -165,22 +159,35 @@ class PVModel:
             post_code_keys = hsm_code_keys.take(post_keys,axis=0)
             post_code_signs = hsm_code_signs.take(post_keys,axis=0)
             L += self.batch_update(pre_keys, post_code_keys, post_code_signs, \
-                    phrase_keys, learn_rate, train_context=True, train_other=True)
-            if ((b % 50) == 0):
-                obs_count = 50.0 * batch_size
+                    phrase_keys, train_context=train_context, \
+                    train_words=train_words, learn_rate=learn_rate)
+            # apply l2 regularization, but not every round (to save flops)
+            if ((b > 1) and ((b % self.reg_freq) == 0)):
+                reg_rate = learn_rate * self.reg_freq
+                if train_words:
+                    self.word_layer.l2_regularize(lam_l2=(reg_rate*self.lam_wv))
+                    self.class_layer.l2_regularize(lam_l2=(reg_rate*self.lam_cl))
+                if train_context:
+                    self.context_layer.l2_regularize(lam_Wm=(reg_rate*self.lam_cv), \
+                                                    lam_Wb=(reg_rate*self.lam_cv))
+            # diagnostic display stuff...
+            if ((b > 1) and ((b % 1000) == 0)):
+                Wm_info = self.context_layer.norm_info('Wm')
+                Wb_info = self.context_layer.norm_info('Wb')
+                print("-- mean norms: Wm = {0:.4f}, Wb = {1:.4f}".format(Wm_info['mean'],Wb_info['mean']))
+            if ((b % 250) == 0):
+                obs_count = 250.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
-                self.word_layer.clip_params(max_norm=3.0)
-                self.context_layer.clip_params(Wb_norm=3.0)
-                self.class_layer.clip_params(max_norm=6.0)
         return
 
-    def infer_context_vectors(self, phrase_list, hsm_code_keys, hsm_code_signs, \
+    def infer_context_vectors(self, ngram_sampler, hsm_code_keys, hsm_code_signs, \
             batch_size, batch_count, learn_rate=1e-3):
         """Train context/paragraph vectors for each of the given phrases.
 
         Parameters:
-            phrase_list: list of 1d numpy arrays of LUT keys (i.e. phrases)
+            ngram_sampler: a sampler that produces ngrams in LUT key form,
+                           along with keys to their source phrases.
             hsm_code_keys: table matching word keys to their hsm code keys
             hsm_code_signs: table matching word keys to their hsm code signs
             batch_size: batch size for minibatch updates
@@ -189,8 +196,8 @@ class PVModel:
         """
         # Put a new context layer in place of self.context_layer, but keep
         # a pointer to self.context_layer around to restore later...
-        max_cv_key = len(phrase_list) - 1
-        new_context_layer = nlml.CMLayer(max_key=self.max_cv_key, \
+        max_cv_key = ngram_sampler.max_phrase_key
+        new_context_layer = nlml.CMLayer(max_key=max_cv_key, \
                                          source_dim=self.wv_dim, \
                                          bias_dim=self.cv_dim, \
                                          do_rescale=False)
@@ -202,19 +209,29 @@ class PVModel:
         L = 0.0
         print("Training new context vectors:")
         for b in range(batch_count):
-            [seq_keys, phrase_keys] = rand_word_seqs(phrase_list, batch_size, \
-                                      self.pre_words+1, self.max_wv_key)
+            seq_keys, phrase_keys = ngram_sampler.sample_ngrams(batch_size, \
+                    gram_n=self.pre_words+1, pad_key=self.max_wv_key)
             pre_keys = seq_keys[:,0:-1]
             post_keys = seq_keys[:,-1]
             post_code_keys = hsm_code_keys.take(post_keys,axis=0)
             post_code_signs = hsm_code_signs.take(post_keys,axis=0)
             L += self.batch_update(pre_keys, post_code_keys, post_code_signs, \
-                    phrase_keys, learn_rate, train_context=True, train_other=False)
-            if ((b % 200) == 0):
-                obs_count = 200.0 * batch_size
-                print("Test batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
+                    phrase_keys, train_words=False, train_context=True, \
+                    learn_rate=learn_rate)
+            # apply l2 regularization, but not every round (to save flops)
+            if ((b > 1) and ((b % self.reg_freq) == 0)):
+                reg_rate = learn_rate * self.reg_freq
+                self.context_layer.l2_regularize(lam_Wm=(reg_rate*self.lam_cv), \
+                                                 lam_Wb=(reg_rate*self.lam_cv))
+            # diagnostic display stuff...
+            if ((b > 1) and ((b % 1000) == 0)):
+                Wm_info = self.context_layer.norm_info('Wm')
+                Wb_info = self.context_layer.norm_info('Wb')
+                print("-- mean norms: Wm = {0:.4f}, Wb = {1:.4f}".format(Wm_info['mean'],Wb_info['mean']))
+            if ((b % 250) == 0):
+                obs_count = 250.0 * batch_size
+                print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
-                self.context_layer.clip_params(max_norm=3.0)
         # Set self.context_layer back to what it was prior to retraining
         self.word_layer.reset_grads()
         self.context_layer = prev_context_layer
@@ -270,7 +287,7 @@ class CAModel:
                                           bias_dim=cv_dim, \
                                           do_rescale=True)
         self.noise_layer = nlml.NoiseLayer(drop_rate=self.drop_rate, \
-                                              fuzz_scale=self.fuzz_scale)
+                                           fuzz_scale=self.fuzz_scale)
         if self.use_ns:
             self.class_layer = nlml.NSLayer(in_dim=(self.cv_dim+self.wv_dim), \
                                             max_out_key=self.max_wv_key)
@@ -329,13 +346,13 @@ class CAModel:
             Xt = self.tanh_layer.feedforward(Xc)
         else:
             Xt = Xc
-        Xn = self.noise_layer.feedforward(Xt) #, return_on_gpu=False)
+        Xn = self.noise_layer.feedforward(Xt)
 
         # Turn the corner with feedforward and backprop at class layer
         dLdXn, L = self.class_layer.ff_bp(Xn, param_1, param_2, do_grad=True)
 
         # Backprop through layers based on feedforward result
-        dLdXt = self.noise_layer.backprop(dLdXn) #, return_on_gpu=False)
+        dLdXt = self.noise_layer.backprop(dLdXn)
         if self.use_tanh:
             dLdXc = self.tanh_layer.backprop(dLdXt)
         else:
@@ -402,8 +419,8 @@ class CAModel:
                 Wm_info = self.context_layer.norm_info('Wm')
                 Wb_info = self.context_layer.norm_info('Wb')
                 print("-- mean norms: Wm = {0:.4f}, Wb = {1:.4f}".format(Wm_info['mean'],Wb_info['mean']))
-            if ((b % 50) == 0):
-                obs_count = 50.0 * batch_size
+            if ((b % 500) == 0):
+                obs_count = 500.0 * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         return
@@ -479,6 +496,8 @@ def some_nearest_words(keys_to_words, sample_count, W1=None, W2=None):
         W = W1
     norms = np.sqrt(np.sum(W**2.0,axis=1,keepdims=1))
     W = W / (norms + 1e-5)
+    max_valid_key = np.max(keys_to_words.keys())
+    W = W[0:(max_valid_key+1),:]
     # 
     source_keys = np.zeros((sample_count,)).astype(np.uint32)
     neighbor_keys = np.zeros((sample_count, 10)).astype(np.uint32)
@@ -498,7 +517,7 @@ def some_nearest_words(keys_to_words, sample_count, W1=None, W2=None):
     return [source_keys, neighbor_keys, source_words, neighbor_words]
 
 def test_cam_model():
-    data_dir = './flat_trees'
+    data_dir = './training_text'
     sentences = cu.SentenceFileIterator(data_dir)
     key_dicts = cu.build_vocab(sentences, min_count=3, compute_hs_tree=True, \
                             compute_ns_table=True, down_sample=0.0)
@@ -526,6 +545,7 @@ def test_cam_model():
                 use_ns=False, max_hs_key=max_hs_key, \
                 lam_wv=lam_l2, lam_cv=lam_l2, lam_cl=lam_l2)
     cam.init_params(0.05)
+    cam.context_layer.init_params(0.0)
     cam.set_noise(drop_rate=0.5, fuzz_scale=0.0)
 
     # Initialize samplers for training
@@ -544,8 +564,8 @@ def test_cam_model():
             print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
 
 if __name__=="__main__":
-    test_cam_model()
-    data_dir = './flat_trees'
+    #test_cam_model()
+    data_dir = './training_text'
     sentences = cu.SentenceFileIterator(data_dir)
     key_dicts = cu.build_vocab(sentences, min_count=3, compute_hs_tree=True, \
                             compute_ns_table=True, down_sample=0.0)
@@ -568,20 +588,21 @@ if __name__=="__main__":
     ns_count = 10
     wv_dim = 80
     cv_dim = 10
-    lam_l2 = 2e-3
+    lam_l2 = 5e-3
 
     pvm = PVModel(wv_dim, cv_dim, max_wv_key, max_cv_key, max_hs_key, \
-                 pre_words=5, lam_wv=lam_l2, lam_cv=lam_l2, lam_sm=lam_l2)
+                 pre_words=5, lam_wv=lam_l2, lam_cv=lam_l2, lam_cl=lam_l2)
     pvm.init_params(0.01)
+    pvm.context_layer.init_params(0.0)
     pvm.set_noise(drop_rate=0.0, fuzz_scale=0.0)
 
     # Initialize samplers for training
     ngram_sampler = cu.PhraseSampler(tr_phrases, sg_window)
 
     # Train all parameters using the training set phrases
-    for i in range(50):
-        pvm.train_all_params(ngram_sampler, hsm_code_keys, hsm_code_signs, \
-                250, 10001, learn_rate=1e-3)
+    for i in range(1):
+        pvm.train(ngram_sampler, hsm_code_keys, hsm_code_signs, 300, 2001, \
+                train_words=True, train_context=False, learn_rate=1e-3)
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
                 W1=pvm.word_layer.params['W'], W2=None)
         for w in range(10):
