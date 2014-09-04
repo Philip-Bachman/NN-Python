@@ -188,8 +188,8 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.05, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.05, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
@@ -216,10 +216,10 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         ##########################################
         # First, pretrain each layer in the mlp. #
         ##########################################
-        sgd_params['result_tag'] = "ss_ear_pt_s{0:d}_t{1:d}".format(su_count,test_num)
+        sgd_params['result_tag'] = "ss_ear_pt_NEW_s{0:d}_t{1:d}".format(su_count,test_num)
         sgd_params['batch_size'] = 25
         sgd_params['start_rate'] = 0.02
-        sgd_params['epochs'] = 30
+        sgd_params['epochs'] = 35
         for i in range(len(NET.dae_costs)):
             print("==================================================")
             print("Pretraining hidden layer(s) at depth {0:d}".format(i+1))
@@ -235,13 +235,16 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['start_rate'] = 0.05
         # Train with weak EAR regularization
         sgd_params['top_only'] = True
-        sgd_params['epochs'] = 10
+        sgd_params['epochs'] = 5
         NET.set_ear_lam(0.0)
-        rng = np.random.RandomState(rng_seed)
         train_ss_mlp(NET, sgd_params, datasets)
         # Train with weak EAR regularization
         sgd_params['top_only'] = False
-        sgd_params['epochs'] = 15
+        sgd_params['epochs'] = 5
+        NET.set_ear_lam(0.0)
+        train_ss_mlp(NET, sgd_params, datasets)
+        # Train with weak EAR regularization
+        sgd_params['epochs'] = 10
         NET.set_ear_lam(1.0)
         train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
@@ -249,12 +252,17 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         NET.set_ear_lam(1.5)
         train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
-        sgd_params['epochs'] = 15
+        sgd_params['epochs'] = 20
         NET.set_ear_lam(2.0)
         train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
-        sgd_params['epochs'] = 80
+        sgd_params['epochs'] = 30
         NET.set_ear_lam(3.0)
+        train_ss_mlp(NET, sgd_params, datasets)
+        # Train with more EAR regularization
+        sgd_params['epochs'] = 50
+        sgd_params['start_rate'] = 0.01
+        NET.set_ear_lam(4.0)
         train_ss_mlp(NET, sgd_params, datasets)
     return
 
@@ -269,15 +277,15 @@ def test_dropout_ala_original():
     sgd_params['wt_norm_bound'] = 3.5
     sgd_params['epochs'] = 500
     sgd_params['batch_size'] = 100
-    sgd_params['result_tag'] = 'supervised'
+    sgd_params['result_tag'] = 'supervised_NEW'
 
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks to spawn from
-    pc0 = [28*28, (512, 4), (512, 4), 11]
+    pc0 = [28*28, 1200, 1200, 1200, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
     #sc1 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0] #, sc1]
     mlp_params['spawn_weights'] = [1.0] #, 0.0]
@@ -296,7 +304,7 @@ def test_dropout_ala_original():
     # Construct the EAR_NET object that we will be training
     x_in = T.matrix('x_in')
     NET = EAR_NET(rng=rng, input=x_in, params=mlp_params)
-    init_biases(NET, b_init=0.0)
+    init_biases(NET, b_init=0.1)
 
     # Run training on the given MLP
     train_mlp(NET, sgd_params, datasets)

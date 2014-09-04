@@ -167,7 +167,7 @@ class HiddenLayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            if self.pool_size <= 10:
+            if self.pool_size <= 1:
                 # Generate random initial filters in a typical way
                 W_init = np.asarray(0.01 * rng.standard_normal( \
                           size=(self.in_dim, self.filt_count)), \
@@ -180,7 +180,7 @@ class HiddenLayer(object):
                 for g_num in range(self.pool_count):
                     g_filt = 0.01 * rng.standard_normal(size=(self.in_dim,1))
                     for f_num in range(self.pool_size):
-                        f_filt = g_filt + (0.002 * rng.standard_normal( \
+                        f_filt = g_filt + (0.004 * rng.standard_normal( \
                                 size=(self.in_dim,1)))
                         filters.append(f_filt)
                 W_init = np.hstack(filters).astype(theano.config.floatX)
@@ -421,7 +421,7 @@ class EAR_NET(object):
         # a cost function for each possible layer, as determined by the maximum
         # number of layers in any proto-network. The DAE cost for layer i will
         # be the mean DAE cost over all i'th layers in the proto-networks.
-        self._construct_dae_layers(rng, lam_l1=0.15, nz_lvl=0.2)
+        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.25)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
