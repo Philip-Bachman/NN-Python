@@ -7,6 +7,7 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 from output_losses import LogRegSS, MCL2HingeSS
 
@@ -114,12 +115,14 @@ class HiddenLayer(object):
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
 
+        self.cu_rng = CURAND_RandomStreams(rng.randint(1000000))
+
         self.clean_input = input
 
         # Add gaussian noise to the input (if desired)
         if (input_noise > 1e-4):
             self.fuzzy_input = input + \
-                    (input_noise * self.srng.normal(size=input.shape, \
+                    (input_noise * self.cu_rng.normal(size=input.shape, \
                     dtype=theano.config.floatX))
         else:
             self.fuzzy_input = input
@@ -202,7 +205,7 @@ class HiddenLayer(object):
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output  + \
-                (bias_noise * self.srng.normal(size=self.linear_output.shape, \
+                (bias_noise * self.cu_rng.normal(size=self.linear_output.shape, \
                 dtype=theano.config.floatX))
 
         # Apply activation function
@@ -226,8 +229,11 @@ class HiddenLayer(object):
     def _drop_from_input(self, input, p):
         """p is the probability of dropping elements of input."""
         # get a drop mask that drops things with probability p
-        drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
-                dtype=theano.config.floatX)
+        #drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
+        #        dtype=theano.config.floatX)
+        noise_rnd = self.cu_rng.uniform(input.shape, low=0.0, high=1.0, \
+            dtype=theano.config.floatX)
+        drop_mask = noise_rnd > p
         # get a scaling factor to keep expectations fixed after droppage
         drop_scale = 1. / (1. - p)
         # apply dropout mask and rescaling factor to the input
@@ -237,7 +243,7 @@ class HiddenLayer(object):
     def _noisy_W(self, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
         W_nz = self.W + \
-                self.srng.normal(size=self.W.shape, avg=0., std=noise_lvl)
+                self.cu_rng.normal(size=self.W.shape, avg=0., std=noise_lvl)
         return W_nz
 
 class JoinLayer(object):
@@ -421,7 +427,7 @@ class EAR_NET(object):
         # a cost function for each possible layer, as determined by the maximum
         # number of layers in any proto-network. The DAE cost for layer i will
         # be the mean DAE cost over all i'th layers in the proto-networks.
-        self._construct_dae_layers(rng, lam_l1=0.1, nz_lvl=0.25)
+        self._construct_dae_layers(rng, lam_l1=0.2, nz_lvl=0.25)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
@@ -628,7 +634,6 @@ class EAR_NET(object):
 # DENOISING AUTOENCODER IMPLEMENTATION... #
 ###########################################
 
-
 class DAELayer(object):
     def __init__(self, rng, clean_input=None, fuzzy_input=None, \
             in_dim=0, out_dim=0, activation=None, input_noise=0., \
@@ -637,6 +642,8 @@ class DAELayer(object):
         # Setup a shared random generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
+
+        self.cu_rng = CURAND_RandomStreams(rng.randint(1000000))
 
         # Grab the layer input and perturb it with some sort of noise. This
         # is, afterall, a _denoising_ autoencoder...
@@ -673,7 +680,7 @@ class DAELayer(object):
     def compute_costs(self, lam_l1=0.):
         """Compute reconstruction and activation sparsity costs."""
         # Get noise-perturbed encoder/decoder parameters
-        W_nz = self.W #self._noisy_params(self.W, 0.01)
+        W_nz = self._noisy_params(self.W, 0.01)
         b_nz = self.b_h #self._noisy_params(self.b_h, 0.05)
         # Compute hidden and visible activations
         A_v, A_h = self._compute_activations(self.noisy_input, \
@@ -700,15 +707,20 @@ class DAELayer(object):
 
     def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
-        P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
+        #P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
+        #        dtype=theano.config.floatX)
+        P_nz = P + self.cu_rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
                 dtype=theano.config.floatX)
         return P_nz
 
     def _get_noisy_input(self, input, p):
         """p is the probability of dropping elements of input."""
         # p=1-p because 1's indicate keep and p is prob of dropping
-        noise_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
-                dtype=theano.config.floatX)
+        #noise_mask = self.cu_rng.binomial(n=1, p=1-p, size=input.shape, \
+        #        dtype=theano.config.floatX)
+        noise_rnd = self.cu_rng.uniform(input.shape, low=0.0, high=1.0, \
+            dtype=theano.config.floatX)
+        noise_mask = noise_rnd > p
         # Cast mask from int to float32, to keep things on GPU
         noisy_input = input * noise_mask
         return noisy_input
