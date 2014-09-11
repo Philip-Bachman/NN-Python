@@ -49,6 +49,14 @@ def maxout_actfun(input, pool_size, filt_count):
             mp_vals = T.maximum(mp_vals, cur)
     return mp_vals
 
+def normout_actfun(input, pool_size, filt_count):
+    """Apply (L2) normout over non-overlapping sets of values."""
+    l_start = filt_count - pool_size
+    relu_vals = T.stack(\
+        *[input[:,i:(l_start+i+1):pool_size] for i in range(pool_size)])
+    pooled_vals = T.sqrt(T.mean(relu_vals**2.0, axis=0))
+    return pooled_vals
+
 def noop_actfun(x):
     """Do nothing activation. For output layer probably."""
     return x
@@ -100,8 +108,7 @@ def smooth_cross_entropy(p, q):
 # HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
 # with non-linear activation transform and a max-pooling (a.k.a. Maxout) layer #
 # which is currently fixed to operate over disjoint pools of linear filters.   #
-#                                                                              #
-# TODO: Port the maxout layer implementation to the EAR format.                #
+#                                                                              #              #
 ################################################################################
 
 class HiddenLayer(object):
@@ -194,7 +201,11 @@ class HiddenLayer(object):
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
 
         # Set layer weights and biases
-        self.W = W
+        if bias_noise < 1e-3:
+            self.W = W
+        else:
+            self.W = self._noisy_params(W, bias_noise)
+
         self.b = b
 
         # Compute linear "pre-activation" for this layer
@@ -205,7 +216,7 @@ class HiddenLayer(object):
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output  + \
-                (bias_noise * self.cu_rng.normal(size=self.linear_output.shape, \
+                (10.0*bias_noise * self.cu_rng.normal(size=self.linear_output.shape, \
                 dtype=theano.config.floatX))
 
         # Apply activation function
@@ -240,11 +251,13 @@ class HiddenLayer(object):
         droppy_input = drop_scale * input * drop_mask
         return droppy_input
 
-    def _noisy_W(self, noise_lvl=0.):
+    def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
-        W_nz = self.W + \
-                self.cu_rng.normal(size=self.W.shape, avg=0., std=noise_lvl)
-        return W_nz
+        #P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
+        #        dtype=theano.config.floatX)
+        P_nz = P + self.cu_rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+                dtype=theano.config.floatX)
+        return P_nz
 
 class JoinLayer(object):
     """Simple layer that averages over "linear_output"s of other layers.

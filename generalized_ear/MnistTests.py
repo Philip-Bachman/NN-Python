@@ -216,7 +216,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         ##########################################
         # First, pretrain each layer in the mlp. #
         ##########################################
-        sgd_params['result_tag'] = "ss_ear_pt_NEW_s{0:d}_t{1:d}".format(su_count,test_num)
+        sgd_params['result_tag'] = "ss_ear_pt_DRP_s{0:d}_t{1:d}".format(su_count,test_num)
         sgd_params['batch_size'] = 25
         sgd_params['start_rate'] = 0.02
         sgd_params['epochs'] = 35
@@ -267,11 +267,11 @@ def test_dropout_ala_original():
 
     # Set suitable optimization parameters
     sgd_params = {}
-    sgd_params['start_rate'] = 0.1
-    sgd_params['decay_rate'] = 0.996
+    sgd_params['start_rate'] = 0.05
+    sgd_params['decay_rate'] = 0.998
     sgd_params['wt_norm_bound'] = 3.5
-    sgd_params['epochs'] = 600
-    sgd_params['batch_size'] = 100
+    sgd_params['epochs'] = 1000
+    sgd_params['batch_size'] = 50
     sgd_params['result_tag'] = 'maxout'
 
     # Set some reasonable mlp parameters
@@ -280,12 +280,12 @@ def test_dropout_ala_original():
     pc0 = [28*28, (500, 4), (500, 4), 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.01, 'do_dropout': True}
     #sc1 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0] #, sc1]
     mlp_params['spawn_weights'] = [1.0] #, 0.0]
     # Set remaining params
-    mlp_params['ear_type'] = 6
+    mlp_params['ear_type'] = 2
     mlp_params['ear_lam'] = 0.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
@@ -299,7 +299,7 @@ def test_dropout_ala_original():
     # Construct the EAR_NET object that we will be training
     x_in = T.matrix('x_in')
     NET = EAR_NET(rng=rng, input=x_in, params=mlp_params)
-    init_biases(NET, b_init=0.0)
+    init_biases(NET, b_init=0.1)
 
     # Run training on the given MLP
     train_mlp(NET, sgd_params, datasets)

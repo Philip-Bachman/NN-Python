@@ -12,13 +12,19 @@ import theano.printing
 
 import utils as utils
 
-def shuffle_rows(theano_shared_var):
-    """Shuffle a matrix row-wise, but not in-place on GPU (unfortunately)."""
-    np_var = theano_shared_var.get_value(borrow=False)
-    # Shuffle the np_var inplace, which is actually a very simple and somewhat
-    # fundamental operation that Theano nonetheless discourages adamantly.
-    npr.shuffle(np_var)
-    theano_shared_var.set_value(np_var)
+def shuffle_rows(X_var, Y_var=None):
+    """Shuffle a matrix (pair) row-wise, but not in-place on GPU."""
+    if Y_var is None:
+        np_var = X_var.get_value(borrow=False)
+        npr.shuffle(np_var)
+        X_var.set_value(np_var)
+    else:
+        var_1 = X_var.get_value(borrow=False)
+        var_2 = Y_var.get_value(borrow=False)
+        joint_var = np.hstack(var_1, var_2)
+        npr.shuffle(joint_var)
+        X_var.set_value(joint_var[:,0:var_1.shape[1]])
+        Y_var.set_value(joint_var[:,var_1.shape[0]:])
     return
 
 def train_mlp(
@@ -42,6 +48,7 @@ def train_mlp(
     ###########################################################################
     # Get the training observations and classes
     Xtr, Ytr = (datasets[0][0], T.cast(datasets[0][1], 'int32'))
+    Ytr_shared = datasets[0][1]
     tr_samples = Xtr.get_value(borrow=True).shape[0]
     tr_batches = int(np.ceil(tr_samples / float(batch_size)))
     tr_bidx = [[i*batch_size, min(tr_samples, (i+1)*batch_size)] \
@@ -275,6 +282,8 @@ def train_ss_mlp(
     # arrays of start/end indices for easy minibatch slicing.
     (Xtr_su, Ytr_su) = (datasets[0][0], T.cast(datasets[0][1], 'int32'))
     (Xtr_un, Ytr_un) = (datasets[1][0], T.cast(datasets[1][1], 'int32'))
+    Ytr_su_shared = datasets[0][1]
+    Ytr_un_shared = datasets[1][1]
     su_samples = Xtr_su.get_value(borrow=True).shape[0]
     un_samples = Xtr_un.get_value(borrow=True).shape[0]
     tr_batches = 250
@@ -459,7 +468,7 @@ def train_ss_mlp(
             batch_metrics = train_dev(epoch_counter, su_index, un_index)
             train_metrics = [(em + bm) for (em, bm) in zip(train_metrics, batch_metrics)]
             su_index = (su_index + 1) if ((su_index + 1) < su_batches) else 0
-            un_index = (un_index + 1) if ((un_index + 1) < un_batches) else 0            
+            un_index = (un_index + 1) if ((un_index + 1) < un_batches) else 0
         # Compute 'averaged' values over the minibatches
         train_metrics = [(float(v) / tr_batches) for v in train_metrics]
         # update the learning rate
