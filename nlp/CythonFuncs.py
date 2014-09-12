@@ -7,7 +7,7 @@ import pyximport
 models_dir = os.path.dirname(__file__) or os.getcwd()
 pyximport.install(setup_args={"include_dirs": [models_dir, get_include()]})
 from CythonFuncsPyx import w2v_ff_bp_pyx, ag_update_2d_pyx, ag_update_1d_pyx, \
-                           lut_bp_pyx, nsl_ff_bp_pyx, FAST_VERSION
+                           lut_bp_pyx, nsl_ff_bp_pyx, acl_ff_bp_pyx, DO_INIT
 
 import numpy as np
 import numpy.random as npr

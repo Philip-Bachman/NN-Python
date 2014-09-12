@@ -50,6 +50,13 @@ ctypedef void (*cy_nsl_ff_bp_ptr) (
     REAL_t *dX, REAL_t *dW, REAL_t *db,
     REAL_t *L, const int do_grad, const int vec_dim) nogil
 
+ctypedef void (*cy_acl_ff_bp_ptr) (
+    const int sp_size, const UI32_t *sp_idx,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
+    REAL_t *X, REAL_t *W, REAL_t *b,
+    REAL_t *dX, REAL_t *dW, REAL_t *db,
+    REAL_t *L, const int do_grad, const int vec_dim) nogil
+
 cdef scopy_ptr scopy=<scopy_ptr>PyCObject_AsVoidPtr(blas.scopy._cpointer)  # y = x
 cdef saxpy_ptr saxpy=<saxpy_ptr>PyCObject_AsVoidPtr(blas.saxpy._cpointer)  # y += alpha * x
 cdef sdot_ptr sdot=<sdot_ptr>PyCObject_AsVoidPtr(blas.sdot._cpointer)  # float = dot(x, y)
@@ -59,6 +66,7 @@ cdef sscal_ptr sscal=<sscal_ptr>PyCObject_AsVoidPtr(blas.sscal._cpointer) # x = 
 
 cdef cy_w2v_ff_bp_ptr cy_w2v_ff_bp
 cdef cy_nsl_ff_bp_ptr cy_nsl_ff_bp
+cdef cy_acl_ff_bp_ptr cy_acl_ff_bp
 
 # define some useful constants
 cdef int ONE = 1
@@ -305,6 +313,172 @@ def nsl_ff_bp_pyx(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p,
                      X, W, b, dX, dW, db, L, do_grad, vec_dim)
     return
 
+
+################################
+# AUTO-CONTRASTIVE LAYER FF/BP #
+################################
+
+
+cdef void cy_acl_ff_bp0(
+    const int sp_size, const UI32_t *sp_idx,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
+    REAL_t *X, REAL_t *W, REAL_t *b,
+    REAL_t *dX, REAL_t *dW, REAL_t *db,
+    REAL_t *L, const int do_grad, const int vec_dim) nogil:
+
+    # declarations
+    cdef long long row1, r_p, r_n
+    cdef REAL_t y_p, b_p, f_p, y_n, b_n, f_n, a, k, c, denom, \
+            g_yp, g_bp, g_yn, g_bn
+    cdef UI32_t Xk, Wk_p, Wk_n
+    cdef int sp_i, i, j
+
+    a = <REAL_t> 1.0
+    k = <REAL_t> 1.0
+    c = <REAL_t> 0.1
+    # update loop
+    for sp_i in range(sp_size):
+        Xk = sp_idx[sp_i]
+        row1 = Xk * vec_dim
+        for j in range(pn_size):
+            if (j == 0):
+                # get the LUT key for the pos vec
+                Wk_p = pn_keys[Xk*pn_size + j]
+                # get pointer for start of the pos vec
+                r_p = Wk_p * vec_dim
+                # compute dot-prod between input and the pos vec
+                y_p = <REAL_t>dsdot(&vec_dim, &X[row1], &ONE, &W[r_p], &ONE)
+                # get the bias for the pos vec
+                b_p = b[Wk_p]
+                # compute expy output for the pos vec
+                f_p = <REAL_t>exp(a*y_p + b_p)
+            else:
+                # get the LUT key for the neg vec
+                Wk_n = pn_keys[Xk*pn_size + j]
+                # get pointer for start of the neg vec
+                r_n  = Wk_n * vec_dim
+                # compute dot-prod between input and the neg vec
+                y_n = <REAL_t>dsdot(&vec_dim, &X[row1], &ONE, &W[r_n], &ONE)
+                # get the bias for the neg vec
+                b_n = b[Wk_n]
+                # compute expy output for the neg vec
+                f_n = <REAL_t>(k * exp(a*y_n + b_n))
+                # compute some terms
+                denom = f_p + f_n + c
+                L[Xk*pn_size + j] = -log(f_p / denom)
+                if (do_grad == 1):
+                    # compute gradients for the pos/neg vec terms
+                    g_yp = -(a * (c + f_n)) / denom
+                    g_yn = (a * f_n) / denom
+                    # update gradient accumlators for input side
+                    saxpy(&vec_dim, &g_yp, &W[r_p], &ONE, &dX[row1], &ONE)
+                    saxpy(&vec_dim, &g_yn, &W[r_n], &ONE, &dX[row1], &ONE)
+                    # update gradient accumlators for prediction side
+                    saxpy(&vec_dim, &g_yp, &X[row1], &ONE, &dW[r_p], &ONE)
+                    saxpy(&vec_dim, &g_yn, &X[row1], &ONE, &dW[r_n], &ONE)
+                    # compute gradients and updates for bias terms
+                    g_bp = -(c + f_n) / denom
+                    g_bn = f_n / denom
+                    db[Wk_p] = db[Wk_p] + g_bp
+                    db[Wk_n] = db[Wk_n] + g_bn
+    return
+
+
+cdef void cy_acl_ff_bp1(
+    const int sp_size, const UI32_t *sp_idx,
+    const int pn_size, const UI32_t *pn_keys, REAL_t *pn_sign,
+    REAL_t *X, REAL_t *W, REAL_t *b,
+    REAL_t *dX, REAL_t *dW, REAL_t *db,
+    REAL_t *L, const int do_grad, const int vec_dim) nogil:
+
+    # declarations
+    cdef long long row1, r_p, r_n
+    cdef REAL_t y_p, b_p, f_p, y_n, b_n, f_n, a, k, c, denom, \
+            g_yp, g_bp, g_yn, g_bn
+    cdef UI32_t Xk, Wk_p, Wk_n
+    cdef int sp_i, i, j
+
+    a = <REAL_t> 1.0
+    k = <REAL_t> 1.0
+    c = <REAL_t> 0.1
+
+    # NOTE: this function basically minimizes something like:
+    #
+    #     /              exp(a*y_p + b_p)             \
+    # - ln| ----------------------------------------- |
+    #     \ c + exp(a*y_p + b_p) + k*exp(a*y_n + b_n) /
+    # 
+
+    # update loop
+    for sp_i in range(sp_size):
+        Xk = sp_idx[sp_i]
+        row1 = Xk * vec_dim
+        for j in range(pn_size):
+            if (j == 0):
+                # get the LUT key for the pos vec
+                Wk_p = pn_keys[Xk*pn_size + j]
+                # get pointer for start of the pos vec
+                r_p = Wk_p * vec_dim
+                # compute dot-prod between input and the pos vec
+                y_p = <REAL_t>sdot(&vec_dim, &X[row1], &ONE, &W[r_p], &ONE)
+                # get the bias for the pos vec
+                b_p = b[Wk_p]
+                # compute expy output for the pos vec
+                f_p = <REAL_t>exp(a*y_p + b_p)
+            else:
+                # get the LUT key for the neg vec
+                Wk_n = pn_keys[Xk*pn_size + j]
+                # get pointer for start of the neg vec
+                r_n  = Wk_n * vec_dim
+                # compute dot-prod between input and the neg vec
+                y_n = <REAL_t>sdot(&vec_dim, &X[row1], &ONE, &W[r_n], &ONE)
+                # get the bias for the neg vec
+                b_n = b[Wk_n]
+                # compute expy output for the neg vec
+                f_n = <REAL_t>(k * exp(a*y_n + b_n))
+                # compute some terms
+                denom = f_p + f_n + c
+                L[Xk*pn_size + j] = -log(f_p / denom)
+                if (do_grad == 1):
+                    # compute gradients for the pos/neg vec terms
+                    g_yp = -(a * (c + f_n)) / denom
+                    g_yn = (a * f_n) / denom
+                    # update gradient accumlators for input side
+                    saxpy(&vec_dim, &g_yp, &W[r_p], &ONE, &dX[row1], &ONE)
+                    saxpy(&vec_dim, &g_yn, &W[r_n], &ONE, &dX[row1], &ONE)
+                    # update gradient accumlators for prediction side
+                    saxpy(&vec_dim, &g_yp, &X[row1], &ONE, &dW[r_p], &ONE)
+                    saxpy(&vec_dim, &g_yn, &X[row1], &ONE, &dW[r_n], &ONE)
+                    # compute gradients and updates for bias terms
+                    g_bp = -(c + f_n) / denom
+                    g_bn = f_n / denom
+                    db[Wk_p] = db[Wk_p] + g_bp
+                    db[Wk_n] = db[Wk_n] + g_bn
+    return
+
+def acl_ff_bp_pyx(sp_idx_p, pn_keys_p, pn_sign_p, X_p, W_p, b_p,
+                  dX_p, dW_p, db_p, L_p, do_grad_p):
+    # Define and cast minibatch problem parameters
+    cdef int sp_size = <int>sp_idx_p.shape[0]
+    cdef int pn_size = <int>pn_keys_p.shape[1]
+    cdef int do_grad = <int>do_grad_p
+    cdef int vec_dim = <int>W_p.shape[1]
+    cdef UI32_t *sp_idx = <UI32_t *>(np.PyArray_DATA(sp_idx_p))
+    cdef UI32_t *pn_keys = <UI32_t *>(np.PyArray_DATA(pn_keys_p))
+    cdef REAL_t *pn_sign = <REAL_t *>(np.PyArray_DATA(pn_sign_p))
+    cdef REAL_t *X = <REAL_t *>(np.PyArray_DATA(X_p))
+    cdef REAL_t *W = <REAL_t *>(np.PyArray_DATA(W_p))
+    cdef REAL_t *b = <REAL_t *>(np.PyArray_DATA(b_p))
+    cdef REAL_t *dX = <REAL_t *>(np.PyArray_DATA(dX_p))
+    cdef REAL_t *dW = <REAL_t *>(np.PyArray_DATA(dW_p))
+    cdef REAL_t *db = <REAL_t *>(np.PyArray_DATA(db_p))
+    cdef REAL_t *L = <REAL_t *>(np.PyArray_DATA(L_p))
+
+    with nogil:
+        cy_acl_ff_bp(sp_size, sp_idx, pn_size, pn_keys, pn_sign,
+                     X, W, b, dX, dW, db, L, do_grad, vec_dim)
+    return
+
 ################
 # AG_UPDATE_2D #
 ################
@@ -429,6 +603,7 @@ def init():
     """
     global cy_w2v_ff_bp
     global cy_nsl_ff_bp
+    global cy_acl_ff_bp
 
     cdef float *x = [<float>10.0]
     cdef float *y = [<float>0.01]
@@ -443,14 +618,16 @@ def init():
     if (abs(d_res - expected) < 0.0001):
         cy_w2v_ff_bp = cy_w2v_ff_bp0
         cy_nsl_ff_bp = cy_nsl_ff_bp0
+        cy_acl_ff_bp = cy_acl_ff_bp0
         return 0  # double
     elif (abs(p_res[0] - expected) < 0.0001):
         cy_w2v_ff_bp = cy_w2v_ff_bp1
         cy_nsl_ff_bp = cy_nsl_ff_bp1
+        cy_acl_ff_bp = cy_acl_ff_bp1
         return 1  # float
     else:
         # dsdot returns neither single nor double precision!?
         assert False
         return 2
 
-FAST_VERSION = init()  # initialize the module
+DO_INIT = init()  # initialize the module
