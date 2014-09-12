@@ -188,9 +188,9 @@ class HiddenLayer(object):
                 # correlations, to encourage pooling over similar filters...
                 filters = []
                 for g_num in range(self.pool_count):
-                    g_filt = 0.01 * rng.standard_normal(size=(self.in_dim,1))
+                    g_filt = 0.02 * rng.standard_normal(size=(self.in_dim,1))
                     for f_num in range(self.pool_size):
-                        f_filt = g_filt + (0.004 * rng.standard_normal( \
+                        f_filt = g_filt + (0.005 * rng.standard_normal( \
                                 size=(self.in_dim,1)))
                         filters.append(f_filt)
                 W_init = np.hstack(filters).astype(theano.config.floatX)

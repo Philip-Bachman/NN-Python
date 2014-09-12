@@ -280,7 +280,7 @@ def test_dropout_ala_original():
     pc0 = [28*28, (500, 4), (500, 4), 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.01, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.005, 'do_dropout': True}
     #sc1 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0] #, sc1]
     mlp_params['spawn_weights'] = [1.0] #, 0.0]
