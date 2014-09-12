@@ -117,23 +117,6 @@ class HiddenLayer(object):
         else:
             self.noisy_input = self.fuzzy_input
 
-        # Apply noise in reverse order (i.e. masking -> fuzzing)
-        COMMENT = """
-        # Apply masking noise to the input (if desired)
-        if (drop_rate > 1e-4):
-            droppy_input = self._drop_from_input(input, drop_rate)
-        else:
-            droppy_input = input
-
-        # Add gaussian noise to the masked input (if desired)
-        if (input_noise > 1e-4):
-            self.noisy_input = droppy_input + \
-                    (input_noise * self.srng.normal(size=input.shape, \
-                    dtype=theano.config.floatX))
-        else:
-            self.noisy_input = droppy_input
-        """
-
         # Set some basic layer properties
         self.activation = activation
         self.in_dim = n_in
@@ -227,9 +210,6 @@ class DEX_NET(object):
             vis_drop: drop rate to use on input layers (when desired)
             hid_drop: drop rate to use on hidden layers (when desired)
                 -- note: vis_drop/hid_drop are optional, with defaults 0.2/0.5
-            ear_type: type of Ensemble Agreement Regularization (EAR) to use
-                -- note: defns of _ear_cost() and _ear_loss() give more info
-            ear_lam: weight to control the effect of EAR.
             proto_configs: list of lists, where each sublist gives the number
                            of neurons to put in each hidden layer one of the
                            proto-networks underlying this ensemble. Sub-lists
@@ -273,16 +253,12 @@ class DEX_NET(object):
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
         self.reg_all_obs = 1
-        self.ear_type = params['ear_type']
-        self.ear_lam = theano.shared(value=np.asarray([params['ear_lam']], \
-                dtype=theano.config.floatX), name='ear_lam')
         self.spawn_weights = theano.shared(\
                 value=np.asarray(params['spawn_weights'], \
                 dtype=theano.config.floatX), name='spawn_weights')
         # Compute some "structural" properties of this ensemble
         self.max_proto_depth = max([(len(pc)-1) for pc in self.proto_configs])
         self.spawn_count = len(self.spawn_configs)
-        self.ear_pairs = self.spawn_count * (self.spawn_count - 1)
         ########################################
         # Initialize all of the proto-networks #
         ########################################
@@ -366,11 +342,8 @@ class DEX_NET(object):
                 if (i == (len(pn) - 1)):
                     self.class_params.extend(pl.params)
 
-        # Build loss functions for denoising autoencoder training. This sets up
-        # a cost function for each possible layer, as determined by the maximum
-        # number of layers in any proto-network. The DAE cost for layer i will
-        # be the mean DAE cost over all i'th layers in the proto-networks.
-        self._construct_dae_layers(rng, lam_l1=0.001, nz_lvl=0.2)
+        # DERP DORP
+        self._construct_dex_layers(rng)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
@@ -378,9 +351,7 @@ class DEX_NET(object):
         # Get loss functions to optimize based on the spawned-nets in this
         # generalized spawn-semble.
         self.spawn_class_cost = lambda y: self._spawn_class_cost(y)
-        self.spawn_reg_cost = lambda y: self._ear_cost(y, self.ear_type)
-        self.spawn_reg_cost_alt = lambda y, t: self._ear_cost(y, self.ear_type)
-        self.spawn_ent_cost = lambda lam_ent, y: self._ent_cost(lam_ent, y)
+        self.spawn_dex_cost = lambda idx: self._spawn_dex_cost(idx)
         self.act_reg_cost = lam_l2a * self._act_reg_cost()
         return
 
@@ -419,109 +390,17 @@ class DEX_NET(object):
         total_loss = T.sum(spawn_class_losses)
         return total_loss
 
-    def _ear_cost(self, y, ear_type):
-        """Compute the cost of ensemble agreement regularization."""
-        ear_losses = []
-        for i in range(self.spawn_count):
-            for j in range(self.spawn_count):
-                if not (i == j):
-                    x1 = self.spawn_nets[i][-1].linear_output
-                    x2 = self.spawn_nets[j][-1].linear_output
-                    ear_loss = self.ear_lam[0] * \
-                            self._ear_loss(x1, x2, y, ear_type)
-                    ear_losses.append(ear_loss)
-        total_loss = T.sum(ear_losses) / self.ear_pairs
-        return total_loss
+    def _spawn_dex_cost(self, idx):
+        """DERP DORP."""
+        dex_costs = []
+        for dex_layer in self.dex_layers:
+            dex_costs.append(dex_layer.cost(idx))
 
-    def _ear_loss(self, X1, X2, Y, ear_type):
-        """Compute Ensemble Agreement Regularization cost for outputs X1/X2.
+        mean_cost = T.mean(dex_costs)
+        return mean_cost
 
-        This regularizes for agreement among members of a 'pseudo-ensemble'.
-        Y is used to generate a mask on EAR costs, restricting optimization of
-        the regularizer to only unlabelled examples whenever the EAR_NET
-        instance is operating in 'semi-supervised' mode. The particular type
-        of EAR to apply is selected by 'ear_type'.
-        """
-        if self.reg_all_obs:
-            # Compute EAR regularizer using _all_ observations, not just those
-            # with class label 0. (assume -1 is not a class label...)
-            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
-        else:
-            # Compute EAR regularizer only for observations with class label 0
-            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
-        var_fun = lambda x1, x2: \
-                T.sum(((x1 - x2) * ss_mask)**2.) / T.sum(ss_mask)
-        tanh_fun = lambda x1, x2: var_fun(T.tanh(x1), T.tanh(x2))
-        norm_fun = lambda x1, x2: var_fun(row_normalize(x1), row_normalize(x2))
-        sigm_fun = lambda x1, x2: \
-                var_fun(T.nnet.sigmoid(x1), T.nnet.sigmoid(x2))
-        bent_fun = lambda p, q: T.sum(ss_mask * T.nnet.binary_crossentropy( \
-                T.nnet.sigmoid(xo), T.nnet.sigmoid(xt))) / T.sum(ss_mask)
-        ment_fun = lambda p, q: \
-                T.sum(ss_mask * smooth_cross_entropy(p, q)) / T.sum(ss_mask)
-        kl_fun = lambda p, q: \
-                T.sum(ss_mask * smooth_kl_divergence(p, q)) / T.sum(ss_mask)
-        if (ear_type == 1):
-            # Unit-normalized variance (like fake cosine distance)
-            ear_fun = norm_fun
-        elif (ear_type == 2):
-            # Tanh-transformed variance
-            ear_fun = tanh_fun
-        elif (ear_type == 3):
-            # Sigmoid-transformed variance
-            ear_fun = sigm_fun
-        elif (ear_type == 4):
-            # Binary cross-entropy
-            ear_fun = bent_fun
-        elif (ear_type == 5):
-            # Multinomial cross-entropy
-            ear_fun = ment_fun
-        elif (ear_type == 6):
-            # Multinomial KL-divergence
-            ear_fun = kl_fun
-        else:
-            ear_fun = var_fun
-        return ear_fun(X1, X2)
-
-    def _ent_cost(self, lam_ent, y):
-        """Compute cost for entropy regularization, weighted by lam_ent."""
-        ent_losses = []
-        for i in range(self.spawn_count):
-            x = self.spawn_nets[i][-1].linear_output
-            ent_loss = lam_ent * self.ear_lam[0] * self._ent_loss(x, y, 1)
-            ent_losses.append(ent_loss)
-        total_loss = T.sum(ent_losses) / self.spawn_count
-        return total_loss
-
-    def _ent_loss(self, X, Y, ent_type=0):
-        """Compute the entropy regularizer. Either binary or multinomial.
-
-        Note: entropy can be computed as the cross-entropy of a distribution
-               with itself.
-        """
-        if self.reg_all_obs:
-            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
-        else:
-            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
-        bent_fun = lambda x: T.sum((ss_mask * T.nnet.binary_crossentropy( \
-                T.nnet.sigmoid(x), T.nnet.sigmoid(x))) / T.sum(ss_mask))
-        ment_fun = lambda x: T.sum((ss_mask * smooth_cross_entropy(x, x))) / \
-                T.sum(ss_mask)
-        if (ent_type == 0):
-            # Binary self cross-entropy
-            masked_ent = bent_fun(X)
-        else:
-            # Multinomial self cross-entropy
-            masked_ent = ment_fun(X)
-        return masked_ent
-
-    def _construct_dae_layers(self, rng, lam_l1=0., nz_lvl=0.25):
-        """Build cost functions for training DAEs defined for all hidden
-        layers of the proto-networks making up this generalized ensemble. That
-        is, construct a DAE for every proto-layer that isn't a classification
-        layer. Inputs to each DAE are taken from the clean and post-fuzzed
-        inputs of the spawn-net layer for the 'first' spawn-net spawned from
-        any given proto-net."""
+    def _construct_dex_layers(self, rng):
+        """DERP DORP."""
         self.dae_params = []
         self.dae_costs = []
         # The number of hidden layers in each proto-network is depth-1, where
@@ -563,144 +442,19 @@ class DEX_NET(object):
                     T.sum([c[1] for c in d_costs])])
         return
 
-    def set_ear_lam(self, e_lam):
-        """Set the Ensemble Agreement Regularization weight."""
-        self.ear_lam.set_value(np.asarray([e_lam], dtype=theano.config.floatX))
-        return
-
-################################################
-# DISCRIMINATING AUTOENCODER IMPLEMENTATION... #
-################################################
-
-class DAELayer(object):
-    def __init__(self, rng, clean_input=None, fuzzy_input=None, \
-            n_in=0, n_out=0, activation=None, input_noise=0., \
-            W=None, b_h=None, b_v=None):
-
-        # Setup a shared random generator for this layer
-        self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
-                rng.randint(100000))
-
-        # Grab the layer input and perturb it with some sort of noise. This
-        # is, afterall, a _denoising_ autoencoder...
-        self.clean_input = clean_input
-        self.noisy_input, self.noise_mask = \
-                self._get_noisy_input(fuzzy_input, input_noise)
-
-        # Set some basic layer properties
-        self.activation = activation
-        self.in_dim = n_in
-        self.out_dim = n_out
-
-        # Get some random initial weights and biases, if not given
-        if W is None:
-            W_init = np.asarray(0.01 * rng.standard_normal( \
-                      size=(n_in, n_out)), dtype=theano.config.floatX)
-            W = theano.shared(value=W_init, name='W')
-        if b_h is None:
-            b_init = np.zeros((n_out,), dtype=theano.config.floatX)
-            b_h = theano.shared(value=b_init, name='b_h')
-        if b_v is None:
-            b_init = np.zeros((n_in,), dtype=theano.config.floatX)
-            b_v = theano.shared(value=b_init, name='b_v')
-
-        # Grab pointers to the now-initialized weights and biases
-        self.W = W
-        self.b_h = b_h
-        self.b_v = b_v
-
-        # Put the learnable/optimizable parameters into a list
-        self.params = [self.W, self.b_h, self.b_v]
-        # Beep boop... layer construction complete...
-        return
-
-    def _magic_cost(self, sim_mat, sim_scale=1.0):
-        """Compute auto-discrimination cost."""
-        exp_mat = T.exp(sim_mat - T.max(sim_mat,axis=1,keepdims=1))
-        self_exps = T.diag(exp_mat).reshape((exp_mat.shape[0],1))
-        denoms = exp_mat + self_exps
-        probs = self_exps / denoms
-        L = (1.0 - T.identity_like(probs)) * T.log(probs)
-        return -T.mean(L)
-
-    def compute_costs(self, lam_l1=0.):
-        """Compute reconstruction and activation sparsity costs."""
-        # Get noise-perturbed encoder/decoder parameters
-        W_nz = self.W #self._noisy_params(self.W, 0.01)
-        b_nz = self.b_h #self._noisy_params(self.b_h, 0.05)
-        # Compute hidden and visible activations
-        A_v, A_h = self._compute_activations(self.noisy_input, \
-                W_nz, b_nz, self.b_v)
-        # Compute auto-discriminative reconstruction cost
-        Xi = (1.0 - self.noise_mask) * self.clean_input
-        Xr =  A_v
-        #Xi2 = T.sum(Xi**2.0, axis=1, keepdims=True)
-        #Xr2 = T.sum(Xr**2.0, axis=1, keepdims=True)
-        #Xr_Xi_T = T.dot(Xr, Xi.T)
-        #d_Xi_Xr = -0.02 * ((Xi2.T + Xr2) - (2.0 * Xr_Xi_T))
-        d_Xi_Xr = 0.2 * T.dot(Xr, Xi.T)
-        ad_cost = self._magic_cost(d_Xi_Xr)
-        # Compute sparsity penalty (over both population and lifetime)
-        act_l2_reg = T.mean(A_h**2.0)
-        row_l1_sum = T.sum(abs(row_normalize(A_h))) / A_h.shape[0]
-        col_l1_sum = T.sum(abs(col_normalize(A_h))) / A_h.shape[1]
-        sparse_cost = lam_l1 * (row_l1_sum + col_l1_sum) + (0.5 * act_l2_reg)
-        return [ad_cost, sparse_cost]
-
-    def _compute_hidden_acts(self, X, W, b_h):
-        """Compute activations of encoder (at hidden layer)."""
-        A_h = self.activation(T.dot(X, W) + b_h)
-        A_h_d = self._drop_from_input(A_h, 0.5)
-        return A_h_d
-
-    def _compute_activations(self, X, W, b_h, b_v):
-        """Compute activations of decoder (at visible layer)."""
-        A_h = self._compute_hidden_acts(X, W, b_h)
-        A_v = T.dot(A_h, W.T) + b_v
-        return [A_v, A_h]
-
-    def _noisy_params(self, P, noise_lvl=0.):
-        """Noisy weights, like convolving energy surface with a gaussian."""
-        P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
-                dtype=theano.config.floatX)
-        return P_nz
-
-    def _get_noisy_input(self, input, p):
-        """p is the probability of dropping elements of input."""
-        # p=1-p because 1's indicate keep and p is prob of dropping
-        noise_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
-                dtype=theano.config.floatX)
-        # Cast mask from int to float32, to keep things on GPU
-        noisy_input = input * noise_mask
-        return [noisy_input, noise_mask]
-
-    def _drop_from_input(self, input, p):
-        """p is the probability of dropping elements of input."""
-        # get a drop mask that drops things with probability p
-        drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
-                dtype=theano.config.floatX)
-        # get a scaling factor to keep expectations fixed after droppage
-        drop_scale = 1. / (1. - p)
-        # apply dropout mask and rescaling factor to the input
-        droppy_input = drop_scale * input * drop_mask
-        return droppy_input
-
 #################################
 # EXEMPLAR LAYER IMPLEMENTATION #
 #################################
 
 class XMPLayer(object):
-    def __init__(self, rng, clean_input=None, noisy_input=None, \
+    def __init__(self, rng, X=None, I=None, \
             vec_dim=0, max_key=0, W=None, b=None):
 
         # Setup a shared random generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
 
-        # Grab the layer input and perturb it with some sort of noise. This
-        # is, afterall, a _denoising_ autoencoder...
-        self.clean_input = clean_input
-        self.noisy_input = noisy_input
+        self.X = X
 
         # Set some basic layer properties
         self.vec_dim = vec_dim
@@ -718,45 +472,14 @@ class XMPLayer(object):
         # Grab pointers to the now-initialized weights and biases
         self.W = W
         self.b = b
+        self.W_I = T.take(self.W, I, axis=0)
+        self.b_I = T.take(self.b, I, axis=0)
 
         # Put the learnable/optimizable parameters into a list
         self.params = [self.W, self.b]
         # Beep boop... layer construction complete...
         return
 
-    def _xmp_cost(self, X, W_x, b_x, neg_weight):
-        """Compute exemplar SVM (w/binomial deviance loss) cost."""
-        # Compute prediction by each exemplar SVM for each input, with the
-        # inputs splayed across columns and the SVMs splayed across rows.
-        F = T.dot(W_x, X.T) + b_x
-        # The diagonal entries of F now correspond to the predictions where
-        # the "target class" is positive, and all other entries correspond
-        # to predictions where the target class is negative.
-        O = T.ones_like(F)
-        I = T.identity_like(F)
-        Y = (2.0 * I) - O
-        L = T.log(1.0 + T.exp(-Y * F))
-        # Get a scale for weighing positive examples against negative ones
-        neg_scale = neg_weight / (X.shape[0] - 1.0)
-        # Sum the loss on positive examples and the reweighted loss on
-        # negative examples.
-        L_weighted = T.sum(I * L) + (neg_scale * T.sum((O - I) * L))
-        return L_weighted / X.shape[0]
-
-    def compute_costs(self, obs_keys, lam_l2=0.):
-        """Compute."""
-        # Get the current input, and validate for consistency
-        X = self.noisy_input
-        assert(X.shape[0] == obs_keys.size)
-        assert(T.max(obs_keys) <= self.max_key)
-        # Get classifier parameters for the relevant "exemplar SVMs"
-        W_x = self.W.take(obs_keys, axis=0)
-        b_x = self.b.take(obs_keys, axis=0)
-        # Get noise-perturbed encoder/decoder parameters
-        L_svm = self._xmp_cost(X, W_x, b_x)
-        L_reg = lam_l2 * T.sum(W_x**2.0)
-        L_all = L_svm + L_reg
-        return L_all
 
 
 

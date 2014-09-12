@@ -5,9 +5,8 @@
 import numpy as np
 import theano
 import theano.tensor as T
-import theano.tensor.shared_randomstreams
 
-from DexNet import DEX_NET
+from DexNetTemp import DEX_NET
 from load_data import load_udm, load_udm_ss, load_mnist
 import NetTrainers as NT
 
