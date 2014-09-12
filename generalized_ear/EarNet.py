@@ -188,7 +188,7 @@ class HiddenLayer(object):
                 # correlations, to encourage pooling over similar filters...
                 filters = []
                 for g_num in range(self.pool_count):
-                    g_filt = 0.02 * rng.standard_normal(size=(self.in_dim,1))
+                    g_filt = 0.01 * rng.standard_normal(size=(self.in_dim,1))
                     for f_num in range(self.pool_size):
                         f_filt = g_filt + (0.005 * rng.standard_normal( \
                                 size=(self.in_dim,1)))
@@ -201,11 +201,10 @@ class HiddenLayer(object):
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
 
         # Set layer weights and biases
-        if bias_noise < 1e-3:
-            self.W = W
+        if bias_noise > 1e-3:
+            self.W = self._noisy_params(W, noise_lvl=0.01)
         else:
-            self.W = self._noisy_params(W, bias_noise)
-
+            self.W = W
         self.b = b
 
         # Compute linear "pre-activation" for this layer
@@ -216,7 +215,7 @@ class HiddenLayer(object):
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output  + \
-                (10.0*bias_noise * self.cu_rng.normal(size=self.linear_output.shape, \
+                (bias_noise * self.cu_rng.normal(size=self.linear_output.shape, \
                 dtype=theano.config.floatX))
 
         # Apply activation function
