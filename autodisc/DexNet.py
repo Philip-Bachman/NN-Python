@@ -7,6 +7,7 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 from output_losses import LogRegSS, MCL2HingeSS
 
@@ -35,6 +36,26 @@ def relu_actfun(x):
     """Compute rectified linear activation for x."""
     x_relu = T.maximum(0., x)
     return x_relu
+
+def maxout_actfun(input, pool_size, filt_count):
+    """Apply maxout over non-overlapping sets of values."""
+    last_start = filt_count - pool_size
+    mp_vals = None
+    for i in xrange(pool_size):
+        cur = input[:,i:(last_start+i+1):pool_size]
+        if mp_vals is None:
+            mp_vals = cur
+        else:
+            mp_vals = T.maximum(mp_vals, cur)
+    return mp_vals
+
+def normout_actfun(input, pool_size, filt_count):
+    """Apply (L2) normout over non-overlapping sets of values."""
+    l_start = filt_count - pool_size
+    relu_vals = T.stack(\
+        *[input[:,i:(l_start+i+1):pool_size] for i in range(pool_size)])
+    pooled_vals = T.sqrt(T.mean(relu_vals**2.0, axis=0))
+    return pooled_vals
 
 def noop_actfun(x):
     """Do nothing activation. For output layer probably."""
@@ -82,17 +103,17 @@ def smooth_cross_entropy(p, q):
     ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
     return ce_sm
 
+
 ################################################################################
 # HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
 # with non-linear activation transform and a max-pooling (a.k.a. Maxout) layer #
 # which is currently fixed to operate over disjoint pools of linear filters.   #
-#                                                                              #
-# TODO: Port the maxout layer implementation to the EAR format.                #
+#                                                                              #              #
 ################################################################################
 
 class HiddenLayer(object):
-    def __init__(self, rng, input, n_in, n_out, \
-                 activation=None, pool_size=4, \
+    def __init__(self, rng, input, in_dim, out_dim, \
+                 activation=None, pool_size=0, \
                  drop_rate=0., input_noise=0., bias_noise=0., \
                  W=None, b=None, \
                  use_bias=True, name=""):
@@ -101,12 +122,14 @@ class HiddenLayer(object):
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
 
+        self.cu_rng = CURAND_RandomStreams(rng.randint(1000000))
+
         self.clean_input = input
 
         # Add gaussian noise to the input (if desired)
         if (input_noise > 1e-4):
             self.fuzzy_input = input + \
-                    (input_noise * self.srng.normal(size=input.shape, \
+                    (input_noise * self.cu_rng.normal(size=input.shape, \
                     dtype=theano.config.floatX))
         else:
             self.fuzzy_input = input
@@ -117,22 +140,71 @@ class HiddenLayer(object):
         else:
             self.noisy_input = self.fuzzy_input
 
+        # Apply noise in reverse order (i.e. masking -> fuzzing)
+        COMMENT = """
+        # Apply masking noise to the input (if desired)
+        if (drop_rate > 1e-4):
+            droppy_input = self._drop_from_input(input, drop_rate)
+        else:
+            droppy_input = input
+
+        # Add gaussian noise to the masked input (if desired)
+        if (input_noise > 1e-4):
+            self.noisy_input = droppy_input + \
+                    (input_noise * self.srng.normal(size=input.shape, \
+                    dtype=theano.config.floatX))
+        else:
+            self.noisy_input = droppy_input
+        """
+
         # Set some basic layer properties
-        self.activation = activation
-        self.in_dim = n_in
-        self.out_dim = n_out
+        self.pool_size = pool_size
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        if self.pool_size <= 1:
+            self.filt_count = self.out_dim
+        else:
+            self.filt_count = self.out_dim * self.pool_size
+        self.pool_count = self.filt_count / max(self.pool_size, 1)
+        if activation:
+            self.activation = activation
+        else:
+            if self.pool_size <= 1:
+                self.activation = lambda x: relu_actfun(x)
+            else:
+                self.activation = lambda x: \
+                        maxout_actfun(x, self.pool_size, self.filt_count)
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            W_init = np.asarray(0.01 * rng.standard_normal( \
-                      size=(n_in, n_out)), dtype=theano.config.floatX)
+            if self.pool_size <= 1:
+                # Generate random initial filters in a typical way
+                W_init = np.asarray(0.01 * rng.standard_normal( \
+                          size=(self.in_dim, self.filt_count)), \
+                          dtype=theano.config.floatX)
+            else:
+                # Generate groups of random filters to pool over such that
+                # intra-group correlations are stronger than inter-group
+                # correlations, to encourage pooling over similar filters...
+                filters = []
+                for g_num in range(self.pool_count):
+                    g_filt = 0.01 * rng.standard_normal(size=(self.in_dim,1))
+                    for f_num in range(self.pool_size):
+                        f_filt = g_filt + (0.005 * rng.standard_normal( \
+                                size=(self.in_dim,1)))
+                        filters.append(f_filt)
+                W_init = np.hstack(filters).astype(theano.config.floatX)
+
             W = theano.shared(value=W_init, name="{0:s}_W".format(name))
         if b is None:
-            b_init = np.zeros((n_out,), dtype=theano.config.floatX)
+            b_init = np.zeros((self.filt_count,), dtype=theano.config.floatX)
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
 
         # Set layer weights and biases
-        self.W = W
+        if bias_noise > 1e-3:
+            self.W = self._noisy_params(W, noise_lvl=0.01)
+        else:
+            self.W = W
         self.b = b
 
         # Compute linear "pre-activation" for this layer
@@ -143,7 +215,7 @@ class HiddenLayer(object):
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output  + \
-                (bias_noise * self.srng.normal(size=self.linear_output.shape, \
+                (bias_noise * self.cu_rng.normal(size=self.linear_output.shape, \
                 dtype=theano.config.floatX))
 
         # Apply activation function
@@ -167,19 +239,24 @@ class HiddenLayer(object):
     def _drop_from_input(self, input, p):
         """p is the probability of dropping elements of input."""
         # get a drop mask that drops things with probability p
-        drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
-                dtype=theano.config.floatX)
+        #drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
+        #        dtype=theano.config.floatX)
+        noise_rnd = self.cu_rng.uniform(input.shape, low=0.0, high=1.0, \
+            dtype=theano.config.floatX)
+        drop_mask = noise_rnd > p
         # get a scaling factor to keep expectations fixed after droppage
         drop_scale = 1. / (1. - p)
         # apply dropout mask and rescaling factor to the input
         droppy_input = drop_scale * input * drop_mask
         return droppy_input
 
-    def _noisy_W(self, noise_lvl=0.):
+    def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
-        W_nz = self.W + \
-                self.srng.normal(size=self.W.shape, avg=0., std=noise_lvl)
-        return W_nz
+        #P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
+        #        dtype=theano.config.floatX)
+        P_nz = P + self.cu_rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+                dtype=theano.config.floatX)
+        return P_nz
 
 class JoinLayer(object):
     """Simple layer that averages over "linear_output"s of other layers.
@@ -210,6 +287,9 @@ class DEX_NET(object):
             vis_drop: drop rate to use on input layers (when desired)
             hid_drop: drop rate to use on hidden layers (when desired)
                 -- note: vis_drop/hid_drop are optional, with defaults 0.2/0.5
+            ear_type: type of Ensemble Agreement Regularization (EAR) to use
+                -- note: defns of _ear_cost() and _ear_loss() give more info
+            ear_lam: weight to control the effect of EAR.
             proto_configs: list of lists, where each sublist gives the number
                            of neurons to put in each hidden layer one of the
                            proto-networks underlying this ensemble. Sub-lists
@@ -235,8 +315,6 @@ class DEX_NET(object):
         # First, setup a shared random number generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
             rng.randint(100000))
-        # Set the activation function
-        self.act_fun = lambda x: relu_actfun(x)
         ################################################
         # Process user-suplied parameters for this net #
         ################################################
@@ -253,12 +331,16 @@ class DEX_NET(object):
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
         self.reg_all_obs = 1
+        self.ear_type = params['ear_type']
+        self.ear_lam = theano.shared(value=np.asarray([params['ear_lam']], \
+                dtype=theano.config.floatX), name='ear_lam')
         self.spawn_weights = theano.shared(\
                 value=np.asarray(params['spawn_weights'], \
                 dtype=theano.config.floatX), name='spawn_weights')
         # Compute some "structural" properties of this ensemble
         self.max_proto_depth = max([(len(pc)-1) for pc in self.proto_configs])
         self.spawn_count = len(self.spawn_configs)
+        self.ear_pairs = self.spawn_count * (self.spawn_count - 1)
         ########################################
         # Initialize all of the proto-networks #
         ########################################
@@ -267,23 +349,34 @@ class DEX_NET(object):
         self.input = input
         # Construct the proto-networks from which to generate spawn-sembles
         for (pn_num, proto_config) in enumerate(self.proto_configs):
-            layer_sizes = [ls for ls in proto_config]
-            layer_connect_dims = zip(layer_sizes, layer_sizes[1:])
+            layer_defs = [ld for ld in proto_config]
+            layer_connect_defs = zip(layer_defs[:-1], layer_defs[1:])
             layer_num = 0
             proto_net = []
             next_input = self.input
-            for n_in, n_out in layer_connect_dims:
-                last_layer = (layer_num == (len(layer_connect_dims) - 1))
+            for in_def, out_def in layer_connect_defs:
+                last_layer = (layer_num == (len(layer_connect_defs) - 1))
                 pnl_name = "pn{0:d}l{1:d}".format(pn_num, layer_num)
-                activation = (lambda x: noop_actfun(x)) if last_layer \
-                        else self.act_fun
+                if (type(in_def) is list) or (type(in_def) is tuple):
+                    # Receiving input from a poolish layer...
+                    in_dim = in_def[0]
+                else:
+                    # Receiving input from a normal layer...
+                    in_dim = in_def
+                if (type(out_def) is list) or (type(out_def) is tuple):
+                    # Applying some sort of pooling in this layer...
+                    out_dim = out_def[0]
+                    pool_size = out_def[1]
+                else:
+                    # Not applying any pooling in this layer...
+                    out_dim = out_def
+                    pool_size = 0
                 # Add a new layer to the regular model
                 proto_net.append(HiddenLayer(rng=rng, \
                         input=next_input, \
-                        activation=activation, \
-                        pool_size=4, \
+                        activation=None, pool_size=pool_size, \
                         drop_rate=0., input_noise=0., bias_noise=0., \
-                        n_in=n_in, n_out=n_out, use_bias=use_bias, \
+                        in_dim=in_dim, out_dim=out_dim, use_bias=use_bias, \
                         name=pnl_name))
                 next_input = proto_net[-1].output
                 # Set the non-bias parameters of this layer to be clipped
@@ -315,17 +408,17 @@ class DEX_NET(object):
                 d_prob = self.vis_drop if (layer_num == 0) else self.hid_drop
                 drop_prob = d_prob if do_dropout else 0.0
                 # Get important properties from the relevant proto-layer
-                activation = proto_layer.activation
+                actfun = proto_layer.activation
+                pool_size = proto_layer.pool_size
                 in_dim = proto_layer.in_dim
                 out_dim = proto_layer.out_dim
                 # Add a new layer to the regular model
                 spawn_net.append(HiddenLayer(rng=rng, \
-                        input=next_input, \
-                        activation=activation, \
-                        pool_size=4, drop_rate=drop_prob, \
+                        input=next_input, activation=actfun, \
+                        pool_size=pool_size, drop_rate=drop_prob, \
                         input_noise=input_noise, bias_noise=bias_noise, \
                         W=proto_layer.W, b=proto_layer.b, \
-                        n_in=in_dim, n_out=out_dim, use_bias=use_bias))
+                        in_dim=in_dim, out_dim=out_dim, use_bias=use_bias))
                 next_input = spawn_net[-1].output
                 layer_num = layer_num + 1
             # Add this network to the list of spawn-networks
@@ -342,7 +435,10 @@ class DEX_NET(object):
                 if (i == (len(pn) - 1)):
                     self.class_params.extend(pl.params)
 
-        # DERP DORP
+        # Build loss functions for denoising autoencoder training. This sets up
+        # a cost function for each possible layer, as determined by the maximum
+        # number of layers in any proto-network. The DAE cost for layer i will
+        # be the mean DAE cost over all i'th layers in the proto-networks.
         self._construct_dex_layers(rng)
 
         # Get metrics for tracking performance over the mean of the outputs
@@ -351,6 +447,9 @@ class DEX_NET(object):
         # Get loss functions to optimize based on the spawned-nets in this
         # generalized spawn-semble.
         self.spawn_class_cost = lambda y: self._spawn_class_cost(y)
+        self.spawn_reg_cost = lambda y: self._ear_cost(y, self.ear_type)
+        self.spawn_reg_cost_alt = lambda y, t: self._ear_cost(y, self.ear_type)
+        self.spawn_ent_cost = lambda lam_ent, y: self._ent_cost(lam_ent, y)
         self.spawn_dex_cost = lambda idx: self._spawn_dex_cost(idx)
         self.act_reg_cost = lam_l2a * self._act_reg_cost()
         return
@@ -390,71 +489,155 @@ class DEX_NET(object):
         total_loss = T.sum(spawn_class_losses)
         return total_loss
 
+    def _ear_cost(self, y, ear_type):
+        """Compute the cost of ensemble agreement regularization."""
+        ear_losses = []
+        for i in range(self.spawn_count):
+            for j in range(self.spawn_count):
+                if not (i == j):
+                    x1 = self.spawn_nets[i][-1].linear_output
+                    x2 = self.spawn_nets[j][-1].linear_output
+                    ear_loss = self.ear_lam[0] * \
+                            self._ear_loss(x1, x2, y, ear_type)
+                    ear_losses.append(ear_loss)
+        if (self.spawn_count > 1):
+            total_loss = T.sum(ear_losses) / self.ear_pairs
+        else:
+            x1 = self.spawn_nets[0][-1].linear_output
+            x2 = self.spawn_nets[0][-1].linear_output
+            total_loss = 0.0 * \
+                self._ear_loss(x1, x2, y, ear_type)
+        return total_loss
+
+    def _ear_loss(self, X1, X2, Y, ear_type):
+        """Compute Ensemble Agreement Regularization cost for outputs X1/X2.
+
+        This regularizes for agreement among members of a 'pseudo-ensemble'.
+        Y is used to generate a mask on EAR costs, restricting optimization of
+        the regularizer to only unlabelled examples whenever the EAR_NET
+        instance is operating in 'semi-supervised' mode. The particular type
+        of EAR to apply is selected by 'ear_type'.
+        """
+        if self.reg_all_obs:
+            # Compute EAR regularizer using _all_ observations, not just those
+            # with class label 0. (assume -1 is not a class label...)
+            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
+        else:
+            # Compute EAR regularizer only for observations with class label 0
+            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
+        var_fun = lambda x1, x2: \
+                T.sum(((x1 - x2) * ss_mask)**2.) / T.sum(ss_mask)
+        tanh_fun = lambda x1, x2: var_fun(T.tanh(x1), T.tanh(x2))
+        norm_fun = lambda x1, x2: var_fun(row_normalize(x1), row_normalize(x2))
+        sigm_fun = lambda x1, x2: \
+                var_fun(T.nnet.sigmoid(x1), T.nnet.sigmoid(x2))
+        bent_fun = lambda p, q: T.sum(ss_mask * T.nnet.binary_crossentropy( \
+                T.nnet.sigmoid(xo), T.nnet.sigmoid(xt))) / T.sum(ss_mask)
+        ment_fun = lambda p, q: \
+                T.sum(ss_mask * smooth_cross_entropy(p, q)) / T.sum(ss_mask)
+        kl_fun = lambda p, q: \
+                T.sum(ss_mask * smooth_kl_divergence(p, q)) / T.sum(ss_mask)
+        if (ear_type == 1):
+            # Unit-normalized variance (like fake cosine distance)
+            ear_fun = norm_fun
+        elif (ear_type == 2):
+            # Tanh-transformed variance
+            ear_fun = tanh_fun
+        elif (ear_type == 3):
+            # Sigmoid-transformed variance
+            ear_fun = sigm_fun
+        elif (ear_type == 4):
+            # Binary cross-entropy
+            ear_fun = bent_fun
+        elif (ear_type == 5):
+            # Multinomial cross-entropy
+            ear_fun = ment_fun
+        elif (ear_type == 6):
+            # Multinomial KL-divergence
+            ear_fun = kl_fun
+        else:
+            ear_fun = var_fun
+        return ear_fun(X1, X2)
+
+    def _ent_cost(self, lam_ent, y):
+        """Compute cost for entropy regularization, weighted by lam_ent."""
+        ent_losses = []
+        for i in range(self.spawn_count):
+            x = self.spawn_nets[i][-1].linear_output
+            ent_loss = lam_ent * self.ear_lam[0] * self._ent_loss(x, y, 1)
+            ent_losses.append(ent_loss)
+        total_loss = T.sum(ent_losses) / self.spawn_count
+        return total_loss
+
+    def _ent_loss(self, X, Y, ent_type=0):
+        """Compute the entropy regularizer. Either binary or multinomial.
+
+        Note: entropy can be computed as the cross-entropy of a distribution
+               with itself.
+        """
+        if self.reg_all_obs:
+            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
+        else:
+            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
+        bent_fun = lambda x: T.sum((ss_mask * T.nnet.binary_crossentropy( \
+                T.nnet.sigmoid(x), T.nnet.sigmoid(x))) / T.sum(ss_mask))
+        ment_fun = lambda x: T.sum((ss_mask * smooth_cross_entropy(x, x))) / \
+                T.sum(ss_mask)
+        if (ent_type == 0):
+            # Binary self cross-entropy
+            masked_ent = bent_fun(X)
+        else:
+            # Multinomial self cross-entropy
+            masked_ent = ment_fun(X)
+        return masked_ent
+
+    def set_ear_lam(self, e_lam):
+        """Set the Ensemble Agreement Regularization weight."""
+        self.ear_lam.set_value(np.asarray([e_lam], dtype=theano.config.floatX))
+        return
+
     def _spawn_dex_cost(self, idx):
         """DERP DORP."""
-        dex_costs = []
-        for dex_layer in self.dex_layers:
-            dex_costs.append(dex_layer.cost(idx))
-
-        mean_cost = T.mean(dex_costs)
+        all_costs = []
+        for dex_cost in self.dex_costs:
+            all_costs.append(dex_cost(idx))
+        mean_cost = T.sum(all_costs)
         return mean_cost
 
-    def _construct_dex_layers(self, rng):
+    def _construct_dex_layers(self, rng, max_key=70000):
         """DERP DORP."""
-        self.dae_params = []
-        self.dae_costs = []
-        # The number of hidden layers in each proto-network is depth-1, where
-        # depth is the total number of layers in the network. This is because
-        # we count the output layer as well as the hidden layers.
-        for d in range(self.max_proto_depth - 1):
-            d_params = []
-            s_params = []
-            d_costs = []
-            for pn_key in range(len(self.proto_nets)):
-                # Get the "first" spawn-net spawned from this proto-net
-                sn_key = self.proto_keys.index(pn_key)
-                sn = self.spawn_nets[sn_key]
-                if (d < (len(sn) - 1)):
-                    # Construct a DAE for this proto/spawn-net hidden layer
-                    W_sn = sn[d].W
-                    b_sn = sn[d].b
-                    ci_sn = sn[d].clean_input # the input to be reconstructed
-                    fi_sn = sn[d].fuzzy_input # the input to reconstruct from
-                    vis_dim = sn[d].in_dim
-                    hid_dim = sn[d].out_dim
-                    # Construct the DAE layer object
-                    dae_layer = DAELayer(rng=rng, \
-                            clean_input=ci_sn, \
-                            fuzzy_input=fi_sn, \
-                            n_in=vis_dim, n_out=hid_dim, \
-                            activation=self.act_fun, \
-                            input_noise=nz_lvl, \
-                            W=W_sn, b_h=b_sn, b_v=None)
-                    d_params.extend(dae_layer.params)
-                    s_params.extend([W_sn, b_sn])
-                    d_costs.append(dae_layer.compute_costs(lam_l1))
-            # Record the set of all DAE params to-be-optimized at depth d
-            self.dae_params.append(d_params)
-            # Record the sum of reconstruction costs for DAEs at depth d (in
-            # self.dae_costs[d][0]) and the sum of sparse regularization costs
-            # for DAEs at depth d (in self.dae_costs[d][1]).
-            self.dae_costs.append([T.sum([c[0] for c in d_costs]), \
-                    T.sum([c[1] for c in d_costs])])
+        self.dex_params = []
+        self.dex_costs = []
+        self.dex_layers = []
+        # Construct a dex layer attached to each proto-net's output layer
+        for spawn_net in self.spawn_nets:
+            sn_out_layer = spawn_net[-1]
+            snol_input = sn_out_layer.noisy_input
+            snol_indim = sn_out_layer.in_dim
+            dex_layer = DEXLayer(rng, X_in=snol_input, vec_dim=snol_indim, \
+                max_key=max_key, W=None, b=None)
+            self.dex_params.extend(dex_layer.params)
+            self.dex_costs.append(dex_layer.dex_cost)
+            self.dex_layers.append(dex_layer)
+        return
+
+    def dex_update(self, I, learn_rate):
+        for dex_layer in self.dex_layers:
+            dex_layer.dumb_update(I, learn_rate)
         return
 
 #################################
 # EXEMPLAR LAYER IMPLEMENTATION #
 #################################
 
-class XMPLayer(object):
-    def __init__(self, rng, X=None, I=None, \
-            vec_dim=0, max_key=0, W=None, b=None):
+class DEXLayer(object):
+    def __init__(self, rng, X_in=None, vec_dim=0, max_key=0, W=None, b=None):
 
         # Setup a shared random generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
 
-        self.X = X
+        self.X_in = X_in
 
         # Set some basic layer properties
         self.vec_dim = vec_dim
@@ -472,14 +655,31 @@ class XMPLayer(object):
         # Grab pointers to the now-initialized weights and biases
         self.W = W
         self.b = b
-        self.W_I = T.take(self.W, I, axis=0)
-        self.b_I = T.take(self.b, I, axis=0)
+        self.dW = None
+        self.db = None
 
         # Put the learnable/optimizable parameters into a list
         self.params = [self.W, self.b]
         # Beep boop... layer construction complete...
         return
 
+    def dex_cost(self, I):
+        """Simple exemplar-svm-like function to optimize."""
+        #assert(I.shape[0] == self.X_in.shape[0])
+        Wt = T.take(self.W, I, axis=0)
+        bt = T.take(self.b, I, axis=0)
+        F = T.dot(Wt, self.X_in.T)
+        C = T.sum(F**2.0) + T.sum(0.01*bt**2.0)
+        self.dW = T.grad(C, Wt)
+        self.db = T.grad(C, bt)
+        self.dumb_update(I, 0.01)
+        return C
+
+    def dumb_update(self, I, learn_rate):
+        """Theano doesn't like lookup tables."""
+        T.inc_subtensor(T.take(self.W, I, axis=0), -learn_rate*self.dW, inplace=True)
+        T.inc_subtensor(T.take(self.b, I, axis=0), -learn_rate*self.db, inplace=True)
+        return
 
 
 

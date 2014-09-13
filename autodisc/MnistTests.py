@@ -6,7 +6,7 @@ import numpy as np
 import theano
 import theano.tensor as T
 
-from DexNetTemp import DEX_NET
+from DexNet import DEX_NET
 from load_data import load_udm, load_udm_ss, load_mnist
 import NetTrainers as NT
 
@@ -45,11 +45,10 @@ def train_mlp(NET, sgd_params, datasets):
         datasets=datasets)
     return
 
-def train_dae(NET, dae_layer, sgd_params, datasets):
+def train_dex(NET, sgd_params, datasets):
     """Run DAE training test."""
     # Run denoising autoencoder training on the given layer of NET
-    NT.train_dae(NET=NET, \
-        dae_layer=dae_layer, \
+    NT.train_dex(NET=NET, \
         sgd_params=sgd_params, \
         datasets=datasets)
     return
@@ -189,13 +188,13 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     pc0 = [28*28, 500, 500, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.2, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
     mlp_params['ear_type'] = 5
-    mlp_params['ear_lam'] = 0.2
+    mlp_params['ear_lam'] = 1.0
     mlp_params['lam_l2a'] = 1e-2
     mlp_params['use_bias'] = 1
 
@@ -207,7 +206,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         rng = np.random.RandomState(rng_seed)
         # Load some data to train/validate/test with
         dataset = 'data/mnist.pkl.gz'
-        datasets = load_udm(dataset, zero_mean=True)
+        datasets = load_udm(dataset, zero_mean=False)
 
         # Construct the DEX_NET object that we will be training
         x_in = T.matrix('x_in')
@@ -218,21 +217,17 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         # First, pretrain each layer in the mlp. #
         ##########################################
         sgd_params['result_tag'] = "ss_ear_pt_s{0:d}_t{1:d}".format(su_count,test_num)
-        sgd_params['batch_size'] = 50
+        sgd_params['batch_size'] = 100
         sgd_params['start_rate'] = 0.05
         sgd_params['epochs'] = 50
-        for i in range(len(NET.dae_costs)):
-            print("==================================================")
-            print("Pretraining hidden layer(s) at depth {0:d}".format(i+1))
-            print("==================================================")
-            train_dae(NET, i, sgd_params, datasets)
+        train_dex(NET, sgd_params, datasets)
 
         # Load some data to train/validate/test with
         dataset = 'data/mnist.pkl.gz'
-        datasets = load_udm_ss(dataset, su_count, rng, zero_mean=True)
+        datasets = load_udm_ss(dataset, su_count, rng, zero_mean=False)
         # Run semisupervised training on the given MLP
         sgd_params['batch_size'] = 100
-        sgd_params['start_rate'] = 0.02
+        sgd_params['start_rate'] = 0.05
         # Train with weak EAR regularization
         sgd_params['top_only'] = True
         sgd_params['epochs'] = 5
