@@ -178,24 +178,24 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     sgd_params = {}
     sgd_params['start_rate'] = 0.01
     sgd_params['decay_rate'] = 0.998
-    sgd_params['wt_norm_bound'] = 2.0
+    sgd_params['wt_norm_bound'] = 3.5
     sgd_params['epochs'] = 1000
     sgd_params['batch_size'] = 100
     sgd_params['result_tag'] = '---'
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
-    pc0 = [28*28, 500, 500, 11]
+    pc0 = [28*28, 200, 200, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.05, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
     mlp_params['ear_type'] = 5
     mlp_params['ear_lam'] = 1.0
-    mlp_params['lam_l2a'] = 1e-2
+    mlp_params['lam_l2a'] = 1.0
     mlp_params['use_bias'] = 1
 
     for test_num in range(test_count):
@@ -216,10 +216,10 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         ##########################################
         # First, pretrain each layer in the mlp. #
         ##########################################
-        sgd_params['result_tag'] = "ss_ear_pt_s{0:d}_t{1:d}".format(su_count,test_num)
+        sgd_params['result_tag'] = "dex_s{0:d}_t{1:d}".format(su_count,test_num)
         sgd_params['batch_size'] = 100
-        sgd_params['start_rate'] = 0.05
-        sgd_params['epochs'] = 50
+        sgd_params['start_rate'] = 0.1
+        sgd_params['epochs'] = 1000
         train_dex(NET, sgd_params, datasets)
 
         # Load some data to train/validate/test with
@@ -272,16 +272,15 @@ def test_dropout_ala_original():
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks to spawn from
-    pc0 = [28*28, 800, 800, 11]
+    pc0 = [28*28, 128, 128, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': False}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
-    mlp_params['spawn_configs'] = [sc0, sc1]
-    mlp_params['spawn_weights'] = [1.0, 0.0]
+    sc0 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.0, 'do_dropout': True}
+    mlp_params['spawn_configs'] = [sc0]
+    mlp_params['spawn_weights'] = [1.0]
     # Set remaining params
-    mlp_params['ear_type'] = 6
-    mlp_params['ear_lam'] = 1.0
+    mlp_params['ear_type'] = 1
+    mlp_params['ear_lam'] = 0.0
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['use_bias'] = 1
 

@@ -556,21 +556,28 @@ def train_dex(
     print '... building the model'
 
     # allocate symbolic variables for the data
-    index = T.lscalar()  # index to a [mini]batch
+    index = T.lvector()  # index to a [mini]batch
     epoch = T.scalar()   # epoch counter
-    I = T.ivector()      # keys for the training examples
+    I = T.lvector()      # keys for the training examples
     x = NET.input        # symbolic matrix for inputs to NET
     learning_rate = theano.shared(np.asarray(initial_learning_rate,
         dtype=theano.config.floatX))
+    dex_weight = T.scalar(name='dex_weight', dtype=theano.config.floatX)
 
     # Collect the parameters to-be-optimized
     opt_params = NET.proto_params
 
     # Build the expressions for the cost functions
-    NET_dex_cost = NET.spawn_dex_cost(I)
+    DL = NET.dex_layers[0]
+    RL_costs = [RL.rica_cost() for RL in NET.rica_layers]
+
+    NET_rica_cost = sum([rlc[0] for rlc in RL_costs])
+    NET_rica_reg_cost = sum([rlc[2] for rlc in RL_costs])
+    NET_dex_cost = DL.dex_cost(index)
     NET_reg_cost = NET.act_reg_cost
-    NET_cost = NET_dex_cost + NET_reg_cost
-    NET_metrics = NET_cost
+    NET_cost = NET_dex_cost + NET_reg_cost #NET_rica_cost + NET_dex_cost + NET_reg_cost
+    NET_metrics = [NET_cost, NET_cost, NET_dex_cost, NET_reg_cost, \
+            NET_reg_cost]
 
     ############################################################################
     # Prepare momentum and gradient variables, and construct the updates that  #
@@ -578,7 +585,7 @@ def train_dex(
     ############################################################################
     NET_grads = []
     for param in opt_params:
-        NET_grads.append(T.grad(NET_cost, param))
+        NET_grads.append(T.grad(NET_cost, param, disconnected_inputs='warn'))
 
     NET_moms = []
     for param in opt_params:
@@ -615,15 +622,19 @@ def train_dex(
         else:
             NET_updates[param] = NET_param
 
+    # updates for dex layer
+    NET_updates[DL.W] = T.inc_subtensor(T.take(DL.W, index, axis=0), \
+            -gentle_rate*DL.dW)
+    NET_updates[DL.b] = T.inc_subtensor(T.take(DL.b, index), \
+            -gentle_rate*DL.db)
+
     # Compile theano functions for training.  These return the training cost
     # and update the model parameters.
 
-    train_NET = theano.function(inputs=[epoch, index], \
+    train_NET = theano.function(inputs=[epoch, index, dex_weight], \
         outputs=NET_metrics, \
         updates=NET_updates, \
-        givens={ x: Xtr[tr_bidx[index,0]:tr_bidx[index,1],:], \
-                 I: Ytr[tr_bidx[index,0]:tr_bidx[index,1]] } ,\
-        accept_inplace=True, \
+        givens={ x: T.take(Xtr, index, axis=0) }, \
         on_unused_input='warn')
 
     # Theano function to decay the learning rate, this is separate from the
@@ -645,28 +656,30 @@ def train_dex(
     results_file.write("  **TODO: Write code for this.**\n")
     results_file.flush()
 
-    train_metrics = train_NET(0, 0)
+    b_index = npr.randint(0, high=tr_samples, size=(batch_size,))
+    train_metrics = train_NET(0, b_index, 0.0)
     while epoch_counter < n_epochs:
-        # Shuffle matrices, to mix up examples to train against eachother
-        #shuffle_rows(Xtr, Ytr_shared)
-
         ######################################################
         # Process some number of minibatches for this epoch. #
         ######################################################
         e_time = time.clock()
         epoch_counter = epoch_counter + 1
-        train_cost = 0.0
+        train_metrics = [0.0 for val in train_metrics]
         for minibatch_index in xrange(tr_batches):
             # Compute update for some joint supervised/unsupervised minibatch
-            batch_cost = train_NET(epoch_counter, minibatch_index)
-            train_cost += batch_cost
-        train_cost = train_cost / tr_batches
+            b_index = npr.randint(0, high=tr_samples, size=(batch_size,))
+            dwight = 1.0 #0.0 if (epoch_counter <= 5) else 0.1
+            batch_metrics = train_NET(epoch_counter, b_index, dwight)
+            train_metrics = [a+b for (a, b) in zip(train_metrics, batch_metrics)]
+        train_metrics = [(val / tr_batches) for val in train_metrics]
 
         # Update the learning rate
         new_learning_rate = set_learning_rate()
 
         # Report and save progress.
-        print("epoch {0:d}: tr_loss={1:.4f}".format(epoch_counter, train_cost))
+        print("epoch {0:d}: total={1:.4f}, rica={2:.4f}, dex={3:.4f}, reg={4:.4f}, rica_reg:{5:.4f}".format( \
+                epoch_counter, train_metrics[0], train_metrics[1], train_metrics[2], \
+                train_metrics[3], train_metrics[4]))
         print("--time: {0:.4f}".format((time.clock() - e_time)))
         # Save first layer weights to an image locally
         utils.visualize(NET, 0, 0, img_file_name)

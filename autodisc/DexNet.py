@@ -7,7 +7,7 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
-from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 from output_losses import LogRegSS, MCL2HingeSS
 
@@ -108,7 +108,7 @@ def smooth_cross_entropy(p, q):
 # HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
 # with non-linear activation transform and a max-pooling (a.k.a. Maxout) layer #
 # which is currently fixed to operate over disjoint pools of linear filters.   #
-#                                                                              #              #
+#                                                                              #
 ################################################################################
 
 class HiddenLayer(object):
@@ -122,14 +122,14 @@ class HiddenLayer(object):
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
 
-        self.cu_rng = CURAND_RandomStreams(rng.randint(1000000))
+        #self.cu_rng = CURAND_RandomStreams(rng.randint(1000000))
 
         self.clean_input = input
 
         # Add gaussian noise to the input (if desired)
         if (input_noise > 1e-4):
             self.fuzzy_input = input + \
-                    (input_noise * self.cu_rng.normal(size=input.shape, \
+                    (input_noise * self.srng.normal(size=input.shape, \
                     dtype=theano.config.floatX))
         else:
             self.fuzzy_input = input
@@ -201,10 +201,7 @@ class HiddenLayer(object):
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
 
         # Set layer weights and biases
-        if bias_noise > 1e-3:
-            self.W = self._noisy_params(W, noise_lvl=0.01)
-        else:
-            self.W = W
+        self.W = W
         self.b = b
 
         # Compute linear "pre-activation" for this layer
@@ -215,7 +212,7 @@ class HiddenLayer(object):
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output  + \
-                (bias_noise * self.cu_rng.normal(size=self.linear_output.shape, \
+                (bias_noise * self.srng.normal(size=self.linear_output.shape, \
                 dtype=theano.config.floatX))
 
         # Apply activation function
@@ -241,7 +238,7 @@ class HiddenLayer(object):
         # get a drop mask that drops things with probability p
         #drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
         #        dtype=theano.config.floatX)
-        noise_rnd = self.cu_rng.uniform(input.shape, low=0.0, high=1.0, \
+        noise_rnd = self.srng.uniform(input.shape, low=0.0, high=1.0, \
             dtype=theano.config.floatX)
         drop_mask = noise_rnd > p
         # get a scaling factor to keep expectations fixed after droppage
@@ -254,7 +251,7 @@ class HiddenLayer(object):
         """Noisy weights, like convolving energy surface with a gaussian."""
         #P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
         #        dtype=theano.config.floatX)
-        P_nz = P + self.cu_rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+        P_nz = P + self.srng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
                 dtype=theano.config.floatX)
         return P_nz
 
@@ -435,11 +432,9 @@ class DEX_NET(object):
                 if (i == (len(pn) - 1)):
                     self.class_params.extend(pl.params)
 
-        # Build loss functions for denoising autoencoder training. This sets up
-        # a cost function for each possible layer, as determined by the maximum
-        # number of layers in any proto-network. The DAE cost for layer i will
-        # be the mean DAE cost over all i'th layers in the proto-networks.
+        # create auxiliary layer type
         self._construct_dex_layers(rng)
+        self._construct_rica_layers(rng)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
@@ -450,7 +445,6 @@ class DEX_NET(object):
         self.spawn_reg_cost = lambda y: self._ear_cost(y, self.ear_type)
         self.spawn_reg_cost_alt = lambda y, t: self._ear_cost(y, self.ear_type)
         self.spawn_ent_cost = lambda lam_ent, y: self._ent_cost(lam_ent, y)
-        self.spawn_dex_cost = lambda idx: self._spawn_dex_cost(idx)
         self.act_reg_cost = lam_l2a * self._act_reg_cost()
         return
 
@@ -467,7 +461,7 @@ class DEX_NET(object):
     def _act_reg_cost(self):
         """Apply L2 regularization to the activations in each spawn-net."""
         act_sq_sums = []
-        for i in range(self.spawn_count):
+        for i in range(1): #self.spawn_count):
             sn = self.spawn_nets[i]
             for snl in sn:
                 act_sq_sums.append(snl.act_l2_sum)
@@ -596,34 +590,24 @@ class DEX_NET(object):
         self.ear_lam.set_value(np.asarray([e_lam], dtype=theano.config.floatX))
         return
 
-    def _spawn_dex_cost(self, idx):
-        """DERP DORP."""
-        all_costs = []
-        for dex_cost in self.dex_costs:
-            all_costs.append(dex_cost(idx))
-        mean_cost = T.sum(all_costs)
-        return mean_cost
-
     def _construct_dex_layers(self, rng, max_key=70000):
         """DERP DORP."""
-        self.dex_params = []
-        self.dex_costs = []
         self.dex_layers = []
-        # Construct a dex layer attached to each proto-net's output layer
-        for spawn_net in self.spawn_nets:
-            sn_out_layer = spawn_net[-1]
-            snol_input = sn_out_layer.noisy_input
-            snol_indim = sn_out_layer.in_dim
-            dex_layer = DEXLayer(rng, X_in=snol_input, vec_dim=snol_indim, \
-                max_key=max_key, W=None, b=None)
-            self.dex_params.extend(dex_layer.params)
-            self.dex_costs.append(dex_layer.dex_cost)
-            self.dex_layers.append(dex_layer)
+        # Construct a dex layer attached to the first spawn-net's final feats
+        sn_out_layer = self.spawn_nets[0][-1]
+        snol_input = sn_out_layer.noisy_input
+        snol_indim = sn_out_layer.in_dim
+        dex_layer = DEXLayer(rng, X_in=snol_input, vec_dim=snol_indim, \
+            max_key=max_key, W=None, b=None)
+        self.dex_layers.append(dex_layer)
         return
 
-    def dex_update(self, I, learn_rate):
-        for dex_layer in self.dex_layers:
-            dex_layer.dumb_update(I, learn_rate)
+    def _construct_rica_layers(self, rng):
+        """DERP DORP."""
+        self.rica_layers = []
+        for sn_layer in self.spawn_nets[0][:-1]:
+            rica_layer = RICALayer(rng, mlp_layer=sn_layer)
+            self.rica_layers.append(rica_layer)
         return
 
 #################################
@@ -649,7 +633,7 @@ class DEXLayer(object):
                       size=(max_key+10, vec_dim)), dtype=theano.config.floatX)
             W = theano.shared(value=W_init, name='W')
         if b is None:
-            b_init = np.zeros((max_key+10, 1), dtype=theano.config.floatX)
+            b_init = np.zeros((max_key+10,), dtype=theano.config.floatX)
             b = theano.shared(value=b_init, name='b')
 
         # Grab pointers to the now-initialized weights and biases
@@ -663,23 +647,61 @@ class DEXLayer(object):
         # Beep boop... layer construction complete...
         return
 
-    def dex_cost(self, I):
+    def dex_cost(self, I, dex_lam=5.0):
         """Simple exemplar-svm-like function to optimize."""
         #assert(I.shape[0] == self.X_in.shape[0])
         Wt = T.take(self.W, I, axis=0)
-        bt = T.take(self.b, I, axis=0)
-        F = T.dot(Wt, self.X_in.T)
-        C = T.sum(F**2.0) + T.sum(0.01*bt**2.0)
+        bt = T.take(self.b, I)
+        F = T.dot(self.X_in, Wt.T) + bt
+        mask = T.ones_like(F) - (2.0 * T.identity_like(F))
+        dex_loss = T.sum(T.log(1.0 + T.exp(mask * F))) / F.shape[0]
+        reg_loss = dex_lam * T.sum(Wt**2.0)
+        C = dex_loss + reg_loss
         self.dW = T.grad(C, Wt)
         self.db = T.grad(C, bt)
-        self.dumb_update(I, 0.01)
         return C
 
     def dumb_update(self, I, learn_rate):
         """Theano doesn't like lookup tables."""
         T.inc_subtensor(T.take(self.W, I, axis=0), -learn_rate*self.dW, inplace=True)
-        T.inc_subtensor(T.take(self.b, I, axis=0), -learn_rate*self.db, inplace=True)
+        T.inc_subtensor(T.take(self.b, I), -learn_rate*self.db, inplace=True)
         return
+
+
+#############################
+# RICA Layer Implementation #
+#############################
+
+class RICALayer(object):
+    def __init__(self, rng, mlp_layer=None):
+
+        # Setup a shared random generator for this layer
+        self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
+                rng.randint(100000))
+
+        # get the input to reconstruct from the associated mlp layer
+        self.input = mlp_layer.clean_input
+
+        # Grab pointers to the now-initialized weights and biases
+        self.W = mlp_layer.W
+        self.b_h = mlp_layer.b
+        b_init = np.zeros((mlp_layer.in_dim,), dtype=theano.config.floatX)
+        self.b_v = theano.shared(value=b_init)
+
+        # Put the learnable/optimizable parameters into a list
+        self.params = None
+        # Beep boop... layer construction complete...
+        return
+
+    def rica_cost(self, lam_l1=0.01):
+        """Simple Reconstruction ICA cost."""
+        A_h = T.dot(self.input, self.W) + self.b_h
+        A_v = T.dot(A_h, self.W.T)
+        row_l1_sum = T.sum(abs(row_normalize(A_h))) / A_h.shape[0]
+        rec_cost = T.sum((A_v - self.input)**2.0) / A_v.shape[0]
+        reg_cost = lam_l1 * row_l1_sum
+        rica_cost = rec_cost + reg_cost
+        return [rica_cost, rec_cost, reg_cost]
 
 
 
