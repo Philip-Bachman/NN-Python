@@ -177,7 +177,7 @@ class HiddenLayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            if self.pool_size <= 1:
+            if self.pool_size <= 10:
                 # Generate random initial filters in a typical way
                 W_init = np.asarray(0.01 * rng.standard_normal( \
                           size=(self.in_dim, self.filt_count)), \
@@ -201,10 +201,7 @@ class HiddenLayer(object):
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
 
         # Set layer weights and biases
-        if bias_noise > 1e-3:
-            self.W = self._noisy_params(W, noise_lvl=0.01)
-        else:
-            self.W = W
+        self.W = W
         self.b = b
 
         # Compute linear "pre-activation" for this layer
@@ -405,6 +402,7 @@ class EAR_NET(object):
             proto_net = self.proto_nets[proto_key]
             for proto_layer in proto_net:
                 last_layer = (layer_num == (len(proto_net) - 1))
+                layer_bn = bias_noise if (layer_num == 0) else 0.0
                 d_prob = self.vis_drop if (layer_num == 0) else self.hid_drop
                 drop_prob = d_prob if do_dropout else 0.0
                 # Get important properties from the relevant proto-layer
@@ -416,7 +414,7 @@ class EAR_NET(object):
                 spawn_net.append(HiddenLayer(rng=rng, \
                         input=next_input, activation=actfun, \
                         pool_size=pool_size, drop_rate=drop_prob, \
-                        input_noise=input_noise, bias_noise=bias_noise, \
+                        input_noise=input_noise, bias_noise=layer_bn, \
                         W=proto_layer.W, b=proto_layer.b, \
                         in_dim=in_dim, out_dim=out_dim, use_bias=use_bias))
                 next_input = spawn_net[-1].output
