@@ -327,7 +327,9 @@ class EAR_NET(object):
             self.hid_drop = 0.5
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
-        self.reg_all_obs = 1
+        self.reg_all_obs = True
+        if 'reg_all_obs' in params:
+            self.reg_all_obs = params['reg_all_obs']
         self.ear_type = params['ear_type']
         self.ear_lam = theano.shared(value=np.asarray([params['ear_lam']], \
                 dtype=theano.config.floatX), name='ear_lam')
@@ -402,7 +404,7 @@ class EAR_NET(object):
             proto_net = self.proto_nets[proto_key]
             for proto_layer in proto_net:
                 last_layer = (layer_num == (len(proto_net) - 1))
-                layer_bn = bias_noise if (layer_num == 0) else 0.0
+                layer_in = input_noise if (layer_num >= 0) else 0.0
                 d_prob = self.vis_drop if (layer_num == 0) else self.hid_drop
                 drop_prob = d_prob if do_dropout else 0.0
                 # Get important properties from the relevant proto-layer
@@ -414,7 +416,7 @@ class EAR_NET(object):
                 spawn_net.append(HiddenLayer(rng=rng, \
                         input=next_input, activation=actfun, \
                         pool_size=pool_size, drop_rate=drop_prob, \
-                        input_noise=input_noise, bias_noise=layer_bn, \
+                        input_noise=layer_in, bias_noise=bias_noise, \
                         W=proto_layer.W, b=proto_layer.b, \
                         in_dim=in_dim, out_dim=out_dim, use_bias=use_bias))
                 next_input = spawn_net[-1].output
@@ -437,7 +439,9 @@ class EAR_NET(object):
         # a cost function for each possible layer, as determined by the maximum
         # number of layers in any proto-network. The DAE cost for layer i will
         # be the mean DAE cost over all i'th layers in the proto-networks.
-        self._construct_dae_layers(rng, lam_l1=0.2, nz_lvl=0.25)
+        self.dae_lam_l1 = theano.shared( \
+            value=np.asarray([0.2]).astype(theano.config.floatX))
+        self._construct_dae_layers(rng, lam_l1=self.dae_lam_l1, nz_lvl=0.25)
 
         # Get metrics for tracking performance over the mean of the outputs
         # of the proto-nets underlying this ensemble.
@@ -518,9 +522,11 @@ class EAR_NET(object):
         if self.reg_all_obs:
             # Compute EAR regularizer using _all_ observations, not just those
             # with class label 0. (assume -1 is not a class label...)
+            print("PEAR for sup + unsup")
             ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
         else:
             # Compute EAR regularizer only for observations with class label 0
+            print("PEAR for unsup only")
             ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
         var_fun = lambda x1, x2: \
                 T.sum(((x1 - x2) * ss_mask)**2.) / T.sum(ss_mask)
@@ -588,7 +594,7 @@ class EAR_NET(object):
             masked_ent = ment_fun(X)
         return masked_ent
 
-    def _construct_dae_layers(self, rng, lam_l1=0., nz_lvl=0.25):
+    def _construct_dae_layers(self, rng, lam_l1=None, nz_lvl=0.25):
         """Build cost functions for training DAEs defined for all hidden
         layers of the proto-networks making up this generalized ensemble. That
         is, construct a DAE for every proto-layer that isn't a classification
@@ -687,7 +693,7 @@ class DAELayer(object):
         # Beep boop... layer construction complete...
         return
 
-    def compute_costs(self, lam_l1=0.):
+    def compute_costs(self, lam_l1=None):
         """Compute reconstruction and activation sparsity costs."""
         # Get noise-perturbed encoder/decoder parameters
         W_nz = self._noisy_params(self.W, 0.01)
@@ -701,7 +707,7 @@ class DAELayer(object):
         # Compute sparsity penalty (over both population and lifetime)
         row_l1_sum = T.sum(abs(row_normalize(A_h))) / A_h.shape[0]
         col_l1_sum = T.sum(abs(col_normalize(A_h))) / A_h.shape[1]
-        sparse_cost = lam_l1 * (row_l1_sum + col_l1_sum)
+        sparse_cost = lam_l1[0] * (row_l1_sum + col_l1_sum)
         return [recon_cost, sparse_cost]
 
     def _compute_hidden_acts(self, X, W, b_h):
@@ -728,11 +734,11 @@ class DAELayer(object):
         # p=1-p because 1's indicate keep and p is prob of dropping
         #noise_mask = self.cu_rng.binomial(n=1, p=1-p, size=input.shape, \
         #        dtype=theano.config.floatX)
-        noise_rnd = self.cu_rng.uniform(input.shape, low=0.0, high=1.0, \
+        drop_rnd = self.cu_rng.uniform(input.shape, low=0.0, high=1.0, \
             dtype=theano.config.floatX)
-        noise_mask = noise_rnd > p
+        drop_mask = drop_rnd > p
         # Cast mask from int to float32, to keep things on GPU
-        noisy_input = input * noise_mask
+        noisy_input = input * drop_mask
         return noisy_input
 
 
