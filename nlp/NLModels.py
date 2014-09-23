@@ -658,12 +658,7 @@ def test_cam_model():
         for w in range(10):
             print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
 
-
-if __name__=="__main__":
-    #test_cam_model()
-    #####
-    #####
-    #####
+def test_pv_model():
     data_dir = './flat_trees'
     sentences = cu.SentenceFileIterator(data_dir)
     key_dicts = cu.build_vocab(sentences, min_count=3, compute_hs_tree=True, \
@@ -705,6 +700,15 @@ if __name__=="__main__":
                 W1=pvm.word_layer.params['W'], W2=None)
         for w in range(10):
             print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
+
+
+if __name__=="__main__":
+    #test_cam_model()
+    test_pv_model()
+    #####
+    #####
+    #####
+
 
 
 
