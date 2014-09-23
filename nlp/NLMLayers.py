@@ -386,12 +386,15 @@ class CMLayer:
         self.dLdY = []
         return
 
-    def init_params(self, w_scale=0.01):
+    def init_params(self, w_scale=0.01, param='Wb'):
         """Randomly initialize the weights in this layer."""
-        self.params['Wm'] = w_scale * randn((self.key_count, self.source_dim))
-        self.grads['Wm'] = zeros(self.params['Wm'].shape)
-        self.params['Wb'] = w_scale * randn((self.key_count, self.bias_dim))
-        self.grads['Wb'] = zeros(self.params['Wb'].shape)
+        assert((param == 'Wb') or (param == 'Wm'))
+        if param == 'Wm':
+            self.params['Wm'] = w_scale * randn((self.key_count, self.source_dim))
+            self.grads['Wm'] = zeros(self.params['Wm'].shape)
+        else:
+            self.params['Wb'] = w_scale * randn((self.key_count, self.bias_dim))
+            self.grads['Wb'] = zeros(self.params['Wb'].shape)
         return
 
     def clip_params(self, Wm_norm=5.0, Wb_norm=5.0):

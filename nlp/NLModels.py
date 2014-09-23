@@ -41,7 +41,7 @@ class PVModel:
         self.lam_wv = lam_wv
         self.lam_cv = lam_cv
         self.lam_cl = lam_cl
-        self.reg_freq = 25
+        self.reg_freq = 20
         # Set noise layer parameters (for better regularization, perhaps)
         self.drop_rate = 0.0
         self.fuzz_scale = 0.0
@@ -70,7 +70,7 @@ class PVModel:
     def init_params(self, weight_scale=0.05):
         """Reset weights in the context LUT and softmax layers."""
         self.word_layer.init_params(weight_scale)
-        self.context_layer.init_params(weight_scale)
+        self.context_layer.init_params(weight_scale, param='Wb')
         self.class_layer.init_params(weight_scale)
         return
 
@@ -84,7 +84,8 @@ class PVModel:
     def batch_update(self, pre_keys, post_code_keys, post_code_signs, \
             phrase_keys, train_ctx=True, train_lut=True, train_cls=True, \
             learn_rate=1e-3):
-        """Perform a single "minibatch" update of the model parameters.
+        """
+        Perform a single "minibatch" update of the model parameters.
 
         Parameters:
             pre_keys: keys for the n-1 items in each n-gram to predict with
@@ -122,11 +123,12 @@ class PVModel:
     def train(self, ngram_sampler, hsm_code_keys, hsm_code_signs, batch_size, \
             batch_count, train_ctx=True, train_lut=True, train_cls=True, \
             learn_rate=1e-3):
-        """Train all parameters in the model using the given phrases.
+        """
+        Train all parameters in the model using the given phrases.
 
         Parameters:
             ngram_sampler: a sampler that produces ngrams in LUT key form,
-                           along with keys to their source phrases.
+                           along with keys to their source context/phrase.
             hsm_code_keys: table mapping word keys to their hsm code keys
             hsm_code_signs: table mapping word keys to their hsm code signs
             batch_size: size of minibatches for each update
@@ -175,7 +177,8 @@ class PVModel:
 
     def infer_context_vectors(self, ngram_sampler, hsm_code_keys, hsm_code_signs, \
             batch_size, batch_count, learn_rate=1e-3):
-        """Train context/paragraph vectors for each of the given phrases.
+        """
+        Train context/paragraph vectors for each of the given phrases.
 
         Parameters:
             ngram_sampler: a sampler that produces ngrams in LUT key form,
@@ -193,7 +196,7 @@ class PVModel:
                                          source_dim=self.wv_dim, \
                                          bias_dim=self.cv_dim, \
                                          do_rescale=False)
-        new_context_layer.init_params(0.0)
+        new_context_layer.init_params(0.02, param='Wb')
         prev_context_layer = self.context_layer
         self.context_layer = new_context_layer
         # Update the context vectors in the new context layer for some number
@@ -227,6 +230,7 @@ class PVModel:
         # Set self.context_layer back to what it was prior to retraining
         self.word_layer.reset_grads()
         self.context_layer = prev_context_layer
+        self.context_laye.rest_grads()
         self.class_layer.reset_grads()
         return new_context_layer
 
@@ -438,7 +442,7 @@ class CAModel:
                                          source_dim=self.wv_dim, \
                                          bias_dim=self.cv_dim, \
                                          do_rescale=True)
-        new_context_layer.init_params(0.0)
+        new_context_layer.init_params(0.02)
         prev_context_layer = self.context_layer
         self.context_layer = new_context_layer
         self.context_layer.reset_moms(1.0)
@@ -604,7 +608,7 @@ def some_nearest_words(keys_to_words, sample_count, W1=None, W2=None):
     return [source_keys, neighbor_keys, source_words, neighbor_words]
 
 def test_cam_model():
-    data_dir = './training_text'
+    data_dir = './flat_trees'
     sentences = cu.SentenceFileIterator(data_dir)
     key_dicts = cu.build_vocab(sentences, min_count=3, compute_hs_tree=True, \
                             compute_ns_table=True, down_sample=0.0)
@@ -646,7 +650,7 @@ def test_cam_model():
     learn_rate = 1e-2
     decay_rate = 0.99
     for i in range(100):
-        cam.train(pos_sampler, neg_sampler, 200, 10001, train_ctx=False, \
+        cam.train(pos_sampler, neg_sampler, 200, 10001, train_ctx=True, \
                   train_lut=True, train_cls=True, learn_rate=learn_rate)
         learn_rate = learn_rate * decay_rate
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
@@ -656,11 +660,11 @@ def test_cam_model():
 
 
 if __name__=="__main__":
-    test_cam_model()
+    #test_cam_model()
     #####
     #####
     #####
-    data_dir = './training_text'
+    data_dir = './flat_trees'
     sentences = cu.SentenceFileIterator(data_dir)
     key_dicts = cu.build_vocab(sentences, min_count=3, compute_hs_tree=True, \
                             compute_ns_table=True, down_sample=0.0)
@@ -682,13 +686,12 @@ if __name__=="__main__":
     sg_window = 6
     ns_count = 10
     wv_dim = 100
-    cv_dim = 10
-    lam_l2 = 5e-3
+    cv_dim = 25
+    lam_l2 = 1e-3
 
     pvm = PVModel(wv_dim, cv_dim, max_wv_key, max_cv_key, max_hs_key, \
                  pre_words=5, lam_wv=lam_l2, lam_cv=lam_l2, lam_cl=lam_l2)
     pvm.init_params(0.02)
-    pvm.context_layer.init_params(0.0)
     pvm.set_noise(drop_rate=0.5, fuzz_scale=0.0)
 
     # Initialize samplers for training
@@ -697,7 +700,7 @@ if __name__=="__main__":
     # Train all parameters using the training set phrases
     for i in range(100):
         pvm.train(ngram_sampler, hsm_code_keys, hsm_code_signs, 300, 10001, \
-                train_ctx=False, train_lut=True, train_cls=True, learn_rate=1e-3)
+                train_ctx=True, train_lut=True, train_cls=True, learn_rate=1e-3)
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
                 W1=pvm.word_layer.params['W'], W2=None)
         for w in range(10):
