@@ -15,8 +15,8 @@ def init_biases(NET, b_init=0.0):
     # Initialize biases in each hidden layer of each proto-network.
     for proto_net in NET.proto_nets:
         for (num, proto_layer) in enumerate(proto_net):
-            b_init = proto_layer.b.get_value(borrow=False)
-            b_const = np.zeros(b_init.shape, dtype=theano.config.floatX)
+            b_shape = proto_layer.b.get_value(borrow=True).shape
+            b_const = np.zeros(b_shape, dtype=theano.config.floatX)
             if (num < (len(proto_net)-1)):
                 b_const = b_const + b_init
             proto_layer.b.set_value(b_const)
@@ -108,7 +108,7 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
-    pc0 = [28*28, 500, 500, 11]
+    pc0 = [28*28, 800, 800, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -179,7 +179,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
-    pc0 = [28*28, 500, 500, 11]
+    pc0 = [28*28, 800, 800, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     #sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': False}
@@ -197,7 +197,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     mlp_params['use_bias'] = 1
     mlp_params['reg_all_obs'] = True
 
-    for test_num in range(test_count):
+    for test_num in [36, 35, 25, 24, 22, 19]:
         rng_seed = test_num
         sgd_params['result_tag'] = "test_{0:d}".format(test_num)
 
@@ -313,14 +313,14 @@ if __name__ == '__main__':
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
     #batch_test_ss_mlp(test_count=10, su_count=100)
-    batch_test_ss_mlp(test_count=10, su_count=600)
+    #batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
     #batch_test_ss_mlp(test_count=10, su_count=3000)
     #batch_test_ss_mlp_gentle(test_count=20, su_count=100)
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining
-    #batch_test_ss_mlp_pt(test_count=30, su_count=100)
+    batch_test_ss_mlp_pt(test_count=30, su_count=100)
     #batch_test_ss_mlp_pt(test_count=10, su_count=600)
     #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
     #batch_test_ss_mlp_pt(test_count=10, su_count=3000)

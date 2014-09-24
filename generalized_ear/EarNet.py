@@ -404,7 +404,7 @@ class EAR_NET(object):
             proto_net = self.proto_nets[proto_key]
             for proto_layer in proto_net:
                 last_layer = (layer_num == (len(proto_net) - 1))
-                layer_in = input_noise if (layer_num >= 0) else 0.0
+                layer_in = input_noise if (layer_num == 0) else 0.0
                 d_prob = self.vis_drop if (layer_num == 0) else self.hid_drop
                 drop_prob = d_prob if do_dropout else 0.0
                 # Get important properties from the relevant proto-layer
