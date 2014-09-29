@@ -7,7 +7,7 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
-from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 from output_losses import LogRegSS, MCL2HingeSS
 
@@ -103,12 +103,11 @@ def smooth_cross_entropy(p, q):
     ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
     return ce_sm
 
-
 ################################################################################
 # HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
 # with non-linear activation transform and a max-pooling (a.k.a. Maxout) layer #
 # which is currently fixed to operate over disjoint pools of linear filters.   #
-#                                                                              #              #
+#                                                                              #
 ################################################################################
 
 class HiddenLayer(object):
@@ -116,21 +115,19 @@ class HiddenLayer(object):
                  activation=None, pool_size=0, \
                  drop_rate=0., input_noise=0., bias_noise=0., \
                  W=None, b=None, \
-                 use_bias=True, name=""):
+                 use_bias=True, name="", W_scale=1.0):
 
         # Setup a shared random generator for this layer
-        self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
+        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
-
-        self.cu_rng = CURAND_RandomStreams(rng.randint(1000000))
+        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
 
         self.clean_input = input
 
         # Add gaussian noise to the input (if desired)
         if (input_noise > 1e-4):
-            self.fuzzy_input = input + \
-                    (input_noise * self.cu_rng.normal(size=input.shape, \
-                    dtype=theano.config.floatX))
+            self.fuzzy_input = input + self.rng.normal(size=input.shape, \
+                    avg=0.0, std=input_noise, dtype=theano.config.floatX)
         else:
             self.fuzzy_input = input
 
@@ -139,23 +136,6 @@ class HiddenLayer(object):
             self.noisy_input = self._drop_from_input(self.fuzzy_input, drop_rate)
         else:
             self.noisy_input = self.fuzzy_input
-
-        # Apply noise in reverse order (i.e. masking -> fuzzing)
-        COMMENT = """
-        # Apply masking noise to the input (if desired)
-        if (drop_rate > 1e-4):
-            droppy_input = self._drop_from_input(input, drop_rate)
-        else:
-            droppy_input = input
-
-        # Add gaussian noise to the masked input (if desired)
-        if (input_noise > 1e-4):
-            self.noisy_input = droppy_input + \
-                    (input_noise * self.srng.normal(size=input.shape, \
-                    dtype=theano.config.floatX))
-        else:
-            self.noisy_input = droppy_input
-        """
 
         # Set some basic layer properties
         self.pool_size = pool_size
@@ -177,9 +157,9 @@ class HiddenLayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            if self.pool_size <= 10:
+            if self.pool_size <= 1:
                 # Generate random initial filters in a typical way
-                W_init = np.asarray(0.01 * rng.standard_normal( \
+                W_init = 0.01 * np.asarray(rng.normal( \
                           size=(self.in_dim, self.filt_count)), \
                           dtype=theano.config.floatX)
             else:
@@ -187,15 +167,14 @@ class HiddenLayer(object):
                 # intra-group correlations are stronger than inter-group
                 # correlations, to encourage pooling over similar filters...
                 filters = []
+                f_size = (self.in_dim, 1)
                 for g_num in range(self.pool_count):
-                    g_filt = 0.01 * rng.standard_normal(size=(self.in_dim,1))
+                    g_filt = 0.01 * rng.normal(size=f_size)
                     for f_num in range(self.pool_size):
-                        f_filt = g_filt + (0.005 * rng.standard_normal( \
-                                size=(self.in_dim,1)))
+                        f_filt = g_filt + 0.003 * rng.normal(size=f_size)
                         filters.append(f_filt)
                 W_init = np.hstack(filters).astype(theano.config.floatX)
-
-            W = theano.shared(value=W_init, name="{0:s}_W".format(name))
+            W = theano.shared(value=(W_scale*W_init), name="{0:s}_W".format(name))
         if b is None:
             b_init = np.zeros((self.filt_count,), dtype=theano.config.floatX)
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
@@ -211,9 +190,12 @@ class HiddenLayer(object):
             self.linear_output = T.dot(self.noisy_input, self.W)
 
         # Add noise to the pre-activation features (if desired)
-        self.noisy_linear = self.linear_output  + \
-                (bias_noise * self.cu_rng.normal(size=self.linear_output.shape, \
-                dtype=theano.config.floatX))
+        if bias_noise > 1e-3:
+            self.noisy_linear = self.linear_output  + \
+                    self.rng.normal(size=self.linear_output.shape, \
+                    avg=0.0, std=bias_noise, dtype=theano.config.floatX)
+        else:
+            self.noisy_linear = self.linear_output
 
         # Apply activation function
         self.output = self.activation(self.noisy_linear)
@@ -236,11 +218,9 @@ class HiddenLayer(object):
     def _drop_from_input(self, input, p):
         """p is the probability of dropping elements of input."""
         # get a drop mask that drops things with probability p
-        #drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
-        #        dtype=theano.config.floatX)
-        noise_rnd = self.cu_rng.uniform(input.shape, low=0.0, high=1.0, \
-            dtype=theano.config.floatX)
-        drop_mask = noise_rnd > p
+        drop_rnd = self.rng.uniform(size=input.shape, low=0.0, high=1.0, \
+                dtype=theano.config.floatX)
+        drop_mask = drop_rnd > p
         # get a scaling factor to keep expectations fixed after droppage
         drop_scale = 1. / (1. - p)
         # apply dropout mask and rescaling factor to the input
@@ -249,14 +229,17 @@ class HiddenLayer(object):
 
     def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
-        #P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
-        #        dtype=theano.config.floatX)
-        P_nz = P + self.cu_rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+        P_nz = P + self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
                 dtype=theano.config.floatX)
         return P_nz
 
+######################################################
+# SIMPLE LAYER FOR AVERAGING OUTPUTS OF OTHER LAYERS #
+######################################################
+
 class JoinLayer(object):
-    """Simple layer that averages over "linear_output"s of other layers.
+    """
+    Simple layer that averages over "linear_output"s of other layers.
 
     Note: The list of layers to average over is the only parameter used.
     """
@@ -423,6 +406,9 @@ class EAR_NET(object):
                 layer_num = layer_num + 1
             # Add this network to the list of spawn-networks
             self.spawn_nets.append(spawn_net)
+
+        # set norms to which to clip various parameters
+        self.clip_norms = {}
 
         # Mash all the parameters together, into a list. Also make a list
         # comprising only parameters located in final/classification layers
@@ -656,10 +642,9 @@ class DAELayer(object):
             W=None, b_h=None, b_v=None):
 
         # Setup a shared random generator for this layer
-        self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
+        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
-
-        self.cu_rng = CURAND_RandomStreams(rng.randint(1000000))
+        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
 
         # Grab the layer input and perturb it with some sort of noise. This
         # is, afterall, a _denoising_ autoencoder...
@@ -723,18 +708,16 @@ class DAELayer(object):
 
     def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
-        #P_nz = P + self.srng.normal(size=P.shape, avg=0., std=noise_lvl, \
-        #        dtype=theano.config.floatX)
-        P_nz = P + self.cu_rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
-                dtype=theano.config.floatX)
+        if noise_lvl > 1e-3:
+            P_nz = P + self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+                    dtype=theano.config.floatX)
+        else:
+            P_nz = P
         return P_nz
 
     def _get_noisy_input(self, input, p):
         """p is the probability of dropping elements of input."""
-        # p=1-p because 1's indicate keep and p is prob of dropping
-        #noise_mask = self.cu_rng.binomial(n=1, p=1-p, size=input.shape, \
-        #        dtype=theano.config.floatX)
-        drop_rnd = self.cu_rng.uniform(input.shape, low=0.0, high=1.0, \
+        drop_rnd = self.rng.uniform(input.shape, low=0.0, high=1.0, \
             dtype=theano.config.floatX)
         drop_mask = drop_rnd > p
         # Cast mask from int to float32, to keep things on GPU
