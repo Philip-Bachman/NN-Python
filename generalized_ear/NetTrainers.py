@@ -449,7 +449,7 @@ def train_ss_mlp(
             batch_metrics = train_dev(epoch_counter, su_index, un_index)
             train_metrics = [(em + bm) for (em, bm) in zip(train_metrics, batch_metrics)]
             su_index = (su_index + 1) if ((su_index + 1) < su_batches) else 0
-            un_index = (un_index + 1) if ((un_index + 1) < un_batches) else 0            
+            un_index = (un_index + 1) if ((un_index + 1) < un_batches) else 0
         # Compute 'averaged' values over the minibatches
         train_metrics = [(float(v) / tr_batches) for v in train_metrics]
         # update the learning rate
