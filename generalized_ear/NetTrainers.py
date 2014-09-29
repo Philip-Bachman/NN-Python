@@ -657,6 +657,8 @@ def train_dae(
         # Process some number of minibatches for this epoch. #
         ######################################################
         e_time = time.clock()
+        #lam_l1 = 0.2 * min(float(epoch_counter)/10.0, 1.0)
+        #NET.dae_lam_l1.set_value(np.asarray([lam_l1]).astype(theano.config.floatX))
         epoch_counter = epoch_counter + 1
         train_metrics = [0. for val in train_metrics]
         for minibatch_index in xrange(tr_batches):
