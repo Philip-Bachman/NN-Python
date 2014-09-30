@@ -144,7 +144,7 @@ class GEN_NET(object):
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
         #self.output_noise = self.mlp_layers[-1].noisy_linear
-        self.output_noise = self.mlp_layers[-1].noisy_linear
+        self.output_noise = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear)
         self.out_dim = self.mlp_layers[-1].out_dim
         C_init = np.zeros((self.out_dim,self.out_dim)).astype(theano.config.floatX)
         m_init = np.zeros((self.out_dim,)).astype(theano.config.floatX)
@@ -176,12 +176,12 @@ class GEN_NET(object):
         """
         Initialize the running mean and covariance estimates.
         """
-        X_noise_sym = T.dmatrix()
+        X_noise_sym = T.matrix()
         out_func = theano.function(inputs=[ X_noise_sym ], \
                 outputs=[ self.output_noise ], \
                 givens={self.input_noise: X_noise_sym})
         # Compute outputs for the input latent noise matrix
-        X_out = out_func(X_noise)[0]
+        X_out = out_func(X_noise.astype(theano.config.floatX))[0]
         # Compute mean and covariance of the outputs
         mu = np.mean(X_out, axis=0)
         X_out_minus_mu = X_out - mu
@@ -204,6 +204,7 @@ def logreg_loss(Y, class_sign):
     not "normalize" for the number of predictions in Y.
     """
     loss = T.sum(T.log(1.0 + T.exp(-class_sign * Y)))
+    #loss = T.sum((Y - class_sign)**2.0)
     return loss
 
 class DiscLayer(object):
@@ -280,9 +281,9 @@ class GA_PAIR(object):
         self.data_dim = self.GN.data_dim
 
         # symbolic var data input
-        self.Xd = T.dmatrix(name='gap_Xd')
+        self.Xd = T.matrix(name='gap_Xd')
         # symbolic var noise input
-        self.Xn = T.dmatrix(name='gap_Xn')
+        self.Xn = T.matrix(name='gap_Xn')
         # symbolic matrix of indices for data inputs
         self.Id = T.lvector(name='gap_Id')
         # symbolic matrix of indices for noise inputs
@@ -339,8 +340,13 @@ class GA_PAIR(object):
         # If a linear transform is to be applied prior to matching, it is given
         # by self.mom_match_proj.
         #
-        self.mom_mix_rate = params['mom_mix_rate']
-        self.mom_match_weight = params['mom_match_weight']
+        zero_ary = np.zeros((1,))
+        mmr = zero_ary + params['mom_mix_rate']
+        self.mom_mix_rate = theano.shared(name='gap_mom_mix_rate', \
+            value=mmr.astype(theano.config.floatX))
+        mmw = zero_ary + params['mom_match_weight']
+        self.mom_match_weight = theano.shared(name='gap_mom_match_weight', \
+            value=mmw.astype(theano.config.floatX))
         targ_mean = params['target_mean'].astype(theano.config.floatX)
         targ_cov = params['target_cov'].astype(theano.config.floatX)
         assert(targ_mean.size == targ_cov.shape[0]) # mean and cov use same dim
@@ -350,9 +356,9 @@ class GA_PAIR(object):
         mmp = np.identity(targ_cov.shape[0]) # default to identity transform
         if 'mom_match_proj' in params:
             mmp = params['mom_match_proj'] # use a user-specified transform
-        print("mmp.shape[0]={0:d}, self.data_dim={1:d}".format(mmp.shape[0], self.data_dim))
         assert(mmp.shape[0] == self.data_dim) # transform matches data dim
         assert(mmp.shape[1] == targ_cov.shape[0]) # and matches mean/cov dims
+        mmp = mmp.astype(theano.config.floatX)
         self.mom_match_proj = theano.shared(value=mmp, name='gap_mom_map_proj')
         # finally, we can construct the moment matching cost! and the updates
         # for the running mean/covariance estimates too!
@@ -383,8 +389,8 @@ class GA_PAIR(object):
         # Cost w.r.t. discriminator parameters is only the adversarial binary
         # classification cost. Cost w.r.t. comprises an adversarial binary
         # classification cost and the (weighted) moment matching cost.
-        self.dn_cost = self.disc_cost_dn
-        self.gn_cost = self.disc_cost_gn + self.mom_match_cost
+        self.dn_cost = self.disc_cost_dn + self.DN.act_reg_cost
+        self.gn_cost = self.disc_cost_gn + self.mom_match_cost + self.GN.act_reg_cost
 
         # Initialize momentums for mini-batch SGD updates. All parameters need
         # to be safely nestled in their lists by now.
@@ -488,22 +494,22 @@ class GA_PAIR(object):
         """
         Set learning rate and momentum parameter for generator updates.
         """
-        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+        zero_ary = np.zeros((1,))
         new_lr = zero_ary + learn_rate
-        self.lr_gn.set_value(new_lr)
+        self.lr_gn.set_value(new_lr.astype(theano.config.floatX))
         new_mo = zero_ary + momentum
-        self.mo_gn.set_value(new_mo)
+        self.mo_gn.set_value(new_mo.astype(theano.config.floatX))
         return
 
     def set_dn_sgd_params(self, learn_rate=0.02, momentum=0.9):
         """
         Set learning rate and momentum parameter for discriminator updates.
         """
-        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+        zero_ary = np.zeros((1,))
         new_lr = zero_ary + learn_rate
-        self.lr_dn.set_value(new_lr)
+        self.lr_dn.set_value(new_lr.astype(theano.config.floatX))
         new_mo = zero_ary + momentum
-        self.mo_dn.set_value(new_mo)
+        self.mo_dn.set_value(new_mo.astype(theano.config.floatX))
         return
 
     def init_moments(self, X_noise):
@@ -514,7 +520,7 @@ class GA_PAIR(object):
         transformed space based on self.mom_match_proj.
         """
         # Compute outputs for the input latent noise in X_noise
-        X = self.sample_from_gn(X_noise)
+        X = self.sample_from_gn(X_noise.astype(theano.config.floatX))
         # Get the transform to apply prior to moment matching
         P = self.mom_match_proj.get_value(borrow=False)
         # Compute post-transform mean and covariance of the outputs
@@ -574,15 +580,16 @@ class GA_PAIR(object):
         # Get their mean
         batch_mean = T.mean(X_b, axis=0)
         # Get the updated generator distribution mean
-        new_mean = ((1.0 - a) * self.GN.dist_mean) + (a * batch_mean)
+        new_mean = ((1.0 - a[0]) * self.GN.dist_mean) + (a[0] * batch_mean)
         # Use the mean to get the updated generator distribution covariance
         X_b_minus_mean = X_b - new_mean
-        batch_cov = T.dot(X_b_minus_mean.T, X_b_minus_mean) / X_b.shape[0]
-        new_cov = ((1.0 - a) * self.GN.dist_cov) + (a * batch_cov)
+        # Whelp, I guess this line needs the cast... for some reason...
+        batch_cov = T.dot(X_b_minus_mean.T, X_b_minus_mean) / T.cast(X_b.shape[0], 'floatX')
+        new_cov = ((1.0 - a[0]) * self.GN.dist_cov) + (a[0] * batch_cov)
         # Get the cost for deviation from the target distribution's moments
         mean_err = new_mean - self.target_mean
         cov_err = (new_cov - self.target_cov)
-        mm_cost = self.mom_match_weight * \
+        mm_cost = self.mom_match_weight[0] * \
                 (T.sum(mean_err**2.0) + T.sum(cov_err**2.0))
         # Construct the updates for the running estimates of the generator
         # distribution's first and second-order moments.
@@ -601,6 +608,11 @@ class GA_PAIR(object):
                 updates=self.gn_updates, \
                 givens={self.input_data: self.Xd, \
                         self.input_noise: self.Xn})
+        theano.printing.pydotprint(func, \
+            outfile='gn_func_graph.png', compact=True, format='png', with_ids=False, \
+            high_contrast=True, cond_highlight=None, colorCodes=None, \
+            max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
+            print_output_file=True, assert_nb_all_strings=-1)
         return func
 
     def _construct_train_dn(self):
@@ -613,6 +625,11 @@ class GA_PAIR(object):
                 updates=self.dn_updates, \
                 givens={self.input_data: self.Xd, \
                         self.input_noise: self.Xn})
+        theano.printing.pydotprint(func, \
+            outfile='dn_func_graph.png', compact=True, format='png', with_ids=False, \
+            high_contrast=True, cond_highlight=None, colorCodes=None, \
+            max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
+            print_output_file=True, assert_nb_all_strings=-1)
         return func
 
     def _construct_train_joint(self):
@@ -631,7 +648,7 @@ class GA_PAIR(object):
         """
         Construct theano function to sample from the gneerator network.
         """
-        Xn_sym = T.dmatrix('gn_sampler_input')
+        Xn_sym = T.matrix('gn_sampler_input')
         theano_func = theano.function( \
                inputs=[ Xn_sym ], \
                outputs=[ self.GN.output_noise ], \
@@ -701,8 +718,8 @@ if __name__=="__main__":
     gn_params['out_noise'] = 0.1
 
     # Symbolic input matrix to generator network
-    X_gn_sym = T.dmatrix(name='X_gn_sym')
-    X_gn_noise = T.dmatrix(name='X_gn_noise')
+    X_gn_sym = T.matrix(name='X_gn_sym')
+    X_gn_noise = T.matrix(name='X_gn_noise')
 
     # Initialize a generator network object
     GN = GEN_NET(rng, X_gn_sym, gn_params)

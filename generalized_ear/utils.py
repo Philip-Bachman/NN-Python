@@ -180,6 +180,13 @@ def visualize(EN, proto_key, layer_num, file_name):
     image.save(file_name)
     return
 
+def visualize_samples(X_samp, file_name):
+    d = int(np.sqrt(X_samp.shape[1]))
+    # hist(W.flatten(),bins=50)
+    image = PIL.Image.fromarray(tile_raster_images(X=X_samp, img_shape=(d, d), \
+            tile_shape=(10,X_samp.shape[0]/10),tile_spacing=(1, 1)))
+    image.save(file_name)
+    return
 
 
 
