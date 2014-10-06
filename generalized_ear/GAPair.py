@@ -33,7 +33,6 @@ class GEN_NET(object):
         input_noise: symbolic input matrix for inputting latent noise
         input_data: symbolic input matrix for inputting real data
         params: a dict of parameters describing the desired ensemble:
-            use_bias: whether to uses biases in hidden and output layers
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on samples from the base distribution
             hid_drop: drop rate to use on activations of hidden layers
@@ -57,7 +56,6 @@ class GEN_NET(object):
         # Process user-supplied parameters for this network #
         #####################################################
         lam_l2a = params['lam_l2a']
-        use_bias = params['use_bias']
         if 'vis_drop' in params:
             self.vis_drop = params['vis_drop']
         else:
@@ -121,8 +119,8 @@ class GEN_NET(object):
             self.mlp_layers.append(HiddenLayer(rng=rng, \
                     input=next_input, activation=None, pool_size=pool_size, \
                     drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
-                    in_dim=in_dim, out_dim=out_dim, use_bias=use_bias, \
-                    name=l_name, W_scale=4.0))
+                    in_dim=in_dim, out_dim=out_dim, \
+                    name=l_name, W_scale=3.0))
             next_input = self.mlp_layers[-1].output
             # Set the non-bias parameters of this layer to be clipped
             self.clip_params[self.mlp_layers[-1].W] = 1
@@ -695,7 +693,6 @@ if __name__=="__main__":
     gn_config = [50, 200, 200, 28*28]
     gn_params['mlp_config'] = gn_config
     gn_params['lam_l2a'] = 1e-2
-    gn_params['use_bias'] = 1
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1

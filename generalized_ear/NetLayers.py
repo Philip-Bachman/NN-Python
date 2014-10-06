@@ -4,6 +4,11 @@ import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+from pylearn2.sandbox.cuda_convnet.filter_acts import FilterActs
+from pylearn2.sandbox.cuda_convnet.pool import MaxPool
+from theano.sandbox.cuda.basic_ops import gpu_contiguous
+# from theano.tensor.signal import downsample
+# from theano.tensor.nnet import conv
 
 ###############################
 # ACTIVATIONS AND OTHER STUFF #
@@ -105,8 +110,7 @@ class HiddenLayer(object):
     def __init__(self, rng, input, in_dim, out_dim, \
                  activation=None, pool_size=0, \
                  drop_rate=0., input_noise=0., bias_noise=0., \
-                 W=None, b=None, \
-                 use_bias=True, name="", W_scale=1.0):
+                 W=None, b=None, name="", W_scale=1.0):
 
         # Setup a shared random generator for this layer
         #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
@@ -175,10 +179,7 @@ class HiddenLayer(object):
         self.b = b
 
         # Compute linear "pre-activation" for this layer
-        if use_bias:
-            self.linear_output = T.dot(self.noisy_input, self.W) + self.b
-        else:
-            self.linear_output = T.dot(self.noisy_input, self.W)
+        self.linear_output = T.dot(self.noisy_input, self.W) + self.b
 
         # Add noise to the pre-activation features (if desired)
         if bias_noise > 1e-3:
@@ -199,11 +200,114 @@ class HiddenLayer(object):
                 self.output.shape[1]
 
         # Conveniently package layer parameters
-        if use_bias:
-            self.params = [self.W, self.b]
-        else:
-            self.params = [self.W]
+        self.params = [self.W, self.b]
         # Layer construction complete...
+        return
+
+    def _drop_from_input(self, input, p):
+        """p is the probability of dropping elements of input."""
+        # get a drop mask that drops things with probability p
+        drop_rnd = self.rng.uniform(size=input.shape, low=0.0, high=1.0, \
+                dtype=theano.config.floatX)
+        drop_mask = drop_rnd > p
+        # get a scaling factor to keep expectations fixed after droppage
+        drop_scale = 1. / (1. - p)
+        # apply dropout mask and rescaling factor to the input
+        droppy_input = drop_scale * input * drop_mask
+        return droppy_input
+
+    def _noisy_params(self, P, noise_lvl=0.):
+        """Noisy weights, like convolving energy surface with a gaussian."""
+        P_nz = P + self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+                dtype=theano.config.floatX)
+        return P_nz
+
+##############################################
+# COMBINED CONVOLUTION AND MAX-POOLING LAYER #
+##############################################
+
+class ConvPoolLayer(object):
+    """
+    A simple convolution --> max-pooling layer.
+
+    The (symbolic) input to this layer must be a theano.tensor.dtensor4 shaped
+    like (batch_size, chan_count, im_dim_1, im_dim_2).
+
+    filt_def should be a 4-tuple like (filt_count, in_chans, filt_def_1, filt_def_2)
+
+    pool_def should be a 3-tuple like (pool_dim, pool_stride)
+    """
+    def __init__(self, rng, input=None, filt_def=None, pool_def=(2, 2), \
+    		activation=None, drop_rate=0., input_noise=0., bias_noise=0., \
+    		W=None, b=None, name="", W_scale=1.0):
+
+        # Setup a shared random generator for this layer
+        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
+        #        rng.randint(100000))
+        self.rng = CURAND_RandomStreams(rng.randint(1000000))
+
+        self.clean_input = input
+
+        # Add gaussian noise to the input (if desired)
+        if (input_noise > 1e-4):
+            self.fuzzy_input = input + self.rng.normal(size=input.shape, \
+                    avg=0.0, std=input_noise, dtype=theano.config.floatX)
+        else:
+            self.fuzzy_input = input
+
+        # Apply masking noise to the input (if desired)
+        if (drop_rate > 1e-4):
+            self.noisy_input = self._drop_from_input(self.fuzzy_input, drop_rate)
+        else:
+            self.noisy_input = self.fuzzy_input
+
+        # Set the activation function for the conv filters
+        if activation:
+            self.activation = activation
+        else:
+        	self.activation = lambda x: relu_actfun(x)
+
+        # initialize weights with random weights
+        W_init = 0.01 * np.asarray(rng.normal( \
+        		size=filt_def), dtype=theano.config.floatX)
+        self.W = theano.shared(value=(W_scale*W_init), \
+        		name="{0:s}_W".format(name))
+
+        # the bias is a 1D tensor -- one bias per output feature map
+        b_init = np.zeros((filt_def[0],), dtype=theano.config.floatX) + 0.1
+        self.b = theano.shared(value=b_init, name="{0:s}_b".format(name))
+
+        # convolve input feature maps with filters
+        input_c01b = self.noisy_input.dimshuffle(1, 2, 3, 0) # bc01 to c01b
+        filters_c01b = self.W.dimshuffle(1, 2, 3, 0) # bc01 to c01b
+        conv_op = FilterActs(stride=1, partial_sum=1)
+        contig_input = gpu_contiguous(input_c01b)
+        contig_filters = gpu_contiguous(filters_c01b)
+        conv_out_c01b = conv_op(contig_input, contig_filters)
+
+        if (bias_noise > 1e-4):
+        	noisy_conv_out_c01b = conv_out_c01b + self.rng.normal( \
+        			size=conv_out_c01b.shape, avg=0.0, std=bias_noise, \
+        			dtype=theano.config.floatX)
+        else:
+        	noisy_conv_out_c01b = conv_out_c01b
+
+        # downsample each feature map individually, using maxpooling
+        pool_op = MaxPool(ds=pool_def[0], stride=pool_def[1])
+        mp_out_c01b = pool_op(noisy_conv_out_c01b)
+        mp_out_bc01 = mp_out_c01b.dimshuffle(3, 0, 1, 2) # c01b to bc01
+
+        # add the bias term. Since the bias is a vector (1D array), we first
+        # reshape it to a tensor of shape (1,n_filters,1,1). Each bias will
+        # thus be broadcasted across mini-batches and feature map
+        # width & height
+        self.noisy_linear_output = mp_out_bc01 + self.b.dimshuffle('x', 0, 'x', 'x')
+        self.linear_output = self.noisy_linear_output
+        self.output = self.activation(self.noisy_linear_output)
+
+        # store parameters of this layer
+        self.params = [self.W, self.b]
+
         return
 
     def _drop_from_input(self, input, p):
@@ -238,8 +342,39 @@ class JoinLayer(object):
         print("making join layer over {0:d} output layers...".format( \
                 len(input_layers)))
         il_los = [il.linear_output for il in input_layers]
-        self.linear_output = T.mean(T.stack(*il_los), axis=0)
+        self.output = T.mean(T.stack(*il_los), axis=0)
+        self.linear_output = self.output
+        self.noisy_linear_output = self.output
         return
+
+#############################################
+# RESHAPING LAYERS (FOR VECTORS<-->TENSORS) #
+#############################################
+
+class Reshape2D4DLayer(object):
+	"""
+	Reshape from flat vectors to image-y 3D tensors.
+	"""
+	def __init__(self, input=None, out_shape=None):
+		assert(len(out_shape) == 3)
+		self.input = input
+		self.output = self.input.reshape((self.input.shape[0], \
+			out_shape[0], out_shape[1], out_shape[2]))
+		self.linear_output = self.output
+		self.noisy_linear_output = self.output
+		return
+
+class Reshape4D2DLayer(object):
+	"""
+	Flatten from 3D image-y tensors to flat vectors.
+	"""
+	def __init__(self, input=None):
+		self.input = input
+		out_dim = T.prod(self.input.shape[1:])
+		self.output = self.input.reshape((self.input.shape[0], out_dim))
+		self.linear_output = self.output
+		self.noisy_linear_output = self.output
+		return
 
 #####################################################
 # DISCRIMINATIVE LAYER (SINGLE-OUTPUT LINEAR LAYER) #

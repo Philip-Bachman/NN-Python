@@ -116,7 +116,6 @@ class EAR_NET(object):
         rng: a numpy.random RandomState object
         input: Theano symbolic matrix representing inputs to this ensemble
         params: a dict of parameters describing the desired ensemble:
-            use_bias: whether to uses biases in hidden and output layers
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on input layers (when desired)
             hid_drop: drop rate to use on hidden layers (when desired)
@@ -153,7 +152,6 @@ class EAR_NET(object):
         # Process user-suplied parameters for this net #
         ################################################
         lam_l2a = params['lam_l2a']
-        use_bias = params['use_bias']
         if 'vis_drop' in params:
             self.vis_drop = params['vis_drop']
         else:
@@ -212,8 +210,7 @@ class EAR_NET(object):
                         input=next_input, \
                         activation=None, pool_size=pool_size, \
                         drop_rate=0., input_noise=0., bias_noise=0., \
-                        in_dim=in_dim, out_dim=out_dim, use_bias=use_bias, \
-                        name=pnl_name))
+                        in_dim=in_dim, out_dim=out_dim, name=pnl_name))
                 next_input = proto_net[-1].output
                 # Set the non-bias parameters of this layer to be clipped
                 self.clip_params[proto_net[-1].W] = 1
@@ -255,7 +252,7 @@ class EAR_NET(object):
                         pool_size=pool_size, drop_rate=drop_prob, \
                         input_noise=layer_in, bias_noise=bias_noise, \
                         W=proto_layer.W, b=proto_layer.b, \
-                        in_dim=in_dim, out_dim=out_dim, use_bias=use_bias))
+                        in_dim=in_dim, out_dim=out_dim))
                 next_input = spawn_net[-1].output
                 layer_num = layer_num + 1
             # Add this network to the list of spawn-networks

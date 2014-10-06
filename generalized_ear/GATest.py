@@ -37,12 +37,12 @@ P = P.get_value(borrow=False).astype(theano.config.floatX)
 
 # Choose some parameters for the generative network
 gn_params = {}
-gn_config = [250, 1200, 1200, 28*28]
+gn_config = [250, 800, 800, 28*28]
 gn_params['mlp_config'] = gn_config
 gn_params['lam_l2a'] = 1e-3
 gn_params['use_bias'] = 1
 gn_params['vis_drop'] = 0.0
-gn_params['hid_drop'] = 0.5
+gn_params['hid_drop'] = 0.0
 gn_params['bias_noise'] = 0.1
 gn_params['out_noise'] = 0.1
 
@@ -62,7 +62,7 @@ GN = GEN_NET(rng=rng, input_noise=X_noise_sym, input_data=X_data_sym, \
 # Set some reasonable mlp parameters
 dn_params = {}
 # Set up some proto-networks
-pc0 = [28*28, (240, 5), (240, 5), 11]
+pc0 = [28*28, (200, 4), (200, 4), 11]
 dn_params['proto_configs'] = [pc0]
 # Set up some spawn networks
 sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -88,7 +88,7 @@ DN = EAR_NET(rng=rng, input=GN.output, params=dn_params)
 gap_params = {}
 gap_params['d_net'] = DN
 gap_params['g_net'] = GN
-gap_params['lam_l2d'] = 5e-2
+gap_params['lam_l2d'] = 1e-2
 gap_params['mom_mix_rate'] = 0.03
 gap_params['mom_match_weight'] = 0.02
 gap_params['mom_match_proj'] = P
@@ -110,7 +110,7 @@ batch_sample = theano.function(inputs=[ batch_idx ], \
 
 for i in range(500000):
     tr_idx = npr.randint(low=0,high=tr_samples,size=(50,)).astype(np.int32)
-    Xn_np = 5.0 * npr.randn(100, GAP.GN.latent_dim)
+    Xn_np = 4.0 * npr.randn(100, GAP.GN.latent_dim)
     Xd_batch = batch_sample(tr_idx)[0]
     Xd_batch = Xd_batch.astype(theano.config.floatX)
     Xn_batch = Xn_np.astype(theano.config.floatX)
@@ -131,10 +131,10 @@ for i in range(500000):
         print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_cost_gn: {2:.4f}, disc_cost_dn: {3:.4f}".format( \
                 i, mom_match_cost, disc_cost_gn, disc_cost_dn))
     if ((i % 5000) == 0):
-        file_name = "B_GN_SAMPLES_b{0:d}.png".format(i)
+        file_name = "A_GN_SAMPLES_b{0:d}.png".format(i)
         Xs = GAP.sample_from_gn(Xn_batch)
         utils.visualize_samples(Xs, file_name)
-        file_name = "B_DN_WEIGHTS_b{0:d}.png".format(i)
+        file_name = "A_DN_WEIGHTS_b{0:d}.png".format(i)
         utils.visualize(GAP.DN, 0, 0, file_name)
 
 
