@@ -6,7 +6,8 @@ import theano.tensor as T
 from theano.ifelse import ifelse
 from load_data import load_udm, load_udm_ss, load_mnist
 from EarNet import EAR_NET
-from GAPair import GEN_NET, GA_PAIR, projected_moments
+from GINets import GEN_NET, projected_moments
+from GCPair import GC_PAIR
 import utils as utils
 
 # Simple test code, to check that everything is basically functional.
@@ -37,11 +38,11 @@ P = P.get_value(borrow=False).astype(theano.config.floatX)
 
 # Choose some parameters for the generative network
 gn_params = {}
-gn_config = [250, 800, 800, 28*28]
+gn_config = [256, 800, 800, 28*28]
 gn_params['mlp_config'] = gn_config
 gn_params['lam_l2a'] = 1e-3
 gn_params['use_bias'] = 1
-gn_params['vis_drop'] = 0.0
+gn_params['vis_drop'] = 0.5
 gn_params['hid_drop'] = 0.0
 gn_params['bias_noise'] = 0.1
 gn_params['out_noise'] = 0.1
@@ -85,45 +86,45 @@ DN = EAR_NET(rng=rng, input=GN.output, params=dn_params)
 # Initialize the joint controller for the generator/discriminator pair #
 ########################################################################
 
-gap_params = {}
-gap_params['d_net'] = DN
-gap_params['g_net'] = GN
-gap_params['lam_l2d'] = 1e-2
-gap_params['mom_mix_rate'] = 0.03
-gap_params['mom_match_weight'] = 0.02
-gap_params['mom_match_proj'] = P
-gap_params['target_mean'] = target_mean
-gap_params['target_cov'] = target_cov
+gcp_params = {}
+gcp_params['d_net'] = DN
+gcp_params['g_net'] = GN
+gcp_params['lam_l2d'] = 1e-2
+gcp_params['mom_mix_rate'] = 0.03
+gcp_params['mom_match_weight'] = 0.05
+gcp_params['mom_match_proj'] = P
+gcp_params['target_mean'] = target_mean
+gcp_params['target_cov'] = target_cov
 
-# Initialize a GA_PAIR instance using the previously constructed generator and
+# Initialize a GC_PAIR instance using the previously constructed generator and
 # discriminator networks.
-GAP = GA_PAIR(rng=rng, d_net=DN, g_net=GN, params=gap_params)
-GAP.set_gn_sgd_params(learn_rate=0.05, momentum=0.8)
-GAP.set_dn_sgd_params(learn_rate=0.03, momentum=0.8)
+GCP = GC_PAIR(rng=rng, d_net=DN, g_net=GN, params=gcp_params)
+GCP.set_gn_sgd_params(learn_rate=0.05, momentum=0.8)
+GCP.set_dn_sgd_params(learn_rate=0.03, momentum=0.8)
 # Init generator's mean and covariance estimates with many samples
 Xn_np = npr.randn(5000, GN.latent_dim)
-GAP.init_moments(Xn_np)
+GCP.init_moments(Xn_np)
 
 batch_idx = T.lvector('batch_idx')
 batch_sample = theano.function(inputs=[ batch_idx ], \
         outputs=[ Xtr.take(batch_idx, axis=0) ])
 
 for i in range(500000):
-    tr_idx = npr.randint(low=0,high=tr_samples,size=(50,)).astype(np.int32)
-    Xn_np = 4.0 * npr.randn(100, GAP.GN.latent_dim)
+    tr_idx = npr.randint(low=0,high=tr_samples,size=(100,)).astype(np.int32)
+    Xn_np = 5.0 * npr.randn(100, GCP.GN.latent_dim)
     Xd_batch = batch_sample(tr_idx)[0]
     Xd_batch = Xd_batch.astype(theano.config.floatX)
     Xn_batch = Xn_np.astype(theano.config.floatX)
-    all_idx = np.arange(150)
-    data_idx = all_idx[:50]
-    noise_idx = all_idx[50:]
-    d_weight = 0.05 * min(1.0, float(i)/20000.0)
-    if (i < -10000):
-        GAP.set_disc_weights(dweight_gn=0.001)
-        outputs = GAP.train_gn(Xd_batch, Xn_batch, data_idx, noise_idx)
+    all_idx = np.arange(200)
+    data_idx = all_idx[:100]
+    noise_idx = all_idx[100:]
+    d_weight = 0.05 * min(1.0, float(i)/30000.0)
+    if (i < 15000):
+        GCP.set_disc_weights(dweight_gn=0.001)
+        outputs = GCP.train_gn(Xd_batch, Xn_batch, data_idx, noise_idx)
     else:
-        GAP.set_disc_weights(dweight_gn=d_weight)
-        outputs = GAP.train_joint(Xd_batch, Xn_batch, data_idx, noise_idx)
+        GCP.set_disc_weights(dweight_gn=d_weight)
+        outputs = GCP.train_joint(Xd_batch, Xn_batch, data_idx, noise_idx)
     mom_match_cost = 1.0 * outputs[0]
     disc_cost_gn = 1.0 * outputs[1]
     disc_cost_dn = 1.0 * outputs[2]
@@ -132,10 +133,10 @@ for i in range(500000):
                 i, mom_match_cost, disc_cost_gn, disc_cost_dn))
     if ((i % 5000) == 0):
         file_name = "A_GN_SAMPLES_b{0:d}.png".format(i)
-        Xs = GAP.sample_from_gn(Xn_batch)
+        Xs = GCP.sample_from_gn(Xn_batch)
         utils.visualize_samples(Xs, file_name)
         file_name = "A_DN_WEIGHTS_b{0:d}.png".format(i)
-        utils.visualize(GAP.DN, 0, 0, file_name)
+        utils.visualize(GCP.DN, 0, 0, file_name)
 
 
 print("TESTING COMPLETE!")

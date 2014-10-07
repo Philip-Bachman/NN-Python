@@ -11,233 +11,50 @@ from collections import OrderedDict
 import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
-import theano.tensor.shared_randomstreams
-#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+#import theano.tensor.shared_randomstreams
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer
-
-
-#####################################
-# GENERATIVE NETWORK IMPLEMENTATION #
-#####################################
-
-
-class GEN_NET(object):
-    """
-    A net that transforms a simple distribution so that it matches some
-    more complicated distribution, for some definition of match....
-
-    Parameters:
-        rng: a numpy.random RandomState object
-        input_noise: symbolic input matrix for inputting latent noise
-        input_data: symbolic input matrix for inputting real data
-        params: a dict of parameters describing the desired ensemble:
-            lam_l2a: L2 regularization weight on neuron activations
-            vis_drop: drop rate to use on samples from the base distribution
-            hid_drop: drop rate to use on activations of hidden layers
-                -- note: vis_drop/hid_drop are optional, with defaults 0.0/0.0
-            bias_noise: standard dev for noise on the biases of hidden layers
-            out_noise: standard dev for noise on the output of this net
-            mlp_config: list of "layer descriptions"
-    """
-    def __init__(self,
-            rng=None,
-            input_noise=None,
-            input_data=None,
-            params=None):
-        # First, setup a shared random number generator for this layer
-        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-            rng.randint(100000))
-        # Grab the symbolic input matrix
-        self.input_noise = input_noise
-        self.input_data = input_data
-        #####################################################
-        # Process user-supplied parameters for this network #
-        #####################################################
-        lam_l2a = params['lam_l2a']
-        if 'vis_drop' in params:
-            self.vis_drop = params['vis_drop']
-        else:
-            self.vis_drop = 0.0
-        if 'hid_drop' in params:
-            self.hid_drop = params['hid_drop']
-        else:
-            self.hid_drop = 0.0
-        if 'bias_noise' in params:
-            self.bias_noise = params['bias_noise']
-        else:
-            self.bias_noise = 0.0
-        if 'out_noise' in params:
-            self.out_noise = params['out_noise']
-        else:
-            self.out_noise = 0.0
-        # Get the configuration/prototype for this network. The config is a
-        # list of layer descriptions, including a description for the input
-        # layer, which is typically just the dimension of the inputs. So, the
-        # depth of the mlp is one less than the number of layer configs.
-        self.mlp_config = params['mlp_config']
-        self.mlp_depth = len(self.mlp_config) - 1
-        self.latent_dim = self.mlp_config[0]
-        self.data_dim = self.mlp_config[-1]
-        ##########################
-        # Initialize the network #
-        ##########################
-        self.clip_params = {}
-        self.mlp_layers = []
-        layer_def_pairs = zip(self.mlp_config[:-1],self.mlp_config[1:])
-        layer_num = 0
-        next_input = self.input_noise
-        for in_def, out_def in layer_def_pairs:
-            first_layer = (layer_num == 0)
-            last_layer = (layer_num == (len(layer_def_pairs) - 1))
-            l_name = "gn_layer_{0:d}".format(layer_num)
-            if (type(in_def) is list) or (type(in_def) is tuple):
-                # Receiving input from a poolish layer...
-                in_dim = in_def[0]
-            else:
-                # Receiving input from a normal layer...
-                in_dim = in_def
-            if (type(out_def) is list) or (type(out_def) is tuple):
-                # Applying some sort of pooling in this layer...
-                out_dim = out_def[0]
-                pool_size = out_def[1]
-            else:
-                # Not applying any pooling in this layer...
-                out_dim = out_def
-                pool_size = 0
-            # Select the appropriate noise to add to this layer
-            if first_layer:
-                d_rate = self.vis_drop
-            else:
-                d_rate = self.hid_drop
-            if last_layer:
-                b_noise = self.out_noise
-            else:
-                b_noise = self.bias_noise
-            # Add a new, well-configured layer to the regular model
-            self.mlp_layers.append(HiddenLayer(rng=rng, \
-                    input=next_input, activation=None, pool_size=pool_size, \
-                    drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
-                    in_dim=in_dim, out_dim=out_dim, \
-                    name=l_name, W_scale=3.0))
-            next_input = self.mlp_layers[-1].output
-            # Set the non-bias parameters of this layer to be clipped
-            self.clip_params[self.mlp_layers[-1].W] = 1
-            # Acknowledge layer completion
-            layer_num = layer_num + 1
-
-        # set norms to which to clip various parameters
-        self.clip_norms = {}
-
-        # Mash all the parameters together, into a list.
-        self.mlp_params = []
-        for layer in self.mlp_layers:
-            self.mlp_params.extend(layer.params)
-
-        # The output of this generator network is given by the noisy output
-        # of its final layer. We will keep a running estimate of the mean and
-        # covariance of the distribution induced by combining this network's
-        # latent noise source with its deep non-linear transform. These will
-        # be used to encourage the induced distribution to match the first and
-        # second-order moments of the distribution we are trying to match.
-        #self.output_noise = self.mlp_layers[-1].noisy_linear
-        self.output_noise = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear)
-        self.out_dim = self.mlp_layers[-1].out_dim
-        C_init = np.zeros((self.out_dim,self.out_dim)).astype(theano.config.floatX)
-        m_init = np.zeros((self.out_dim,)).astype(theano.config.floatX)
-        self.dist_mean = theano.shared(m_init, name='gn_dist_mean')
-        self.dist_cov = theano.shared(C_init, name='gn_dist_cov')
-        # Get simple regularization penalty to moderate activation dynamics
-        self.act_reg_cost = lam_l2a * self._act_reg_cost()
-        # Joint the transformed noise output and the real data input
-        self.output = T.vertical_stack(self.input_data, self.output_noise)
-        return
-
-    def _act_reg_cost(self):
-        """Apply L2 regularization to the activations in each spawn-net."""
-        act_sq_sums = []
-        for layer in self.mlp_layers:
-            act_sq_sums.append(layer.act_l2_sum)
-        full_act_sq_sum = T.sum(act_sq_sums)
-        return full_act_sq_sum
-
-    def _batch_moments(self):
-        """
-        Compute covariance and mean of the current sample outputs.
-        """
-        mu = T.mean(self.output_noise, axis=0, keepdims=True)
-        sigma = T.dot((self.output_noise.T - mu.T), (self.output_noise - mu))
-        return [mu, sigma]
-
-    def init_moments(self, X_noise):
-        """
-        Initialize the running mean and covariance estimates.
-        """
-        X_noise_sym = T.matrix()
-        out_func = theano.function(inputs=[ X_noise_sym ], \
-                outputs=[ self.output_noise ], \
-                givens={self.input_noise: X_noise_sym})
-        # Compute outputs for the input latent noise matrix
-        X_out = out_func(X_noise.astype(theano.config.floatX))[0]
-        # Compute mean and covariance of the outputs
-        mu = np.mean(X_out, axis=0)
-        X_out_minus_mu = X_out - mu
-        sigma = np.dot(X_out_minus_mu.T,X_out_minus_mu) / X_out.shape[0]
-        # Initialize the network's running estimates 
-        self.dist_cov.set_value(sigma.astype(theano.config.floatX))
-        self.dist_mean.set_value(mu.astype(theano.config.floatX))
-        return
+from GINets import INF_NET, GEN_NET
 
 #############################
 # SOME HANDY LOSS FUNCTIONS #
 #############################
 
-def logreg_loss(Y, class_sign):
+def xent_loss(Yh, Y):
     """
-    Simple binomial deviance (i.e. logistic regression) loss.
+    Cross-entropy loss between stochastic matrix Yh and binary matrix Y.
 
-    This assumes that all predictions in Y have the same target class, which
-    is indicated by class_sign, which should be in {-1, +1}. Note: this does
-    not "normalize" for the number of predictions in Y.
+    This assumes that all predictions in Yh are between 0 and 1, and that the
+    values in Y give the desired (binary) class for each outcome.
     """
-    loss = T.sum(T.log(1.0 + T.exp(-class_sign * Y)))
+    nl_Yh = -T.log(Yh)
+    nll_0 = (Y < 0.5) * nl_Yh
+    nll_1 = (Y > 0.5) * nl_Yh
+    loss = T.sum(nll_0 + nll_1)
     return loss
 
-def lsq_loss(Yh, Yt=0.0):
+def lsq_loss(Yh, Y):
     """
-    Least-squares loss for predictions in Yh, given target Yt.
+    Least-squares loss for predictions in Yh, given targets in Y.
     """
     loss = T.sum((Yh - Yt)**2.0)
     return loss
 
-def ulh_loss(Yh, Yt=0.0, delta=0.5):
+class IG_PAIR(object):
     """
-    Unilateral Huberized least-squares loss for Yh, given target Yt.
-    """
-    quad_loss = (Yh - Yt)**2.0
-    line_loss = (2.0 * delta * abs(Yh - Yt)) - delta**2.0
-    # Construct masks for cost-type regions
-    neg_mask = Yh < 0.0
-    quad_mask = (abs(Yh) < delta) * neg_mask
-    line_mask = (abs(Yh) >= delta) * neg_mask
-    # Construct masked loss
-    loss = T.sum((quad_loss * quad_mask) + (line_loss * line_mask))
-    return loss
+    Controller for training a inference/generator pair.
 
-class GA_PAIR(object):
-    """
-    Controller for training a generator/discriminator pair.
-
-    The generator is currently based on the the GEN_NET class implemented in
-    this source file. The discriminator must be an instance of the EAR_NET
-    class, as implemented in "EarNet.py".
+    The generator imust be an instance of the GEN_NET class implemented in
+    "GINets.py". The inference network must be an instance of the INF_NET class
+    implemented in GINets.py.
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
         d_net: The EAR_NET instance that will serve as the discriminator
         g_net: The GEN_NET instance that will serve as the generator
-        gap_params: a dict of parameters for controlling various costs
+        params: a dict of parameters for controlling various costs
             lam_l2d: regularization on squared discriminator output
             mom_mix_rate: rate for updates to the running moment estimates
                           for the distribution generated by g_net
@@ -257,29 +74,29 @@ class GA_PAIR(object):
         self.data_dim = self.GN.data_dim
 
         # symbolic var data input
-        self.Xd = T.matrix(name='gap_Xd')
+        self.Xd = T.matrix(name='gcp_Xd')
         # symbolic var noise input
-        self.Xn = T.matrix(name='gap_Xn')
+        self.Xn = T.matrix(name='gcp_Xn')
         # symbolic matrix of indices for data inputs
-        self.Id = T.lvector(name='gap_Id')
+        self.Id = T.lvector(name='gcp_Id')
         # symbolic matrix of indices for noise inputs
-        self.In = T.lvector(name='gap_In')
+        self.In = T.lvector(name='gcp_In')
         # shared var learning rate for generator and discriminator
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-        self.lr_gn = theano.shared(value=zero_ary, name='gap_lr_gn')
-        self.lr_dn = theano.shared(value=zero_ary, name='gap_lr_dn')
+        self.lr_gn = theano.shared(value=zero_ary, name='gcp_lr_gn')
+        self.lr_dn = theano.shared(value=zero_ary, name='gcp_lr_dn')
         # shared var momentum parameters for generator and discriminator
-        self.mo_gn = theano.shared(value=zero_ary, name='gap_mo_gn')
-        self.mo_dn = theano.shared(value=zero_ary, name='gap_mo_dn')
+        self.mo_gn = theano.shared(value=zero_ary, name='gcp_mo_gn')
+        self.mo_dn = theano.shared(value=zero_ary, name='gcp_mo_dn')
         # shared var weights for adversarial classification objective
-        self.dw_gn = theano.shared(value=zero_ary, name='gap_dw_gn')
-        self.dw_dn = theano.shared(value=zero_ary, name='gap_dw_dn')
+        self.dw_gn = theano.shared(value=zero_ary, name='gcp_dw_gn')
+        self.dw_dn = theano.shared(value=zero_ary, name='gcp_dw_dn')
         # init parameters for controlling learning dynamics
         self.set_gn_sgd_params() # init SGD rate/momentum for GN
         self.set_dn_sgd_params() # init SGD rate/momentum for DN
         self.set_disc_weights()  # init adversarial cost weights for GN/DN
         self.lam_l2d = theano.shared(value=(zero_ary + params['lam_l2d']), \
-                name='gap_lam_l2d')
+                name='gcp_lam_l2d')
 
         #######################################################
         # Welcome to: Moment Matching Cost Information Center #
@@ -320,24 +137,24 @@ class GA_PAIR(object):
         #
         zero_ary = np.zeros((1,))
         mmr = zero_ary + params['mom_mix_rate']
-        self.mom_mix_rate = theano.shared(name='gap_mom_mix_rate', \
+        self.mom_mix_rate = theano.shared(name='gcp_mom_mix_rate', \
             value=mmr.astype(theano.config.floatX))
         mmw = zero_ary + params['mom_match_weight']
-        self.mom_match_weight = theano.shared(name='gap_mom_match_weight', \
+        self.mom_match_weight = theano.shared(name='gcp_mom_match_weight', \
             value=mmw.astype(theano.config.floatX))
         targ_mean = params['target_mean'].astype(theano.config.floatX)
         targ_cov = params['target_cov'].astype(theano.config.floatX)
         assert(targ_mean.size == targ_cov.shape[0]) # mean and cov use same dim
         assert(targ_cov.shape[0] == targ_cov.shape[1]) # cov must be square
-        self.target_mean = theano.shared(value=targ_mean, name='gap_target_mean')
-        self.target_cov = theano.shared(value=targ_cov, name='gap_target_cov')
+        self.target_mean = theano.shared(value=targ_mean, name='gcp_target_mean')
+        self.target_cov = theano.shared(value=targ_cov, name='gcp_target_cov')
         mmp = np.identity(targ_cov.shape[0]) # default to identity transform
         if 'mom_match_proj' in params:
             mmp = params['mom_match_proj'] # use a user-specified transform
         assert(mmp.shape[0] == self.data_dim) # transform matches data dim
         assert(mmp.shape[1] == targ_cov.shape[0]) # and matches mean/cov dims
         mmp = mmp.astype(theano.config.floatX)
-        self.mom_match_proj = theano.shared(value=mmp, name='gap_mom_map_proj')
+        self.mom_match_proj = theano.shared(value=mmp, name='gcp_mom_map_proj')
         # finally, we can construct the moment matching cost! and the updates
         # for the running mean/covariance estimates too!
         self.mom_match_cost, self.mom_updates = self._construct_mom_stuff()
@@ -349,8 +166,8 @@ class GA_PAIR(object):
         # and discriminator networks that we'll be working with. We need to
         # ignore parameters in the final layers of the proto-networks in the
         # discriminator network (a generalized pseudo-ensemble). We ignore them
-        # because the GA_PAIR requires that they be "bypassed" in favor of some
-        # binary classification layers that will be managed by this GA_PAIR.
+        # because the GC_PAIR requires that they be "bypassed" in favor of some
+        # binary classification layers that will be managed by this GC_PAIR.
         self.dn_params = []
         for pn in self.DN.proto_nets:
             for pnl in pn[0:-1]:
@@ -597,9 +414,9 @@ class GA_PAIR(object):
             print_output_file=True, assert_nb_all_strings=-1)
         return func
 
-    def _construct_train_dn(self):
+    def _construct_train_in(self):
         """
-        Construct theano function to train discriminator on its own.
+        Construct theano function to train inference on its own.
         """
         outputs = [self.mom_match_cost, self.disc_cost_gn, self.disc_cost_dn]
         func = theano.function(inputs=[ self.Xd, self.Xn, self.Id, self.In ], \
@@ -638,93 +455,9 @@ class GA_PAIR(object):
         sample_func = lambda Xn: theano_func(Xn)[0]
         return sample_func
 
-#############################################
-# HELPER FUNCTION FOR 1st/2nd ORDER MOMENTS #
-#############################################
-
-def projected_moments(X, P, ary_type=None):
-    """
-    Compute 1st/2nd-order moments after linear transform.
-
-    Return type is always a numpy array. Inputs should both be of the same
-    type, which can be either numpy array or theano shared variable.
-    """
-    assert(not (ary_type is None))
-    assert((ary_type == 'theano') or (ary_type == 'numpy'))
-    proj_mean = None
-    proj_cov = None
-    if ary_type == 'theano':
-        Xp = T.dot(X, P)
-        Xp_mean = T.mean(Xp, axis=0)
-        Xp_centered = Xp - Xp_mean
-        Xp_cov = T.dot(Xp_centered.T, Xp_centered) / Xp.shape[0]
-        proj_mean = Xp_mean.eval()
-        proj_cov = Xp_cov.eval()
-    else:
-        Xp = np.dot(X, P)
-        Xp_mean = np.mean(Xp, axis=0)
-        Xp_centered = Xp - Xp_mean
-        Xp_cov = np.dot(Xp_centered.T, Xp_centered) / Xp.shape[0]
-        proj_mean = Xp_mean
-        proj_cov = Xp_cov
-    return [proj_mean, proj_cov]
-
 if __name__=="__main__":
-    import time
-    from load_data import load_udm, load_udm_ss, load_mnist
-    from EarNet import EAR_NET
-    # Simple test code, to check that everything is basically functional.
-    print("TESTING...")
-
-    # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
-
-    # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0]
-    mu = T.mean(Xtr,axis=0,keepdims=True)
-    sigma = T.dot((Xtr.T - mu.T),(Xtr - mu))
-    Xtr_mean = mu.eval()
-    Xtr_cov = sigma.eval()
-
-    # Choose some parameters for the generative network
-    gn_params = {}
-    gn_config = [50, 200, 200, 28*28]
-    gn_params['mlp_config'] = gn_config
-    gn_params['lam_l2a'] = 1e-2
-    gn_params['vis_drop'] = 0.0
-    gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.1
-
-    # Symbolic input matrix to generator network
-    X_gn_sym = T.matrix(name='X_gn_sym')
-    X_gn_noise = T.matrix(name='X_gn_noise')
-
-    # Initialize a generator network object
-    GN = GEN_NET(rng, X_gn_sym, gn_params)
-
-    # Init GNET's mean and covariance estimates with many samples
-    X_noise = npr.randn(5000, GN.latent_dim)
-    GN.init_moments(X_noise)
-
-    gn_out_func = theano.function(inputs=[ X_gn_noise ], \
-            outputs=[ GN.output ], \
-            givens={X_gn_sym: X_gn_noise})
-
-    batch_count = 100
-    start_time = time.clock()
-    for i in range(batch_count):
-        X_noise = npr.randn(100, GN.latent_dim)
-        outputs = gn_out_func(X_noise)
-        X_gn_out = outputs[0]
-        print("X_gn_out.shape: {0:s}".format(X_gn_out.shape))
-    total_time = time.clock() - start_time
-    print("SPEED: {0:.4f}s per batch".format(total_time/batch_count))
-
-
-    print("TESTING COMPLETE!")
+    # TODO: write test code
+    print("NO TEST YET, NEED IT SOON!")
 
 
 
