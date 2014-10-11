@@ -478,12 +478,9 @@ class CAModel:
         self.context_layer.reset_grads_and_moms()
         self.class_layer.reset_grads_and_moms()
         return new_context_layer
-#
-#
-# TODO: Fix-up the basic Word2Vec model to get it working with the newer
-#       corpus management/sampling stuff.
-#
-#
+
+
+
 class W2VModel:
     """
     Word2Vec skip-gram model, trained with negative sampling. For more info
@@ -554,9 +551,10 @@ class W2VModel:
             neg_keys = neg_sampler.sample(batch_size)
             L += self.batch_update(anc_keys, pos_keys, neg_keys, learn_rate=learn_rate)
             if ((b > 1) and ((b % self.reg_freq) == 0)):
-                self.w2v_layer.l2_regularize(self.lam_l2)
+                lam_multi = self.reg_freq * learn_rate * self.lam_l2
+                self.w2v_layer.l2_regularize(lam_multi)
             if ((b % 1000) == 0):
-                obs_count = 1000.0 * batch_size
+                obs_count = 1000.0# * batch_size
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         return
@@ -701,10 +699,50 @@ def test_pv_model():
         for w in range(10):
             print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
 
+def test_w2v_model():
+    data_dir = './training_text'
+    sentences = cu.SentenceFileIterator(data_dir)
+    key_dicts = cu.build_vocab(sentences, min_count=2, compute_hs_tree=True, \
+                            compute_ns_table=True, down_sample=0.0)
+    w2k = key_dicts['words_to_keys']
+    k2w = key_dicts['keys_to_words']
+    neg_table = key_dicts['ns_table']
+    unk_word = key_dicts['unk_word']
+
+    sentences = cu.SentenceFileIterator(data_dir)
+    tr_phrases = cu.sample_phrases(sentences, w2k, unk_word=unk_word, \
+                                max_phrases=100000)
+    max_cv_key = len(tr_phrases) + 1
+    max_wv_key = max(w2k.values())
+
+    # Choose some simple hyperparameters for the model
+    sg_window = 6
+    ns_count = 10
+    wv_dim = 60
+    lam_l2 = 1e-2
+
+    w2vm = W2VModel(wv_dim, max_wv_key, lam_l2)
+    w2vm.init_params(0.025)
+
+    # initialize samplers for drawing positive pairs and negative contrastors
+    pos_sampler = cu.PhraseSampler(tr_phrases, sg_window)
+    neg_sampler = cu.NegSampler(neg_table=neg_table, neg_count=ns_count)
+
+    # train all parameters using the training set phrases
+    learn_rate = 1e-3
+    decay_rate = 0.99
+    for i in range(100):
+        w2vm.train(pos_sampler, neg_sampler, 200, 10001, learn_rate=learn_rate)
+        learn_rate = learn_rate * decay_rate
+        [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
+                  W1=w2vm.w2v_layer.params['Wa'], W2=None)
+        for w in range(10):
+            print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
 
 if __name__=="__main__":
     #test_cam_model()
-    test_pv_model()
+    #test_pv_model()
+    test_w2v_model()
     #####
     #####
     #####

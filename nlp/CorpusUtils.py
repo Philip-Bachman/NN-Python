@@ -372,7 +372,6 @@ class PhraseSampler:
         phrase_count = len(p_list)
         phrase_lens = np.asarray([p.size for p in p_list]).astype(np.float64)
         len_sum = np.sum(phrase_lens)
-
         table = np.zeros((table_size,), dtype=np.uint32)
         widx = 0
         d1 = phrase_lens[0] / len_sum
@@ -405,7 +404,6 @@ class PhraseSampler:
             phrase_keys[i:(i+repeats)] = self.phrase_table[pt_idx]
             fast_pair_sample(self.phrase_list[phrase_keys[i]], self.max_window, \
                              i, repeats, anc_keys, pos_keys, rand_pool, ri)
-        # Sample negative examples from self.neg_table
         anc_keys = anc_keys.astype(np.uint32)
         pos_keys = pos_keys.astype(np.uint32)
         phrase_keys = np.minimum(self.max_phrase_key, phrase_keys).astype(np.uint32)
@@ -431,7 +429,6 @@ class PhraseSampler:
             phrase_keys[i:(i+repeats)] = self.phrase_table[pt_idx]
             fast_seq_sample(self.phrase_list[phrase_keys[i]], gram_n, pad_key, \
                     i, repeats, key_seqs, rand_pool, ri)
-        # Sample negative examples from self.neg_table
         key_seqs = key_seqs.astype(np.uint32)
         phrase_keys = np.minimum(self.max_phrase_key, phrase_keys).astype(np.uint32)
         return [key_seqs, phrase_keys]
