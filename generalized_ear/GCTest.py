@@ -38,10 +38,9 @@ P = P.get_value(borrow=False).astype(theano.config.floatX)
 
 # Choose some parameters for the generative network
 gn_params = {}
-gn_config = [256, 800, 800, 28*28]
+gn_config = [400, 1200, 1200, 28*28]
 gn_params['mlp_config'] = gn_config
 gn_params['lam_l2a'] = 1e-3
-gn_params['use_bias'] = 1
 gn_params['vis_drop'] = 0.5
 gn_params['hid_drop'] = 0.0
 gn_params['bias_noise'] = 0.1
@@ -55,7 +54,6 @@ X_data_sym = T.matrix(name='X_data_sym')
 GN = GEN_NET(rng=rng, input_noise=X_noise_sym, input_data=X_data_sym, \
         params=gn_params)
 
-
 ###############################
 # Setup discriminator network #
 ###############################
@@ -63,7 +61,7 @@ GN = GEN_NET(rng=rng, input_noise=X_noise_sym, input_data=X_data_sym, \
 # Set some reasonable mlp parameters
 dn_params = {}
 # Set up some proto-networks
-pc0 = [28*28, (200, 4), (200, 4), 11]
+pc0 = [28*28, (300, 4), (300, 4), 11]
 dn_params['proto_configs'] = [pc0]
 # Set up some spawn networks
 sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -76,7 +74,6 @@ dn_params['ear_lam'] = 2.0
 dn_params['lam_l2a'] = 1e-3
 dn_params['vis_drop'] = 0.5
 dn_params['hid_drop'] = 0.5
-dn_params['use_bias'] = 1
 dn_params['reg_all_obs'] = True
 
 # Initialize a discriminator network object
@@ -99,8 +96,11 @@ gcp_params['target_cov'] = target_cov
 # Initialize a GC_PAIR instance using the previously constructed generator and
 # discriminator networks.
 GCP = GC_PAIR(rng=rng, d_net=DN, g_net=GN, params=gcp_params)
-GCP.set_gn_sgd_params(learn_rate=0.05, momentum=0.8)
-GCP.set_dn_sgd_params(learn_rate=0.03, momentum=0.8)
+
+gn_learn_rate = 0.05
+dn_learn_rate = 0.03
+GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.8)
+GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.8)
 # Init generator's mean and covariance estimates with many samples
 Xn_np = npr.randn(5000, GN.latent_dim)
 GCP.init_moments(Xn_np)
@@ -109,7 +109,7 @@ batch_idx = T.lvector('batch_idx')
 batch_sample = theano.function(inputs=[ batch_idx ], \
         outputs=[ Xtr.take(batch_idx, axis=0) ])
 
-for i in range(500000):
+for i in range(750000):
     tr_idx = npr.randint(low=0,high=tr_samples,size=(100,)).astype(np.int32)
     Xn_np = 5.0 * npr.randn(100, GCP.GN.latent_dim)
     Xd_batch = batch_sample(tr_idx)[0]
@@ -119,7 +119,7 @@ for i in range(500000):
     data_idx = all_idx[:100]
     noise_idx = all_idx[100:]
     d_weight = 0.05 * min(1.0, float(i)/30000.0)
-    if (i < 15000):
+    if (i < 20000):
         GCP.set_disc_weights(dweight_gn=0.001)
         outputs = GCP.train_gn(Xd_batch, Xn_batch, data_idx, noise_idx)
     else:
@@ -128,10 +128,15 @@ for i in range(500000):
     mom_match_cost = 1.0 * outputs[0]
     disc_cost_gn = 1.0 * outputs[1]
     disc_cost_dn = 1.0 * outputs[2]
+    if ((i+1 % 100000) == 0):
+        gn_learn_rate = gn_learn_rate * 0.7
+        dn_learn_rate = dn_learn_rate * 0.7
+        GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.8)
+        GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.8)
     if ((i % 1000) == 0):
         print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_cost_gn: {2:.4f}, disc_cost_dn: {3:.4f}".format( \
                 i, mom_match_cost, disc_cost_gn, disc_cost_dn))
-    if ((i % 5000) == 0):
+    if ((i % 10000) == 0):
         file_name = "A_GN_SAMPLES_b{0:d}.png".format(i)
         Xs = GCP.sample_from_gn(Xn_batch)
         utils.visualize_samples(Xs, file_name)

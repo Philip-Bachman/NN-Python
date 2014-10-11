@@ -52,7 +52,7 @@ class IG_PAIR(object):
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
-        d_net: The EAR_NET instance that will serve as the discriminator
+        i_net: The INF_NET instance that will serve as the inference(er)
         g_net: The GEN_NET instance that will serve as the generator
         params: a dict of parameters for controlling various costs
             lam_l2d: regularization on squared discriminator output
@@ -97,70 +97,6 @@ class IG_PAIR(object):
         self.set_disc_weights()  # init adversarial cost weights for GN/DN
         self.lam_l2d = theano.shared(value=(zero_ary + params['lam_l2d']), \
                 name='gcp_lam_l2d')
-
-        #######################################################
-        # Welcome to: Moment Matching Cost Information Center #
-        #######################################################
-        #
-        # Get parameters for managing the moment matching cost. The moment
-        # matching is based on exponentially-decaying estimates of the mean
-        # and covariance of the distribution induced by the generator network
-        # and the (latent) noise being fed to it.
-        #
-        # We provide the option of performing moment matching with either the
-        # raw generator output, or with linearly-transformed generator output.
-        # Either way, the given target mean and covariance should have the
-        # appropriate dimension for the space in which we'll be matching the
-        # generator's 1st/2nd moments with the target's 1st/2nd moments. For
-        # clarity, the computation we'll perform looks like:
-        #
-        #   Xm = X - np.mean(X, axis=0)
-        #   XmP = np.dot(Xm, P)
-        #   C = np.dot(XmP.T, XmP)
-        #
-        # where Xm is the mean-centered samples from the generator and P is
-        # the matrix for the linear transform to apply prior to computing
-        # the moment matching cost. For simplicity, the above code ignores the
-        # use of an exponentially decaying average to track the estimated mean
-        # and covariance of the generator's output distribution.
-        #
-        # The relative contribution of the current batch to these running
-        # estimates is determined by self.mom_mix_rate. The mean estimate is
-        # first updated based on the current batch, then the current batch
-        # is centered with the updated mean, then the covariance estimate is
-        # updated with the mean-centered samples in the current batch.
-        #
-        # Strength of the moment matching cost is given by self.mom_match_cost.
-        # Target mean/covariance are given by self.target_mean/self.target_cov.
-        # If a linear transform is to be applied prior to matching, it is given
-        # by self.mom_match_proj.
-        #
-        zero_ary = np.zeros((1,))
-        mmr = zero_ary + params['mom_mix_rate']
-        self.mom_mix_rate = theano.shared(name='gcp_mom_mix_rate', \
-            value=mmr.astype(theano.config.floatX))
-        mmw = zero_ary + params['mom_match_weight']
-        self.mom_match_weight = theano.shared(name='gcp_mom_match_weight', \
-            value=mmw.astype(theano.config.floatX))
-        targ_mean = params['target_mean'].astype(theano.config.floatX)
-        targ_cov = params['target_cov'].astype(theano.config.floatX)
-        assert(targ_mean.size == targ_cov.shape[0]) # mean and cov use same dim
-        assert(targ_cov.shape[0] == targ_cov.shape[1]) # cov must be square
-        self.target_mean = theano.shared(value=targ_mean, name='gcp_target_mean')
-        self.target_cov = theano.shared(value=targ_cov, name='gcp_target_cov')
-        mmp = np.identity(targ_cov.shape[0]) # default to identity transform
-        if 'mom_match_proj' in params:
-            mmp = params['mom_match_proj'] # use a user-specified transform
-        assert(mmp.shape[0] == self.data_dim) # transform matches data dim
-        assert(mmp.shape[1] == targ_cov.shape[0]) # and matches mean/cov dims
-        mmp = mmp.astype(theano.config.floatX)
-        self.mom_match_proj = theano.shared(value=mmp, name='gcp_mom_map_proj')
-        # finally, we can construct the moment matching cost! and the updates
-        # for the running mean/covariance estimates too!
-        self.mom_match_cost, self.mom_updates = self._construct_mom_stuff()
-        #########################################
-        # Thank you for visiting the M.M.C.I.C. #
-        #########################################
 
         # Grab the full set of "optimizable" parameters from the generator
         # and discriminator networks that we'll be working with. We need to

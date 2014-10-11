@@ -370,7 +370,7 @@ class GC_PAIR(object):
             # Compute gn cost based only on predictions for noise
             gn_pred_count = self.In.size
             #dnl_gn_cost = lsq_loss(noise_preds, 0.0) / gn_pred_count
-            dnl_gn_cost = ulh_loss(noise_preds, 0.0) / gn_pred_count
+            dnl_gn_cost = ulh_loss(noise_preds, 0.2) / gn_pred_count
             #dnl_gn_cost = logreg_loss(noise_preds, 1.0) / gn_pred_count
             dn_costs.append(dnl_dn_cost)
             gn_costs.append(dnl_gn_cost)
