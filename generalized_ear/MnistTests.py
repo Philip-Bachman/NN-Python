@@ -229,6 +229,11 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['epochs'] = 5
         NET.set_ear_lam(0.0)
         train_ss_mlp(NET, sgd_params, datasets)
+        # Train with no EAR regularization
+        sgd_params['top_only'] = False
+        sgd_params['epochs'] = 100
+        NET.set_ear_lam(0.0)
+        COMMENT="""
         # Train with weak EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 5
@@ -250,6 +255,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['epochs'] = 100
         NET.set_ear_lam(3.0)
         train_ss_mlp(NET, sgd_params, datasets)
+        """
     return
 
 def test_dropout_ala_original():
@@ -312,9 +318,9 @@ if __name__ == '__main__':
 
     # Run multiple tests of semisupervised learning with DAE pretraining
     batch_test_ss_mlp_pt(test_count=50, su_count=100)
-    #batch_test_ss_mlp_pt(test_count=10, su_count=600)
-    #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
-    #batch_test_ss_mlp_pt(test_count=10, su_count=3000)
+    batch_test_ss_mlp_pt(test_count=10, su_count=600)
+    batch_test_ss_mlp_pt(test_count=10, su_count=1000)
+    batch_test_ss_mlp_pt(test_count=10, su_count=3000)
 
 
 
