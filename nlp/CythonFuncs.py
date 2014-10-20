@@ -20,14 +20,6 @@ from ctypes import pythonapi, c_void_p
 
 THREAD_NUM = 4
 
-savethread = pythonapi.PyEval_SaveThread
-savethread.argtypes = []
-savethread.restype = c_void_p
-
-restorethread = pythonapi.PyEval_RestoreThread
-restorethread.argtypes = [c_void_p]
-restorethread.restype = None
-
 def make_multithread(inner_func, numthreads):
     def func_mt(*args):
         length = len(args[0])

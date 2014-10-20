@@ -233,6 +233,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 100
         NET.set_ear_lam(0.0)
+        train_ss_mlp(NET, sgd_params, datasets)
         COMMENT="""
         # Train with weak EAR regularization
         sgd_params['top_only'] = False
