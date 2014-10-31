@@ -78,8 +78,17 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     # Run tests with different sorts of regularization
     for test_num in range(test_count):
         # Run test with EAR regularization on unsupervised examples
-        sgd_params['result_tag'] = "ss_ear_s{0:d}_t{1:d}".format(su_count, test_num)
+        sgd_params['result_tag'] = "ss_sde_s{0:d}_t{1:d}".format(su_count, test_num)
         mlp_params['ear_type'] = 2
+        ###################################
+        # PARAMS FOR TRAINING WITHOUT EAR #
+        ###################################
+        #sgd_params['epochs'] = 500
+        #mlp_params['ear_lam'] = 0.0
+        ################################
+        # PARAMS FOR TRAINING WITH EAR #
+        ################################
+        sgd_params['epochs'] = 600
         mlp_params['ear_lam'] = 2.0
         # Initialize a random number generator for this test
         rng = np.random.RandomState(test_num)
@@ -146,20 +155,24 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         train_ss_mlp(NET, sgd_params, datasets)
         # Train with weak EAR regularization
         sgd_params['epochs'] = 10
-        NET.set_ear_lam(1.0)
+        NET.set_ear_lam(1.0) # for EAR
+        #NET.set_ear_lam(0.0) # for SDE
         train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
         sgd_params['epochs'] = 10
-        NET.set_ear_lam(1.5)
+        NET.set_ear_lam(1.5) # for EAR
+        #NET.set_ear_lam(0.0) # for SDE
         train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
         sgd_params['epochs'] = 15
-        NET.set_ear_lam(2.0)
+        NET.set_ear_lam(2.0) # for EAR
+        #NET.set_ear_lam(0.0) # for SDE
         train_ss_mlp(NET, sgd_params, datasets)
         # Train with more EAR regularization
-        sgd_params['epochs'] = 40
+        sgd_params['epochs'] = 70
         sgd_params['start_rate'] = 0.05
-        NET.set_ear_lam(3.0)
+        NET.set_ear_lam(3.0) # for EAR
+        #NET.set_ear_lam(0.0) # for SDE
         train_ss_mlp(NET, sgd_params, datasets)
     return
 
@@ -229,12 +242,13 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['epochs'] = 5
         NET.set_ear_lam(0.0)
         train_ss_mlp(NET, sgd_params, datasets)
+        COMMENT="""
         # Train with no EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 100
         NET.set_ear_lam(0.0)
         train_ss_mlp(NET, sgd_params, datasets)
-        COMMENT="""
+        """
         # Train with weak EAR regularization
         sgd_params['top_only'] = False
         sgd_params['epochs'] = 5
@@ -256,7 +270,6 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['epochs'] = 100
         NET.set_ear_lam(3.0)
         train_ss_mlp(NET, sgd_params, datasets)
-        """
     return
 
 def test_dropout_ala_original():
@@ -314,14 +327,14 @@ if __name__ == '__main__':
     #batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
     #batch_test_ss_mlp(test_count=10, su_count=3000)
-    #batch_test_ss_mlp_gentle(test_count=20, su_count=100)
+    batch_test_ss_mlp_gentle(test_count=25, su_count=100)
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining
-    batch_test_ss_mlp_pt(test_count=50, su_count=100)
-    batch_test_ss_mlp_pt(test_count=10, su_count=600)
-    batch_test_ss_mlp_pt(test_count=10, su_count=1000)
-    batch_test_ss_mlp_pt(test_count=10, su_count=3000)
+    #batch_test_ss_mlp_pt(test_count=50, su_count=100)
+    #batch_test_ss_mlp_pt(test_count=10, su_count=600)
+    #batch_test_ss_mlp_pt(test_count=10, su_count=1000)
+    #batch_test_ss_mlp_pt(test_count=10, su_count=3000)
 
 
 
