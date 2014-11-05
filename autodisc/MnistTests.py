@@ -185,11 +185,11 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
-    pc0 = [28*28, 200, 200, 11]
+    pc0 = [28*28, 800, 800, 128, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.05, 'bias_noise': 0.05, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params

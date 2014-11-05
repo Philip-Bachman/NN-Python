@@ -648,14 +648,20 @@ class DEXLayer(object):
         return
 
     def dex_cost(self, I, dex_lam=5.0):
-        """Simple exemplar-svm-like function to optimize."""
+        """
+        Simple exemplar-svm-like function to optimize.
+
+        This loss is based on unnormalized grounded grounded density
+        estimation via Negative Sampling -- Noise-Contrastive Estimation.
+        """
         #assert(I.shape[0] == self.X_in.shape[0])
         Wt = T.take(self.W, I, axis=0)
         bt = T.take(self.b, I)
+        k = I.size - 1
         F = T.dot(self.X_in, Wt.T) + bt
-        mask = T.ones_like(F) - (2.0 * T.identity_like(F))
-        dex_loss = T.sum(T.log(1.0 + T.exp(mask * F))) / F.shape[0]
-        reg_loss = dex_lam * T.sum(Wt**2.0)
+        mask = T.ones_like(F) - T.identity_like(F)
+        dex_loss = T.sum((mask * F) + T.log(1.0 + k*T.exp(-F))) / (k + 1)
+        reg_loss = dex_lam * T.sum(F**2.0) / (k + 1)
         C = dex_loss + reg_loss
         self.dW = T.grad(C, Wt)
         self.db = T.grad(C, bt)
