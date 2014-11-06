@@ -7,7 +7,7 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
-#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 from output_losses import LogRegSS, MCL2HingeSS
 
@@ -119,10 +119,10 @@ class HiddenLayer(object):
                  use_bias=True, name=""):
 
         # Setup a shared random generator for this layer
-        self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
-                rng.randint(100000))
+        #self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
+        #        rng.randint(100000))
 
-        #self.cu_rng = CURAND_RandomStreams(rng.randint(1000000))
+        self.srng = CURAND_RandomStreams(rng.randint(1000000))
 
         self.clean_input = input
 
@@ -139,23 +139,6 @@ class HiddenLayer(object):
             self.noisy_input = self._drop_from_input(self.fuzzy_input, drop_rate)
         else:
             self.noisy_input = self.fuzzy_input
-
-        # Apply noise in reverse order (i.e. masking -> fuzzing)
-        COMMENT = """
-        # Apply masking noise to the input (if desired)
-        if (drop_rate > 1e-4):
-            droppy_input = self._drop_from_input(input, drop_rate)
-        else:
-            droppy_input = input
-
-        # Add gaussian noise to the masked input (if desired)
-        if (input_noise > 1e-4):
-            self.noisy_input = droppy_input + \
-                    (input_noise * self.srng.normal(size=input.shape, \
-                    dtype=theano.config.floatX))
-        else:
-            self.noisy_input = droppy_input
-        """
 
         # Set some basic layer properties
         self.pool_size = pool_size
@@ -179,7 +162,7 @@ class HiddenLayer(object):
         if W is None:
             if self.pool_size <= 1:
                 # Generate random initial filters in a typical way
-                W_init = np.asarray(0.01 * rng.standard_normal( \
+                W_init = np.asarray(0.04 * rng.standard_normal( \
                           size=(self.in_dim, self.filt_count)), \
                           dtype=theano.config.floatX)
             else:
@@ -629,7 +612,7 @@ class DEXLayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            W_init = np.asarray(0.01 * rng.standard_normal( \
+            W_init = np.asarray(0.04* rng.standard_normal( \
                       size=(max_key+10, vec_dim)), dtype=theano.config.floatX)
             W = theano.shared(value=W_init, name='W')
         if b is None:
@@ -647,7 +630,7 @@ class DEXLayer(object):
         # Beep boop... layer construction complete...
         return
 
-    def dex_cost(self, I, dex_lam=5.0):
+    def dex_cost(self, I, dex_lam=0.00):
         """
         Simple exemplar-svm-like function to optimize.
 
@@ -659,6 +642,7 @@ class DEXLayer(object):
         bt = T.take(self.b, I)
         k = I.size - 1
         F = T.dot(self.X_in, Wt.T) + bt
+        #F = T.dot(self.X_in, self.X_in.T)
         mask = T.ones_like(F) - T.identity_like(F)
         dex_loss = T.sum((mask * F) + T.log(1.0 + k*T.exp(-F))) / (k + 1)
         reg_loss = dex_lam * T.sum(F**2.0) / (k + 1)

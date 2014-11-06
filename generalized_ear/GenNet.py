@@ -159,9 +159,6 @@ class GEN_NET(object):
             # Acknowledge layer completion
             layer_num = layer_num + 1
 
-        # set norms to which to clip various parameters
-        self.clip_norms = {}
-
         # Mash all the parameters together, into a list.
         self.mlp_params = []
         for layer in self.mlp_layers:
@@ -267,8 +264,6 @@ def projected_moments(X, P, ary_type=None):
 
 
 
-
-
 if __name__=="__main__":
     # Do basic testing, to make sure classes aren't completely broken.
     input_var_1 = T.matrix('INPUT_1')
@@ -276,13 +271,13 @@ if __name__=="__main__":
     rng = np.random.RandomState(1234)
     # Choose some parameters for the generative network
     gn_params = {}
-    gn_config = [400, 1200, 1200, 28*28]
+    gn_config = [100, 500, 500, 28*28]
     gn_params['mlp_config'] = gn_config
     gn_params['lam_l2a'] = 1e-3
-    gn_params['vis_drop'] = 0.5
+    gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.1
+    gn_params['bias_noise'] = 0.0
+    gn_params['out_noise'] = 0.0
     # Make the starter network
     gn_1 = GEN_NET(rng=rng, input_var=input_var_1, params=gn_params, \
             mlp_param_dicts=None)
