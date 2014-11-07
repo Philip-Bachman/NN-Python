@@ -38,12 +38,12 @@ P = P.get_value(borrow=False).astype(theano.config.floatX)
 
 # Choose some parameters for the generative network
 gn_params = {}
-gn_config = [200, 800, 800, 28*28]
+gn_config = [250, 800, 800, 28*28]
 gn_params['mlp_config'] = gn_config
 gn_params['lam_l2a'] = 1e-3
-gn_params['vis_drop'] = 0.0
-gn_params['hid_drop'] = 0.5
-gn_params['bias_noise'] = 0.1
+gn_params['vis_drop'] = 0.5
+gn_params['hid_drop'] = 0.0
+gn_params['bias_noise'] = 0.2
 gn_params['out_noise'] = 0.1
 
 # Symbolic input matrix to generator network

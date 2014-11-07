@@ -40,17 +40,26 @@ def lsq_loss(Yh, Yt=0.0):
     loss = T.sum((Yh - Yt)**2.0)
     return loss
 
+def hinge_loss(Yh, Yt=0.0):
+    """
+    Unilateral hinge loss for Yh, given target Yt.
+    """
+    residual = Yt - Yh
+    loss = T.sum((residual * (residual > 0.0)))
+    return loss
+
 def ulh_loss(Yh, Yt=0.0, delta=0.5):
     """
     Unilateral Huberized least-squares loss for Yh, given target Yt.
     """
-    quad_loss = (Yh - Yt)**2.0
-    line_loss = (2.0 * delta * abs(Yh - Yt)) - delta**2.0
-    # Construct masks for cost-type regions
-    neg_mask = Yh < 0.0
-    quad_mask = (abs(Yh) < delta) * neg_mask
-    line_mask = (abs(Yh) >= delta) * neg_mask
-    # Construct masked loss
+    residual = Yt - Yh
+    quad_loss = residual**2.0
+    line_loss = (2.0 * delta * abs(residual)) - delta**2.0
+    # Construct mask for quadratic loss region
+    quad_mask = (abs(residual) < delta) * (residual > 0.0)
+    # Construct mask for linear loss region
+    line_mask = (abs(residual) >= delta) * (residual > 0.0)
+    # Combine the quadratic and linear losses
     loss = T.sum((quad_loss * quad_mask) + (line_loss * line_mask))
     return loss
 
@@ -374,7 +383,7 @@ class GCPair(object):
                     logreg_loss(noise_preds, -1.0)) / dn_pred_count
             # Compute gn cost based only on predictions for noise
             gn_pred_count = self.In.size
-            dnl_gn_cost = ulh_loss(noise_preds, 0.0) / gn_pred_count
+            dnl_gn_cost = hinge_loss(noise_preds, 0.0) / gn_pred_count
             #dnl_gn_cost = logreg_loss(noise_preds, 1.0) / gn_pred_count
             dn_costs.append(dnl_dn_cost)
             gn_costs.append(dnl_gn_cost)
