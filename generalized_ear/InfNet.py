@@ -31,10 +31,10 @@ class InfNet(object):
 
     Parameters:
         rng: a numpy.random RandomState object
-        input_cont: symbolic input matrix for inputting control data
+        input_data: symbolic input matrix for inputting control data
         input_late: symbolic input matrix for inputting latent data
         input_mask: symbolic input matrix for a mask on which values to take
-                    from input_cont and which to take from input_late
+                    from input_data and which to take from input_late
         params: a dict of parameters describing the desired ensemble:
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on observable variables
@@ -49,7 +49,7 @@ class InfNet(object):
     """
     def __init__(self, \
             rng=None, \
-            input_cont=None, \
+            input_data=None, \
             input_late=None, \
             input_mask=None, \
             params=None, \
@@ -58,7 +58,7 @@ class InfNet(object):
         self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
             rng.randint(100000))
         # Grab the symbolic input matrix
-        self.input_cont = input_cont
+        self.input_data = input_data
         self.input_late = input_late
         self.input_mask = input_mask
         #####################################################
@@ -110,7 +110,7 @@ class InfNet(object):
         layer_num = 0
         # Construct input by combining control input and latent input, taking
         # masked values from inferred input and other values from data input
-        next_input = ((1.0 - self.input_mask) * self.input_cont) + \
+        next_input = ((1.0 - self.input_mask) * self.input_data) + \
                 (self.input_mask * self.input_late)
         for in_def, out_def in layer_def_pairs:
             first_layer = (layer_num == 0)
@@ -321,23 +321,23 @@ class InfNet(object):
         full_act_sq_sum = T.sum(act_sq_sums)
         return full_act_sq_sum
 
-    def shared_param_clone(self, rng=None, input_cont=None, input_late=None, \
+    def shared_param_clone(self, rng=None, input_data=None, input_late=None, \
             input_mask=None):
         """
-        Return a clone of this network, with shared parameters but with a 
-        different symbolic input var.
+        Return a clone of this network, with shared parameters but with
+        different symbolic input variables.
 
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = InfNet(rng=rng, input_cont=input_cont, \
+        clone_net = InfNet(rng=rng, input_data=input_data, \
                 input_late=input_late, input_mask=input_mask, \
                 params=self.params, mlp_param_dicts=self.mlp_param_dicts)
         return clone_net
 
 if __name__=="__main__":
     # Do basic testing, to make sure classes aren't completely broken.
-    input_cont = T.matrix('CONTROL_INPUT')
+    input_data = T.matrix('DATA_INPUT')
     input_mask = T.matrix('MASK_INPUT')
     input_late_1 = T.matrix('LATE_INPUT_1')
     # Initialize a source of randomness
@@ -357,12 +357,12 @@ if __name__=="__main__":
     in_params['bias_noise'] = 0.0
     in_params['input_noise'] = 0.0
     # Make the starter network
-    in_1 = InfNet(rng=rng, input_cont=input_cont, \
+    in_1 = InfNet(rng=rng, input_data=input_data, \
             input_late=input_late_1, input_mask=input_mask, \
             params=in_params, mlp_param_dicts=None)
     # Make a clone of the network with a different symbolic input
     input_late_2 = T.matrix('LATE_INPUT_2')
-    in_2 = InfNet(rng=rng, input_cont=input_cont, \
+    in_2 = InfNet(rng=rng, input_data=input_data, \
             input_late=input_late_2, input_mask=input_mask, \
             params=in_params, mlp_param_dicts=in_1.mlp_param_dicts)
     print("TESTING COMPLETE")

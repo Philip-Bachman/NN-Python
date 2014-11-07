@@ -223,8 +223,8 @@ class GenNet(object):
 
     def shared_param_clone(self, rng=None, input_var=None):
         """
-        Return a clone of this network, with shared parameters but with a 
-        different symbolic input var.
+        Return a clone of this network, with shared parameters but with
+        different symbolic input variables.
 
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.

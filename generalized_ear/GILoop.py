@@ -28,31 +28,35 @@ class GILoop(object):
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
-        g_net: The GenNet instance that will serve as the generator
-        i_net: The InfNet instance that will serve as the infer(er)
-        data_dim: Dimensions of generated data
+        g_net: The GenNet instance that will serve as the base generator
+        i_net: The InfNet instance that will serve as the base inferer
         loop_iters: The number of loop cycles to unroll
     """
     def __init__(self, rng=None, g_net=None, i_net=None, data_dim=None, \
-            loop_iters=1):
+            latent_dim=None, loop_iters=1):
         # Do some stuff!
         self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
         self.GN_base = g_net
         self.IN_base = i_net
-        self.input_noise = self.GN.input_var
-        self.input_data = data_var
-        self.sample_data = self.GN.output
         self.data_dim = data_dim
+        self.latent_dim = latent_dim
+        self.loop_iters = loop_iters
+
+        # check that various dimensions are set coherently
+        assert(self.latent_dim == self.GN_base.mlp_layers[0].in_dim)
+        assert(self.latent_dim == self.IN_base.mu_layers[-1].out_dim)
+        assert(self.latent_dim == self.IN_base.sigma_layers[-1].out_dim)
+        assert(self.data_dim == self.GN_base.mlp_layers[-1].out_dim)
+        assert(self.data_dim == self.IN_base.shared_layers[0].in_dim)
 
         # symbolic var data input
         self.Xd = T.matrix(name='gil_Xd')
         # symbolic var noise input
         self.Xn = T.matrix(name='gil_Xn')
-        # symbolic matrix of indices for data inputs
-        self.Id = T.lvector(name='gil_Id')
-        # symbolic matrix of indices for noise inputs
-        self.In = T.lvector(name='gil_In')
+        # symbolic mask input
+        self.Xm = T.matrix(name='gil_Xm')
+
         # shared var learning rate for generator and discriminator
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         self.lr_gn = theano.shared(value=zero_ary, name='gil_lr_gn')
@@ -64,73 +68,125 @@ class GILoop(object):
         self.set_gn_sgd_params() # init SGD rate/momentum for GN
         self.set_in_sgd_params() # init SGD rate/momentum for IN
 
+        #######################################################
+        # Welcome to: Moment Matching Cost Information Center #
+        #######################################################
+        #
+        # Get parameters for managing the moment matching cost. The moment
+        # matching is based on exponentially-decaying estimates of the mean
+        # and covariance of the distribution induced by the generator network
+        # and the (latent) noise being fed to it.
+        #
+        # We provide the option of performing moment matching with either the
+        # raw generator output, or with linearly-transformed generator output.
+        # Either way, the given target mean and covariance should have the
+        # appropriate dimension for the space in which we'll be matching the
+        # generator's 1st/2nd moments with the target's 1st/2nd moments. For
+        # clarity, the computation we'll perform looks like:
+        #
+        #   Xm = X - np.mean(X, axis=0)
+        #   XmP = np.dot(Xm, P)
+        #   C = np.dot(XmP.T, XmP)
+        #
+        # where Xm is the mean-centered samples from the generator and P is
+        # the matrix for the linear transform to apply prior to computing
+        # the moment matching cost. For simplicity, the above code ignores the
+        # use of an exponentially decaying average to track the estimated mean
+        # and covariance of the generator's output distribution.
+        #
+        # The relative contribution of the current batch to these running
+        # estimates is determined by self.mom_mix_rate. The mean estimate is
+        # first updated based on the current batch, then the current batch
+        # is centered with the updated mean, then the covariance estimate is
+        # updated with the mean-centered samples in the current batch.
+        #
+        # Strength of the moment matching cost is given by self.mom_match_cost.
+        # Target mean/covariance are given by self.target_mean/self.target_cov.
+        # If a linear transform is to be applied prior to matching, it is given
+        # by self.mom_match_proj.
+        #
+        zero_ary = np.zeros((1,))
+        mmr = zero_ary + params['mom_mix_rate']
+        self.mom_mix_rate = theano.shared(name='gil_mom_mix_rate', \
+            value=mmr.astype(theano.config.floatX))
+        mmw = zero_ary + params['mom_match_weight']
+        self.mom_match_weight = theano.shared(name='gil_mom_match_weight', \
+            value=mmw.astype(theano.config.floatX))
+        targ_mean = params['target_mean'].astype(theano.config.floatX)
+        targ_cov = params['target_cov'].astype(theano.config.floatX)
+        assert(targ_mean.size == targ_cov.shape[0]) # mean and cov use same dim
+        assert(targ_cov.shape[0] == targ_cov.shape[1]) # cov must be square
+        self.target_mean = theano.shared(value=targ_mean, name='gil_target_mean')
+        self.target_cov = theano.shared(value=targ_cov, name='gil_target_cov')
+        mmp = np.identity(targ_cov.shape[0]) # default to identity transform
+        if 'mom_match_proj' in params:
+            mmp = params['mom_match_proj'] # use a user-specified transform
+        assert(mmp.shape[0] == self.data_dim) # transform matches data dim
+        assert(mmp.shape[1] == targ_cov.shape[0]) # and matches mean/cov dims
+        mmp = mmp.astype(theano.config.floatX)
+        self.mom_match_proj = theano.shared(value=mmp, name='gcp_mom_map_proj')
+        # finally, we can construct the moment matching cost! and the updates
+        # for the running mean/covariance estimates too!
+        self.mom_match_cost, self.mom_updates = self._construct_mom_stuff()
+        #########################################
+        # Thank you for visiting the M.M.C.I.C. #
+        #########################################
 
         # Grab the full set of "optimizable" parameters from the generator
         # and inference networks that we'll be working with.
-        self.in_params = []
-        for pn in self.DN.proto_nets:
-            for pnl in pn[0:-1]:
-                self.dn_params.extend(pnl.params)
+        self.in_params = [p for p in self.IN.mlp_params]
         self.gn_params = [p for p in self.GN.mlp_params]
-        # Now construct a binary discriminator layer for each proto-net in the
-        # discriminator network. And, add their params to optimization list.
-        self._construct_disc_layers(rng)
-        self.disc_reg_cost = self.lam_l2d[0] * \
-                T.sum([dl.act_l2_sum for dl in self.disc_layers])
 
-        # Construct costs for the generator and discriminator networks based 
-        # on adversarial binary classification
-        self.disc_cost_dn, self.disc_cost_gn = self._construct_disc_costs()
+        # TODO: construct a working generate <-> infer loop
 
-        # Cost w.r.t. discriminator parameters is only the adversarial binary
-        # classification cost. Cost w.r.t. comprises an adversarial binary
-        # classification cost and the (weighted) moment matching cost.
-        self.dn_cost = self.disc_cost_dn + self.DN.act_reg_cost + self.disc_reg_cost
-        self.gn_cost = self.disc_cost_gn + self.mom_match_cost + self.GN.act_reg_cost
+
+        # TODO: construct the cost functions for gen <-> inf loop
+        self.in_cost = self.vari_cost_in + self.IN.act_reg_cost
+        self.gn_cost = self.vari_cost_gn + self.GN.act_reg_cost
 
         # Initialize momentums for mini-batch SGD updates. All parameters need
         # to be safely nestled in their lists by now.
         self.joint_moms = OrderedDict()
-        self.dn_moms = OrderedDict()
+        self.in_moms = OrderedDict()
         self.gn_moms = OrderedDict()
-        for p in self.dn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape)
-            self.dn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.dn_moms[p]
         for p in self.gn_params:
             p_mo = np.zeros(p.get_value(borrow=True).shape)
             self.gn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
             self.joint_moms[p] = self.gn_moms[p]
+        for p in self.in_params:
+            p_mo = np.zeros(p.get_value(borrow=True).shape)
+            self.in_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
+            self.joint_moms[p] = self.in_moms[p]
 
-        # Construct the updates for the generator and discriminator network
+        # Construct the updates for the generator and inferer networks
         self.joint_updates = OrderedDict()
-        self.dn_updates = OrderedDict()
         self.gn_updates = OrderedDict()
-        for var in self.dn_params:
+        self.in_updates = OrderedDict()
+        for var in self.in_params:
             # these updates are for trainable params in the discriminator net...
             # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.dn_cost, var)
+            var_grad = T.grad(self.in_cost, var)
             # get the momentum for this var
-            var_mom = self.dn_moms[var]
+            var_mom = self.in_moms[var]
             # update the momentum for this var using its grad
-            self.dn_updates[var_mom] = (self.mo_dn[0] * var_mom) + \
-                    ((1.0 - self.mo_dn[0]) * var_grad)
-            self.joint_updates[var_mom] = self.dn_updates[var_mom]
+            self.in_updates[var_mom] = (self.mo_in[0] * var_mom) + \
+                    ((1.0 - self.mo_in[0]) * var_grad)
+            self.joint_updates[var_mom] = self.in_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_dn[0] * var_mom)
-            if ((var in self.DN.clip_params) and \
-                    (var in self.DN.clip_norms) and \
-                    (self.DN.clip_params[var] == 1)):
+            var_new = var - (self.lr_in[0] * var_mom)
+            if ((var in self.IN.clip_params) and \
+                    (var in self.IN.clip_norms) and \
+                    (self.IN.clip_params[var] == 1)):
                 # clip the basic updated var if it is set as clippable
-                clip_norm = self.DN.clip_norms[var]
+                clip_norm = self.IN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.dn_updates[var] = var_new * var_scale
+                self.in_updates[var] = var_new * var_scale
             else:
                 # otherwise, just use the basic updated var
-                self.dn_updates[var] = var_new
+                self.in_updates[var] = var_new
             # add this var's update to the joint updates too
-            self.joint_updates[var] = self.dn_updates[var]
+            self.joint_updates[var] = self.in_updates[var]
         for var in self.mom_updates:
             # these updates are for the generator distribution's running first
             # and second-order moment estimates
@@ -164,9 +220,9 @@ class GILoop(object):
             self.joint_updates[var] = self.gn_updates[var]
 
         # Construct batch-based training functions for the generator and
-        # discriminator networks, as well as a joint training function.
+        # inferer networks, as well as a joint training function.
         self.train_gn = self._construct_train_gn()
-        self.train_dn = self._construct_train_dn()
+        self.train_in = self._construct_train_in()
         self.train_joint = self._construct_train_joint()
 
         # Construct a function for computing the ouputs of the generator
@@ -214,9 +270,9 @@ class GILoop(object):
             print_output_file=True, assert_nb_all_strings=-1)
         return func
 
-    def _construct_train_dn(self):
+    def _construct_train_in(self):
         """
-        Construct theano function to train discriminator on its own.
+        Construct theano function to train inferer on its own.
         """
         outputs = [self.mom_match_cost, self.disc_cost_gn, self.disc_cost_dn]
         func = theano.function(inputs=[ self.Xd, self.Xn, self.Id, self.In ], \
@@ -233,7 +289,7 @@ class GILoop(object):
 
     def _construct_train_joint(self):
         """
-        Construct theano function to train generator and discriminator jointly.
+        Construct theano function to train generator and inferer jointly.
         """
         outputs = [self.mom_match_cost, self.disc_cost_gn, self.disc_cost_dn]
         func = theano.function(inputs=[ self.Xd, self.Xn, self.Id, self.In ], \
@@ -250,8 +306,8 @@ class GILoop(object):
         Xn_sym = T.matrix('gn_sampler_input')
         theano_func = theano.function( \
                inputs=[ Xn_sym ], \
-               outputs=[ self.sample_data ], \
-               givens={ self.input_noise: Xn_sym })
+               outputs=[ self.GN_base.output ], \
+               givens={ self.GN_base.input_var: Xn_sym })
         sample_func = lambda Xn: theano_func(Xn)[0]
         return sample_func
 
