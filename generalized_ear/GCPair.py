@@ -16,7 +16,7 @@ import theano.tensor.shared_randomstreams
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer
-from GINets import projected_moments
+from GenNet import projected_moments
 
 #############################
 # SOME HANDY LOSS FUNCTIONS #
@@ -54,18 +54,19 @@ def ulh_loss(Yh, Yt=0.0, delta=0.5):
     loss = T.sum((quad_loss * quad_mask) + (line_loss * line_mask))
     return loss
 
-class GC_PAIR(object):
+class GCPair(object):
     """
     Controller for training a generator/discriminator pair.
 
     The generator must be an instance of the GEN_NET class implemented in
-    "GINets.py". The discriminator must be an instance of the EAR_NET class,
+    "GINets.py". The discriminator must be an instance of the EarNet class,
     as implemented in "EarNet.py".
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
-        d_net: The EAR_NET instance that will serve as the discriminator
-        g_net: The GEN_NET instance that will serve as the generator
+        d_net: The EarNet instance that will serve as the discriminator
+        g_net: The GenNet instance that will serve as the generator
+        data_dim: Dimensions of generated data
         params: a dict of parameters for controlling various costs
             lam_l2d: regularization on squared discriminator output
             mom_mix_rate: rate for updates to the running moment estimates
@@ -74,16 +75,20 @@ class GC_PAIR(object):
             target_mean: first-order moment to try and match with g_net
             target_cov: second-order moment to try and match with g_net
     """
-    def __init__(self, rng=None, d_net=None, g_net=None, params=None):
+    def __init__(self, rng=None, d_net=None, g_net=None, data_dim=None, \
+            data_var=None, params=None):
         # Do some stuff!
         self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
         self.DN = d_net
         self.GN = g_net
-        self.input_noise = self.GN.input_noise
-        self.input_data = self.GN.input_data
-        self.latent_dim = self.GN.latent_dim
-        self.data_dim = self.GN.data_dim
+        self.input_noise = self.GN.input_var
+        self.input_data = data_var
+        self.sample_data = self.GN.output
+        self.data_dim = data_dim
+        # set input to the discriminator to be the true data samples
+        # concatenated with the samples from the generator network
+        #self.DN.input = T.vertical_stack(self.input_data, self.sample_data)
 
         # symbolic var data input
         self.Xd = T.matrix(name='gcp_Xd')
@@ -178,8 +183,8 @@ class GC_PAIR(object):
         # and discriminator networks that we'll be working with. We need to
         # ignore parameters in the final layers of the proto-networks in the
         # discriminator network (a generalized pseudo-ensemble). We ignore them
-        # because the GC_PAIR requires that they be "bypassed" in favor of some
-        # binary classification layers that will be managed by this GC_PAIR.
+        # because the GCPair requires that they be "bypassed" in favor of some
+        # binary classification layers that will be managed by this GCPair.
         self.dn_params = []
         for pn in self.DN.proto_nets:
             for pnl in pn[0:-1]:
@@ -369,8 +374,7 @@ class GC_PAIR(object):
                     logreg_loss(noise_preds, -1.0)) / dn_pred_count
             # Compute gn cost based only on predictions for noise
             gn_pred_count = self.In.size
-            #dnl_gn_cost = lsq_loss(noise_preds, 0.0) / gn_pred_count
-            dnl_gn_cost = ulh_loss(noise_preds, 0.2) / gn_pred_count
+            dnl_gn_cost = ulh_loss(noise_preds, 0.0) / gn_pred_count
             #dnl_gn_cost = logreg_loss(noise_preds, 1.0) / gn_pred_count
             dn_costs.append(dnl_dn_cost)
             gn_costs.append(dnl_gn_cost)
@@ -387,7 +391,7 @@ class GC_PAIR(object):
         dist_cov = self.GN.dist_cov
         # Get the generated sample observations for this batch, transformed
         # linearly into the desired space for moment matching...
-        X_b = T.dot(self.GN.output_noise, self.mom_match_proj)
+        X_b = T.dot(self.sample_data, self.mom_match_proj)
         # Get their mean
         batch_mean = T.mean(X_b, axis=0)
         # Get the updated generator distribution mean
@@ -462,65 +466,13 @@ class GC_PAIR(object):
         Xn_sym = T.matrix('gn_sampler_input')
         theano_func = theano.function( \
                inputs=[ Xn_sym ], \
-               outputs=[ self.GN.output_noise ], \
-               givens={ self.GN.input_noise: Xn_sym })
+               outputs=[ self.sample_data ], \
+               givens={ self.input_noise: Xn_sym })
         sample_func = lambda Xn: theano_func(Xn)[0]
         return sample_func
 
 if __name__=="__main__":
-    import time
-    from load_data import load_udm, load_udm_ss, load_mnist
-    from EarNet import EAR_NET
-    # Simple test code, to check that everything is basically functional.
-    print("TESTING...")
-
-    # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
-
-    # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0]
-    mu = T.mean(Xtr,axis=0,keepdims=True)
-    sigma = T.dot((Xtr.T - mu.T),(Xtr - mu))
-    Xtr_mean = mu.eval()
-    Xtr_cov = sigma.eval()
-
-    # Choose some parameters for the generative network
-    gn_params = {}
-    gn_config = [50, 200, 200, 28*28]
-    gn_params['mlp_config'] = gn_config
-    gn_params['lam_l2a'] = 1e-2
-    gn_params['vis_drop'] = 0.0
-    gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.1
-
-    # Symbolic input matrix to generator network
-    X_gn_sym = T.matrix(name='X_gn_sym')
-    X_gn_noise = T.matrix(name='X_gn_noise')
-
-    # Initialize a generator network object
-    GN = GEN_NET(rng, X_gn_sym, gn_params)
-
-    # Init GNET's mean and covariance estimates with many samples
-    X_noise = npr.randn(5000, GN.latent_dim)
-    GN.init_moments(X_noise)
-
-    gn_out_func = theano.function(inputs=[ X_gn_noise ], \
-            outputs=[ GN.output ], \
-            givens={X_gn_sym: X_gn_noise})
-
-    batch_count = 100
-    start_time = time.clock()
-    for i in range(batch_count):
-        X_noise = npr.randn(100, GN.latent_dim)
-        outputs = gn_out_func(X_noise)
-        X_gn_out = outputs[0]
-        print("X_gn_out.shape: {0:s}".format(X_gn_out.shape))
-    total_time = time.clock() - start_time
-    print("SPEED: {0:.4f}s per batch".format(total_time/batch_count))
-
+    NOT_DONE = True
 
     print("TESTING COMPLETE!")
 

@@ -7,7 +7,7 @@ import theano
 import theano.tensor as T
 import theano.tensor.shared_randomstreams
 
-from EarNet import EAR_NET
+from EarNet import EarNet
 from load_data import load_udm, load_udm_ss, load_mnist
 import NetTrainers as NT
 
@@ -59,7 +59,7 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
     # Set some reasonable mlp parameters
     mlp_params = {}
     # Set up some proto-networks
-    pc0 = [28*28, 500, 500, 11]
+    pc0 = [28*28, 800, 800, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -95,8 +95,8 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         # Load some data to train/validate/test with
         dataset = 'data/mnist.pkl.gz'
         datasets = load_udm_ss(dataset, su_count, rng, zero_mean=True)
-        # Construct the EAR_NET object that we will be training
-        NET = EAR_NET(rng=rng, input=x_in, params=mlp_params)
+        # Construct the EarNet object that we will be training
+        NET = EarNet(rng=rng, input=x_in, params=mlp_params)
         init_biases(NET, b_init=0.1)
         train_ss_mlp(NET, sgd_params, datasets)
     return
@@ -139,9 +139,9 @@ def batch_test_ss_mlp_gentle(test_count=10, su_count=1000):
         dataset = 'data/mnist.pkl.gz'
         datasets = load_udm_ss(dataset, su_count, rng, zero_mean=False)
 
-        # Construct the EAR_NET object that we will be training
+        # Construct the EarNet object that we will be training
         x_in = T.matrix('x_in')
-        NET = EAR_NET(rng=rng, input=x_in, params=mlp_params)
+        NET = EarNet(rng=rng, input=x_in, params=mlp_params)
         init_biases(NET, b_init=0.1)
 
         # Run semisupervised training on the given MLP
@@ -212,9 +212,9 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         dataset = 'data/mnist.pkl.gz'
         datasets = load_udm(dataset, zero_mean=False)
 
-        # Construct the EAR_NET object that we will be training
+        # Construct the EarNet object that we will be training
         x_in = T.matrix('x_in')
-        NET = EAR_NET(rng=rng, input=x_in, params=mlp_params)
+        NET = EarNet(rng=rng, input=x_in, params=mlp_params)
         init_biases(NET, b_init=0.05)
 
         ##########################################
@@ -307,9 +307,9 @@ def test_dropout_ala_original():
     dataset = 'data/mnist_batches.npz'
     datasets = load_mnist(dataset, zero_mean=False)
 
-    # Construct the EAR_NET object that we will be training
+    # Construct the EarNet object that we will be training
     x_in = T.matrix('x_in')
-    NET = EAR_NET(rng=rng, input=x_in, params=mlp_params)
+    NET = EarNet(rng=rng, input=x_in, params=mlp_params)
     init_biases(NET, b_init=0.0)
 
     # Run training on the given MLP

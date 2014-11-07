@@ -21,7 +21,7 @@ from NetLayers import HiddenLayer, DiscLayer
 # GENERATIVE NETWORK IMPLEMENTATION #
 #####################################
 
-class GEN_NET(object):
+class GenNet(object):
     """
     A net that transforms a simple distribution so that it matches some
     more complicated distribution, for some definition of match....
@@ -37,7 +37,7 @@ class GEN_NET(object):
             bias_noise: standard dev for noise on the biases of hidden layers
             out_noise: standard dev for noise on the output of this net
             mlp_config: list of "layer descriptions"
-        mlp_param_dicts: parameters for the MLP controlled by this GEN_NET
+        mlp_param_dicts: parameters for the MLP controlled by this GenNet
     """
     def __init__(self, \
             rng=None, \
@@ -159,6 +159,9 @@ class GEN_NET(object):
             # Acknowledge layer completion
             layer_num = layer_num + 1
 
+        # TODO: implement adjustable norm clipping
+        self.clip_norms = {}
+
         # Mash all the parameters together, into a list.
         self.mlp_params = []
         for layer in self.mlp_layers:
@@ -226,7 +229,7 @@ class GEN_NET(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = GEN_NET(rng=rng, input_var=input_var, \
+        clone_net = GenNet(rng=rng, input_var=input_var, \
                 params=self.params, mlp_param_dicts=self.mlp_param_dicts)
         return clone_net
 
@@ -279,7 +282,7 @@ if __name__=="__main__":
     gn_params['bias_noise'] = 0.0
     gn_params['out_noise'] = 0.0
     # Make the starter network
-    gn_1 = GEN_NET(rng=rng, input_var=input_var_1, params=gn_params, \
+    gn_1 = GenNet(rng=rng, input_var=input_var_1, params=gn_params, \
             mlp_param_dicts=None)
     # Make a clone of the network with a different symbolic input
     input_var_2 = T.matrix('INPUT_2')

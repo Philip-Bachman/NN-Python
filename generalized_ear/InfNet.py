@@ -22,7 +22,7 @@ from NetLayers import HiddenLayer, DiscLayer
 ####################################
 
 
-class INF_NET(object):
+class InfNet(object):
     """
     A net that tries to infer an approximate posterior for some observation,
     given some deep, directed generative model. The output of this network
@@ -45,7 +45,7 @@ class INF_NET(object):
             shared_config: list of "layer descriptions" for shared part
             mu_config: list of "layer descriptions" for mu part
             sigma_config: list of "layer descriptions" for sigma part
-        mlp_param_dicts: parameters for the MLP controlled by this INF_NET
+        mlp_param_dicts: parameters for the MLP controlled by this InfNet
     """
     def __init__(self, \
             rng=None, \
@@ -286,6 +286,9 @@ class INF_NET(object):
             # Acknowledge layer completion
             layer_num = layer_num + 1
 
+        # TODO: implement adjustable norm clipping
+        self.clip_norms = {}
+
         # Mash all the parameters together, into a list.
         self.mlp_params = []
         for layer in self.shared_layers:
@@ -327,7 +330,7 @@ class INF_NET(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = INF_NET(rng=rng, input_cont=input_cont, \
+        clone_net = InfNet(rng=rng, input_cont=input_cont, \
                 input_late=input_late, input_mask=input_mask, \
                 params=self.params, mlp_param_dicts=self.mlp_param_dicts)
         return clone_net
@@ -354,12 +357,12 @@ if __name__=="__main__":
     in_params['bias_noise'] = 0.0
     in_params['input_noise'] = 0.0
     # Make the starter network
-    in_1 = INF_NET(rng=rng, input_cont=input_cont, \
+    in_1 = InfNet(rng=rng, input_cont=input_cont, \
             input_late=input_late_1, input_mask=input_mask, \
             params=in_params, mlp_param_dicts=None)
     # Make a clone of the network with a different symbolic input
     input_late_2 = T.matrix('LATE_INPUT_2')
-    in_2 = INF_NET(rng=rng, input_cont=input_cont, \
+    in_2 = InfNet(rng=rng, input_cont=input_cont, \
             input_late=input_late_2, input_mask=input_mask, \
             params=in_params, mlp_param_dicts=in_1.mlp_param_dicts)
     print("TESTING COMPLETE")

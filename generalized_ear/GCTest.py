@@ -5,9 +5,9 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 from load_data import load_udm, load_udm_ss, load_mnist
-from EarNet import EAR_NET
-from GINets import GEN_NET, projected_moments
-from GCPair import GC_PAIR
+from EarNet import EarNet
+from GenNet import GenNet, projected_moments
+from GCPair import GCPair
 import utils as utils
 
 # Simple test code, to check that everything is basically functional.
@@ -38,11 +38,11 @@ P = P.get_value(borrow=False).astype(theano.config.floatX)
 
 # Choose some parameters for the generative network
 gn_params = {}
-gn_config = [400, 1200, 1200, 28*28]
+gn_config = [200, 800, 800, 28*28]
 gn_params['mlp_config'] = gn_config
 gn_params['lam_l2a'] = 1e-3
-gn_params['vis_drop'] = 0.5
-gn_params['hid_drop'] = 0.0
+gn_params['vis_drop'] = 0.0
+gn_params['hid_drop'] = 0.5
 gn_params['bias_noise'] = 0.1
 gn_params['out_noise'] = 0.1
 
@@ -51,8 +51,7 @@ X_noise_sym = T.matrix(name='X_noise_sym')
 X_data_sym = T.matrix(name='X_data_sym')
 
 # Initialize a generator network object
-GN = GEN_NET(rng=rng, input_noise=X_noise_sym, input_data=X_data_sym, \
-        params=gn_params)
+GN = GenNet(rng=rng, input_var=X_noise_sym, params=gn_params)
 
 ###############################
 # Setup discriminator network #
@@ -61,23 +60,23 @@ GN = GEN_NET(rng=rng, input_noise=X_noise_sym, input_data=X_data_sym, \
 # Set some reasonable mlp parameters
 dn_params = {}
 # Set up some proto-networks
-pc0 = [28*28, (300, 4), (300, 4), 11]
+pc0 = [28*28, (200, 4), (200, 4), 11]
 dn_params['proto_configs'] = [pc0]
 # Set up some spawn networks
 sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-dn_params['spawn_configs'] = [sc0, sc1]
-dn_params['spawn_weights'] = [0.5, 0.5]
+#sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+dn_params['spawn_configs'] = [sc0]
+dn_params['spawn_weights'] = [1.0]
 # Set remaining params
 dn_params['ear_type'] = 2
-dn_params['ear_lam'] = 2.0
+dn_params['ear_lam'] = 0.0
 dn_params['lam_l2a'] = 1e-3
-dn_params['vis_drop'] = 0.5
+dn_params['vis_drop'] = 0.2
 dn_params['hid_drop'] = 0.5
-dn_params['reg_all_obs'] = True
+dn_params['reg_all_obs'] = False
 
 # Initialize a discriminator network object
-DN = EAR_NET(rng=rng, input=GN.output, params=dn_params)
+DN = EarNet(rng=rng, input=T.vertical_stack(X_data_sym, GN.output), params=dn_params)
 
 ########################################################################
 # Initialize the joint controller for the generator/discriminator pair #
@@ -93,12 +92,12 @@ gcp_params['mom_match_proj'] = P
 gcp_params['target_mean'] = target_mean
 gcp_params['target_cov'] = target_cov
 
-# Initialize a GC_PAIR instance using the previously constructed generator and
+# Initialize a GCPair instance using the previously constructed generator and
 # discriminator networks.
-GCP = GC_PAIR(rng=rng, d_net=DN, g_net=GN, params=gcp_params)
+GCP = GCPair(rng=rng, d_net=DN, g_net=GN, data_dim=28*28, data_var=X_data_sym, params=gcp_params)
 
-gn_learn_rate = 0.05
-dn_learn_rate = 0.03
+gn_learn_rate = 0.04
+dn_learn_rate = 0.02
 GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.8)
 GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.8)
 # Init generator's mean and covariance estimates with many samples
@@ -119,7 +118,7 @@ for i in range(750000):
     data_idx = all_idx[:100]
     noise_idx = all_idx[100:]
     d_weight = 0.05 * min(1.0, float(i)/30000.0)
-    if (i < 20000):
+    if (i < -20000):
         GCP.set_disc_weights(dweight_gn=0.001)
         outputs = GCP.train_gn(Xd_batch, Xn_batch, data_idx, noise_idx)
     else:

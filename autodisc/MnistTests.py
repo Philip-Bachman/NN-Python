@@ -178,7 +178,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     sgd_params = {}
     sgd_params['start_rate'] = 0.01
     sgd_params['decay_rate'] = 0.998
-    sgd_params['wt_norm_bound'] = 3.5
+    sgd_params['wt_norm_bound'] = 2.5
     sgd_params['epochs'] = 1000
     sgd_params['batch_size'] = 50
     sgd_params['result_tag'] = '---'
@@ -188,8 +188,8 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
     pc0 = [28*28, 512, 512, 128, 11]
     mlp_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.0, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
     mlp_params['spawn_configs'] = [sc0, sc1]
     mlp_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
@@ -219,7 +219,7 @@ def batch_test_ss_mlp_pt(test_count=10, su_count=1000):
         sgd_params['result_tag'] = "dex_s{0:d}_t{1:d}".format(su_count,test_num)
         sgd_params['batch_size'] = 50
         sgd_params['start_rate'] = 0.1
-        sgd_params['epochs'] = 1000
+        sgd_params['epochs'] = 500
         train_dex(NET, sgd_params, datasets)
 
         # Load some data to train/validate/test with

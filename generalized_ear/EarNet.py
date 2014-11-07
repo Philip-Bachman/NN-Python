@@ -109,7 +109,7 @@ def smooth_cross_entropy(p, q):
 # NETWORK IMPLEMENTATION #
 ##########################
 
-class EAR_NET(object):
+class EarNet(object):
     """A multipurpose ensemble of noise-perturbed neural networks.
 
     Parameters:
@@ -258,7 +258,7 @@ class EAR_NET(object):
             # Add this network to the list of spawn-networks
             self.spawn_nets.append(spawn_net)
 
-        # set norms to which to clip various parameters
+        # TODO: implement adjustable norm clipping
         self.clip_norms = {}
 
         # Mash all the parameters together, into a list. Also make a list
@@ -352,7 +352,7 @@ class EAR_NET(object):
 
         This regularizes for agreement among members of a 'pseudo-ensemble'.
         Y is used to generate a mask on EAR costs, restricting optimization of
-        the regularizer to only unlabelled examples whenever the EAR_NET
+        the regularizer to only unlabelled examples whenever the EarNet
         instance is operating in 'semi-supervised' mode. The particular type
         of EAR to apply is selected by 'ear_type'.
         """
