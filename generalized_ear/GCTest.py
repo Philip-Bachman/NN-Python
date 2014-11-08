@@ -38,10 +38,10 @@ P = P.get_value(borrow=False).astype(theano.config.floatX)
 
 # Choose some parameters for the generative network
 gn_params = {}
-gn_config = [250, 800, 800, 28*28]
+gn_config = [200, 800, 800, 28*28]
 gn_params['mlp_config'] = gn_config
 gn_params['lam_l2a'] = 1e-3
-gn_params['vis_drop'] = 0.5
+gn_params['vis_drop'] = 0.0
 gn_params['hid_drop'] = 0.0
 gn_params['bias_noise'] = 0.2
 gn_params['out_noise'] = 0.1
@@ -85,7 +85,7 @@ DN = EarNet(rng=rng, input=T.vertical_stack(X_data_sym, GN.output), params=dn_pa
 gcp_params = {}
 gcp_params['d_net'] = DN
 gcp_params['g_net'] = GN
-gcp_params['lam_l2d'] = 1e-2
+gcp_params['lam_l2d'] = 1e-1
 gcp_params['mom_mix_rate'] = 0.03
 gcp_params['mom_match_weight'] = 0.05
 gcp_params['mom_match_proj'] = P
@@ -97,7 +97,7 @@ gcp_params['target_cov'] = target_cov
 GCP = GCPair(rng=rng, d_net=DN, g_net=GN, data_dim=28*28, data_var=X_data_sym, params=gcp_params)
 
 gn_learn_rate = 0.04
-dn_learn_rate = 0.02
+dn_learn_rate = 0.04
 GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.8)
 GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.8)
 # Init generator's mean and covariance estimates with many samples
@@ -136,10 +136,10 @@ for i in range(750000):
         print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_cost_gn: {2:.4f}, disc_cost_dn: {3:.4f}".format( \
                 i, mom_match_cost, disc_cost_gn, disc_cost_dn))
     if ((i % 10000) == 0):
-        file_name = "A_GN_SAMPLES_b{0:d}.png".format(i)
+        file_name = "B_GN_SAMPLES_b{0:d}.png".format(i)
         Xs = GCP.sample_from_gn(Xn_batch)
         utils.visualize_samples(Xs, file_name)
-        file_name = "A_DN_WEIGHTS_b{0:d}.png".format(i)
+        file_name = "B_DN_WEIGHTS_b{0:d}.png".format(i)
         utils.visualize(GCP.DN, 0, 0, file_name)
 
 

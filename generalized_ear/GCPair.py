@@ -383,8 +383,8 @@ class GCPair(object):
                     logreg_loss(noise_preds, -1.0)) / dn_pred_count
             # Compute gn cost based only on predictions for noise
             gn_pred_count = self.In.size
-            dnl_gn_cost = hinge_loss(noise_preds, 0.0) / gn_pred_count
-            #dnl_gn_cost = logreg_loss(noise_preds, 1.0) / gn_pred_count
+            #dnl_gn_cost = hinge_loss(noise_preds, 0.0) / gn_pred_count
+            dnl_gn_cost = ulh_loss(noise_preds, 0.0) / gn_pred_count
             dn_costs.append(dnl_dn_cost)
             gn_costs.append(dnl_gn_cost)
         dn_cost = self.dw_dn[0] * T.sum(dn_costs)

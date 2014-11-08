@@ -173,8 +173,8 @@ class GenNet(object):
         # latent noise source with its deep non-linear transform. These will
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
-        #self.output_noise = self.mlp_layers[-1].noisy_linear
-        self.output_noise = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear)
+        #self.output = self.mlp_layers[-1].noisy_linear
+        self.output = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear)
         self.out_dim = self.mlp_layers[-1].out_dim
         C_init = np.zeros((self.out_dim,self.out_dim)).astype(theano.config.floatX)
         m_init = np.zeros((self.out_dim,)).astype(theano.config.floatX)
@@ -182,8 +182,6 @@ class GenNet(object):
         self.dist_cov = theano.shared(C_init, name='gn_dist_cov')
         # Get simple regularization penalty to moderate activation dynamics
         self.act_reg_cost = lam_l2a * self._act_reg_cost()
-        # Joint the transformed noise output and the real data input
-        self.output = self.output_noise
         return
 
     def _act_reg_cost(self):
@@ -198,8 +196,8 @@ class GenNet(object):
         """
         Compute covariance and mean of the current sample outputs.
         """
-        mu = T.mean(self.output_noise, axis=0, keepdims=True)
-        sigma = T.dot((self.output_noise.T - mu.T), (self.output_noise - mu))
+        mu = T.mean(self.output, axis=0, keepdims=True)
+        sigma = T.dot((self.output.T - mu.T), (self.output - mu))
         return [mu, sigma]
 
     def init_moments(self, X_noise):
@@ -208,7 +206,7 @@ class GenNet(object):
         """
         X_noise_sym = T.matrix()
         out_func = theano.function(inputs=[ X_noise_sym ], \
-                outputs=[ self.output_noise ], \
+                outputs=[ self.output ], \
                 givens={self.input_var: X_noise_sym})
         # Compute outputs for the input latent noise matrix
         X_out = out_func(X_noise.astype(theano.config.floatX))[0]
