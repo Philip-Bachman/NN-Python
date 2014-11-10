@@ -29,6 +29,8 @@ class GenNet(object):
     Parameters:
         rng: a numpy.random RandomState object
         input_var: symbolic matrix for inputting latent variable samples
+        prior_sigma: standard deviation of isotropic Gaussian prior that this
+                     generator will transform to match some other distribution
         params: a dict of parameters describing the desired network:
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on the latent variable space
@@ -42,13 +44,16 @@ class GenNet(object):
     def __init__(self, \
             rng=None, \
             input_var=None, \
+            prior_sigma=None, \
             params=None, \
             mlp_param_dicts=None):
         # First, setup a shared random number generator for this layer
         self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
             rng.randint(100000))
+        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
         # Grab the symbolic input matrix
         self.input_var = input_var
+        self.prior_sigma = prior_sigma
         #####################################################
         # Process user-supplied parameters for this network #
         #####################################################
@@ -182,15 +187,55 @@ class GenNet(object):
         self.dist_cov = theano.shared(C_init, name='gn_dist_cov')
         # Get simple regularization penalty to moderate activation dynamics
         self.act_reg_cost = lam_l2a * self._act_reg_cost()
+        # Construct a sampler for drawing independent samples from this model's
+        # isotropic Gaussian prior, and a sampler for the model distribution.
+        self.sample_from_prior = self._construct_prior_sampler()
+        self.sample_from_model = self._construct_model_sampler()
+        # Construct a function for passing points from the latent/prior space
+        # through the transform induced by the current model parameters.
+        self.transform_prior = self._construct_transform_prior()
         return
 
     def _act_reg_cost(self):
-        """Apply L2 regularization to the activations in each spawn-net."""
+        """
+        Apply L2 regularization to the activations in this network.
+        """
         act_sq_sums = []
         for layer in self.mlp_layers:
             act_sq_sums.append(layer.act_l2_sum)
         full_act_sq_sum = T.sum(act_sq_sums)
         return full_act_sq_sum
+
+    def _construct_prior_sampler(self):
+        """
+        Draw independent samples from this model's isotropic Gaussian prior.
+        """
+        samp_count = T.lscalar()
+        prior_samples = self.prior_sigma * self.rng.normal( \
+                size=(samp_count, self.latent_dim), avg=0.0, std=1.0, \
+                dtype=theano.config.floatX)
+        prior_sampler = theano.function([samp_count], outputs=prior_samples)
+        return prior_sampler
+
+    def _construct_model_sampler(self):
+        """
+        Draw independent samples from this model's distribution.
+        """
+        samp_count = T.lscalar()
+        prior_samples = self.prior_sigma * self.rng.normal( \
+                size=(samp_count, self.latent_dim), avg=0.0, std=1.0, \
+                dtype=theano.config.floatX)
+        prior_sampler = theano.function([samp_count], outputs=self.output, \
+                givens={self.input_var: prior_samples})
+        return prior_sampler
+
+    def _construct_transform_prior(self):
+        """
+        Apply the tranform induced by the current model parameters to some
+        set of points in the latent/prior space.
+        """
+        feedforward = theano.function([self.input_var], outputs=self.output)
+        return feedforward
 
     def _batch_moments(self):
         """
@@ -228,7 +273,8 @@ class GenNet(object):
         loop. Then, we can do backprop through time for various objectives.
         """
         clone_net = GenNet(rng=rng, input_var=input_var, \
-                params=self.params, mlp_param_dicts=self.mlp_param_dicts)
+                prior_sigma=self.prior_sigma, params=self.params, \
+                mlp_param_dicts=self.mlp_param_dicts)
         return clone_net
 
 #############################################
@@ -280,8 +326,8 @@ if __name__=="__main__":
     gn_params['bias_noise'] = 0.0
     gn_params['out_noise'] = 0.0
     # Make the starter network
-    gn_1 = GenNet(rng=rng, input_var=input_var_1, params=gn_params, \
-            mlp_param_dicts=None)
+    gn_1 = GenNet(rng=rng, input_var=input_var_1, prior_sigma=5.0, \
+            params=gn_params, mlp_param_dicts=None)
     # Make a clone of the network with a different symbolic input
     input_var_2 = T.matrix('INPUT_2')
     gn_2 = gn_1.shared_param_clone(rng=rng, input_var=input_var_2)

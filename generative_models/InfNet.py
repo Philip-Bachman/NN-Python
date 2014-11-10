@@ -31,10 +31,12 @@ class InfNet(object):
 
     Parameters:
         rng: a numpy.random RandomState object
-        input_data: symbolic input matrix for inputting control data
-        input_late: symbolic input matrix for inputting latent data
+        input_data: symbolic input matrix for inputting observable data
+        input_cont: symbolic input matrix for inputting control data
         input_mask: symbolic input matrix for a mask on which values to take
-                    from input_data and which to take from input_late
+                    from input_cont and which to take from input_data
+        prior_sigma: standard deviation of isotropic Gaussian prior that our
+                     inferred posteriors will be penalized for deviating from.
         params: a dict of parameters describing the desired ensemble:
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on observable variables
@@ -50,21 +52,25 @@ class InfNet(object):
     def __init__(self, \
             rng=None, \
             input_data=None, \
-            input_late=None, \
+            input_cont=None, \
             input_mask=None, \
+            prior_sigma=None, \
             params=None, \
             mlp_param_dicts=None):
-        # First, setup a shared random number generator for this layer
+        # Setup a shared random generator for this network 
         self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-            rng.randint(100000))
+                rng.randint(100000))
+        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
         # Grab the symbolic input matrix
         self.input_data = input_data
-        self.input_late = input_late
+        self.input_cont = input_cont
         self.input_mask = input_mask
+        self.prior_sigma = prior_sigma
         #####################################################
         # Process user-supplied parameters for this network #
         #####################################################
-        lam_l2a = params['lam_l2a']
+        self.params = params
+        self.lam_l2a = params['lam_l2a']
         if 'vis_drop' in params:
             self.vis_drop = params['vis_drop']
         else:
@@ -82,7 +88,7 @@ class InfNet(object):
         else:
             self.input_noise = 0.0
         # Check if the params for this net were given a priori. This option
-        # will be used for creating "clones" of a generative network, with all
+        # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
         if mlp_param_dicts is None:
             # This is not a clone, and we will need to make a dict for
@@ -108,10 +114,10 @@ class InfNet(object):
         self.shared_layers = []
         layer_def_pairs = zip(self.shared_config[:-1],self.shared_config[1:])
         layer_num = 0
-        # Construct input by combining control input and latent input, taking
-        # masked values from inferred input and other values from data input
+        # Construct input by combining data input and control input, taking
+        # unmasked values from data input and others from the control input
         next_input = ((1.0 - self.input_mask) * self.input_data) + \
-                (self.input_mask * self.input_late)
+                (self.input_mask * self.input_cont)
         for in_def, out_def in layer_def_pairs:
             first_layer = (layer_num == 0)
             last_layer = (layer_num == (len(layer_def_pairs) - 1))
@@ -302,9 +308,21 @@ class InfNet(object):
         # of the final layers of its mu and sigma networks.
         self.output_mu = self.mu_layers[-1].noisy_linear
         self.output_sigma = T.log(1.0 + T.exp(self.sigma_layers[-1].noisy_linear))
+        # We'll also construct an output containing a single samples from each
+        # of the distributions represented by the rows of self.output_mu and
+        # self.output_sigma.
+        self.output_sample = self._construct_post_samples()
         self.out_dim = self.sigma_layers[-1].out_dim
         # Get simple regularization penalty to moderate activation dynamics
-        self.act_reg_cost = lam_l2a * self._act_reg_cost()
+        self.act_reg_cost = self.lam_l2a * self._act_reg_cost()
+        # Construct a function for penalizing KL divergence between the
+        # approximate posteriors produced by this model and some isotropic
+        # Gaussian distribution.
+        self.kld_cost = self._construct_kld_cost()
+        # Construct a theano function for sampling from the approximate
+        # posteriors inferred by this model for some collection of points
+        # in the "data space".
+        self.sample_posterior = self._construct_sample_posterior()
         return
 
     def _act_reg_cost(self):
@@ -321,7 +339,39 @@ class InfNet(object):
         full_act_sq_sum = T.sum(act_sq_sums)
         return full_act_sq_sum
 
-    def shared_param_clone(self, rng=None, input_data=None, input_late=None, \
+    def _construct_post_samples(self):
+        """
+        Draw a single sample from each of the approximate posteriors encoded
+        in self.output_mu and self.output_sigma.
+        """
+        post_samples = self.output_mu + (self.output_sigma * \
+                self.rng.normal(size=self.output_sigma.shape, avg=0.0, std=1.0, \
+                dtype=theano.config.floatX))
+        return post_samples
+
+    def _construct_kld_cost(self):
+        """
+        Compute (analytically) the KL divergence between each approximate
+        posterior encoded by self.mu/self.sigma and the isotropic Gaussian
+        distribution with mean 0 and standard deviation self.prior_sigma.
+        """
+        prior_sigma_sq = self.prior_sigma**2.0
+        kld_cost = 0.5 * T.sum( ((self.output_mu**2.0 / prior_sigma_sq) + \
+                (self.output_sigma**2.0 / prior_sigma_sq) - \
+                T.log(self.output_sigma**2.0 / prior_sigma_sq) - 1.0), axis=1, keepdims=True)
+        return kld_cost
+
+    def _construct_sample_posterior(self):
+        """
+        Construct a sampler that draws a single sample from the inferred
+        posterior for some set of inputs.
+        """
+        psample = theano.function([self.Xd, self.Xc, self.Xm], \
+                outputs=self.output_sample)
+        post_sampler = lambda x: psample(x, x*0.0, x*0.0)
+        return post_sampler
+
+    def shared_param_clone(self, rng=None, input_data=None, input_cont=None, \
             input_mask=None):
         """
         Return a clone of this network, with shared parameters but with
@@ -331,15 +381,16 @@ class InfNet(object):
         loop. Then, we can do backprop through time for various objectives.
         """
         clone_net = InfNet(rng=rng, input_data=input_data, \
-                input_late=input_late, input_mask=input_mask, \
-                params=self.params, mlp_param_dicts=self.mlp_param_dicts)
+                input_cont=input_cont, input_mask=input_mask, \
+                prior_sigma=self.prior_sigma, params=self.params, \
+                mlp_param_dicts=self.mlp_param_dicts)
         return clone_net
 
 if __name__=="__main__":
     # Do basic testing, to make sure classes aren't completely broken.
-    input_data = T.matrix('DATA_INPUT')
+    input_cont = T.matrix('CONTROL_INPUT')
     input_mask = T.matrix('MASK_INPUT')
-    input_late_1 = T.matrix('LATE_INPUT_1')
+    input_data_1 = T.matrix('DATA_INPUT_1')
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
     # Choose some parameters for the generative network
@@ -357,12 +408,16 @@ if __name__=="__main__":
     in_params['bias_noise'] = 0.0
     in_params['input_noise'] = 0.0
     # Make the starter network
-    in_1 = InfNet(rng=rng, input_data=input_data, \
-            input_late=input_late_1, input_mask=input_mask, \
+    in_1 = InfNet(rng=rng, input_data=input_data_1, \
+            input_cont=input_cont, input_mask=input_mask, prior_sigma=5.0, \
             params=in_params, mlp_param_dicts=None)
     # Make a clone of the network with a different symbolic input
-    input_late_2 = T.matrix('LATE_INPUT_2')
-    in_2 = InfNet(rng=rng, input_data=input_data, \
-            input_late=input_late_2, input_mask=input_mask, \
+    input_data_2 = T.matrix('DATA_INPUT_2')
+    in_2 = InfNet(rng=rng, input_data=input_data_2, \
+            input_cont=input_cont, input_mask=input_mask, prior_sigma=5.0, \
             params=in_params, mlp_param_dicts=in_1.mlp_param_dicts)
+    # Explicitly construct a clone via the helper function
+    input_data_3 = T.matrix('DATA_INPUT_3')
+    in_3 = in_1.shared_param_clone(rng=rng, input_data=input_data_3, \
+            input_cont=input_cont, input_mask=input_mask)
     print("TESTING COMPLETE")

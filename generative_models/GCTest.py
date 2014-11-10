@@ -51,7 +51,7 @@ X_noise_sym = T.matrix(name='X_noise_sym')
 X_data_sym = T.matrix(name='X_data_sym')
 
 # Initialize a generator network object
-GN = GenNet(rng=rng, input_var=X_noise_sym, params=gn_params)
+GN = GenNet(rng=rng, input_var=X_noise_sym, prior_sigma=5.0, params=gn_params)
 
 ###############################
 # Setup discriminator network #
@@ -101,17 +101,16 @@ dn_learn_rate = 0.04
 GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.8)
 GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.8)
 # Init generator's mean and covariance estimates with many samples
-Xn_np = npr.randn(5000, GN.latent_dim)
-GCP.init_moments(Xn_np)
+GCP.init_moments(5000)
 
 batch_idx = T.lvector('batch_idx')
 batch_sample = theano.function(inputs=[ batch_idx ], \
-        outputs=[ Xtr.take(batch_idx, axis=0) ])
+        outputs=Xtr.take(batch_idx, axis=0))
 
 for i in range(750000):
     tr_idx = npr.randint(low=0,high=tr_samples,size=(100,)).astype(np.int32)
-    Xn_np = 5.0 * npr.randn(100, GCP.GN.latent_dim)
-    Xd_batch = batch_sample(tr_idx)[0]
+    Xn_np = GN.sample_from_prior(100)
+    Xd_batch = batch_sample(tr_idx)
     Xd_batch = Xd_batch.astype(theano.config.floatX)
     Xn_batch = Xn_np.astype(theano.config.floatX)
     all_idx = np.arange(200)
