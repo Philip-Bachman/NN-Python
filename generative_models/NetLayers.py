@@ -3,7 +3,7 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
-#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 #from pylearn2.sandbox.cuda_convnet.filter_acts import FilterActs
 #from pylearn2.sandbox.cuda_convnet.pool import MaxPool
 #from theano.sandbox.cuda.basic_ops import gpu_contiguous
@@ -33,6 +33,11 @@ def relu_actfun(x):
     """Compute rectified linear activation for x."""
     x_relu = T.maximum(0., x)
     return x_relu
+
+def softplus_actfun(x):
+    """Compute softplus activation for x."""
+    x_softplus = T.log(1.0 + T.exp(x))
+    return x_softplus
 
 def maxout_actfun(input, pool_size, filt_count):
     """Apply maxout over non-overlapping sets of values."""
@@ -111,9 +116,9 @@ class HiddenLayer(object):
                  W=None, b=None, name="", W_scale=1.0):
 
         # Setup a shared random generator for this layer
-        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-                rng.randint(100000))
-        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
+        #        rng.randint(100000))
+        self.rng = CURAND_RandomStreams(rng.randint(1000000))
 
         self.clean_input = input
 
@@ -150,9 +155,9 @@ class HiddenLayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            if self.pool_size <= 1:
+            if self.pool_size <= 10000:
                 # Generate random initial filters in a typical way
-                W_init = 0.01 * np.asarray(rng.normal( \
+                W_init = 0.03 * np.asarray(rng.normal( \
                           size=(self.in_dim, self.filt_count)), \
                           dtype=theano.config.floatX)
             else:
@@ -162,7 +167,7 @@ class HiddenLayer(object):
                 filters = []
                 f_size = (self.in_dim, 1)
                 for g_num in range(self.pool_count):
-                    g_filt = 0.01 * rng.normal(size=f_size)
+                    g_filt = 0.03 * rng.normal(size=f_size)
                     for f_num in range(self.pool_size):
                         f_filt = g_filt + 0.003 * rng.normal(size=f_size)
                         filters.append(f_filt)
@@ -379,9 +384,9 @@ class Reshape4D2DLayer(object):
 class DiscLayer(object):
     def __init__(self, rng, input, in_dim, W=None, b=None):
         # Setup a shared random generator for this layer
-        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-                rng.randint(100000))
-        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
+        #        rng.randint(100000))
+        self.rng = CURAND_RandomStreams(rng.randint(1000000))
 
         self.input = input
         self.in_dim = in_dim
@@ -431,9 +436,9 @@ class DAELayer(object):
             W=None, b_h=None, b_v=None):
 
         # Setup a shared random generator for this layer
-        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-                rng.randint(100000))
-        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
+        #        rng.randint(100000))
+        self.rng = CURAND_RandomStreams(rng.randint(1000000))
 
         # Grab the layer input and perturb it with some sort of noise. This
         # is, afterall, a _denoising_ autoencoder...

@@ -6,7 +6,7 @@ import numpy as np
 import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
-#import theano.tensor.shared_randomstreams
+import theano.tensor.shared_randomstreams
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 from output_losses import LogRegSS, MCL2HingeSS

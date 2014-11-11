@@ -12,10 +12,10 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
-#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer
+from NetLayers import HiddenLayer, DiscLayer, relu_actfun
 
 #####################################
 # GENERATIVE NETWORK IMPLEMENTATION #
@@ -28,7 +28,7 @@ class GenNet(object):
 
     Parameters:
         rng: a numpy.random RandomState object
-        input_var: symbolic matrix for inputting latent variable samples
+        Xp: symbolic matrix for inputting latent variable samples
         prior_sigma: standard deviation of isotropic Gaussian prior that this
                      generator will transform to match some other distribution
         params: a dict of parameters describing the desired network:
@@ -39,20 +39,21 @@ class GenNet(object):
             bias_noise: standard dev for noise on the biases of hidden layers
             out_noise: standard dev for noise on the output of this net
             mlp_config: list of "layer descriptions"
+            activation: "function handle" for the desired non-linearity
         mlp_param_dicts: parameters for the MLP controlled by this GenNet
     """
     def __init__(self, \
             rng=None, \
-            input_var=None, \
+            Xp=None, \
             prior_sigma=None, \
             params=None, \
             mlp_param_dicts=None):
         # First, setup a shared random number generator for this layer
-        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-            rng.randint(100000))
-        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
+        #    rng.randint(100000))
+        self.rng = CURAND_RandomStreams(rng.randint(1000000))
         # Grab the symbolic input matrix
-        self.input_var = input_var
+        self.Xp = Xp
         self.prior_sigma = prior_sigma
         #####################################################
         # Process user-supplied parameters for this network #
@@ -98,6 +99,10 @@ class GenNet(object):
         # layer, which is typically just the dimension of the inputs. So, the
         # depth of the mlp is one less than the number of layer configs.
         self.mlp_config = params['mlp_config']
+        if 'activation' in params:
+            self.activation = params['activation']
+        else:
+            self.activation = relu_actfun
         self.mlp_depth = len(self.mlp_config) - 1
         self.latent_dim = self.mlp_config[0]
         self.data_dim = self.mlp_config[-1]
@@ -108,7 +113,7 @@ class GenNet(object):
         self.mlp_layers = []
         layer_def_pairs = zip(self.mlp_config[:-1],self.mlp_config[1:])
         layer_num = 0
-        next_input = self.input_var
+        next_input = self.Xp
         for in_def, out_def in layer_def_pairs:
             first_layer = (layer_num == 0)
             last_layer = (layer_num == (len(layer_def_pairs) - 1))
@@ -140,8 +145,8 @@ class GenNet(object):
                 ##########################################
                 # Initialize a layer with new parameters #
                 ##########################################
-                new_layer = HiddenLayer(rng=rng, \
-                        input=next_input, activation=None, pool_size=pool_size, \
+                new_layer = HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=1.0)
@@ -152,8 +157,8 @@ class GenNet(object):
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.mlp_param_dicts[layer_num]
-                self.mlp_layers.append(HiddenLayer(rng=rng, \
-                        input=next_input, activation=None, pool_size=pool_size, \
+                self.mlp_layers.append(HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
@@ -226,7 +231,7 @@ class GenNet(object):
                 size=(samp_count, self.latent_dim), avg=0.0, std=1.0, \
                 dtype=theano.config.floatX)
         prior_sampler = theano.function([samp_count], outputs=self.output, \
-                givens={self.input_var: prior_samples})
+                givens={self.Xp: prior_samples})
         return prior_sampler
 
     def _construct_transform_prior(self):
@@ -234,7 +239,7 @@ class GenNet(object):
         Apply the tranform induced by the current model parameters to some
         set of points in the latent/prior space.
         """
-        feedforward = theano.function([self.input_var], outputs=self.output)
+        feedforward = theano.function([self.Xp], outputs=self.output)
         return feedforward
 
     def _batch_moments(self):
@@ -252,7 +257,7 @@ class GenNet(object):
         X_noise_sym = T.matrix()
         out_func = theano.function(inputs=[ X_noise_sym ], \
                 outputs=[ self.output ], \
-                givens={self.input_var: X_noise_sym})
+                givens={self.Xp: X_noise_sym})
         # Compute outputs for the input latent noise matrix
         X_out = out_func(X_noise.astype(theano.config.floatX))[0]
         # Compute mean and covariance of the outputs
@@ -264,7 +269,7 @@ class GenNet(object):
         self.dist_mean.set_value(mu.astype(theano.config.floatX))
         return
 
-    def shared_param_clone(self, rng=None, input_var=None):
+    def shared_param_clone(self, rng=None, Xp=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
@@ -272,7 +277,7 @@ class GenNet(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = GenNet(rng=rng, input_var=input_var, \
+        clone_net = GenNet(rng=rng, Xp=Xp, \
                 prior_sigma=self.prior_sigma, params=self.params, \
                 mlp_param_dicts=self.mlp_param_dicts)
         return clone_net
@@ -313,7 +318,7 @@ def projected_moments(X, P, ary_type=None):
 
 if __name__=="__main__":
     # Do basic testing, to make sure classes aren't completely broken.
-    input_var_1 = T.matrix('INPUT_1')
+    Xp_1 = T.matrix('INPUT_1')
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
     # Choose some parameters for the generative network
@@ -326,9 +331,9 @@ if __name__=="__main__":
     gn_params['bias_noise'] = 0.0
     gn_params['out_noise'] = 0.0
     # Make the starter network
-    gn_1 = GenNet(rng=rng, input_var=input_var_1, prior_sigma=5.0, \
+    gn_1 = GenNet(rng=rng, Xp=Xp_1, prior_sigma=5.0, \
             params=gn_params, mlp_param_dicts=None)
     # Make a clone of the network with a different symbolic input
-    input_var_2 = T.matrix('INPUT_2')
-    gn_2 = gn_1.shared_param_clone(rng=rng, input_var=input_var_2)
+    Xp_2 = T.matrix('INPUT_2')
+    gn_2 = gn_1.shared_param_clone(rng=rng, Xp=Xp_2)
     print("TESTING COMPLETE")

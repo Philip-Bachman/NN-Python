@@ -8,6 +8,7 @@ from load_data import load_udm, load_udm_ss, load_mnist
 from EarNet import EarNet
 from GenNet import GenNet, projected_moments
 from GCPair import GCPair
+from NetLayers import relu_actfun, softplus_actfun
 import utils as utils
 
 # Simple test code, to check that everything is basically functional.
@@ -43,15 +44,16 @@ gn_params['mlp_config'] = gn_config
 gn_params['lam_l2a'] = 1e-3
 gn_params['vis_drop'] = 0.0
 gn_params['hid_drop'] = 0.0
-gn_params['bias_noise'] = 0.2
+gn_params['bias_noise'] = 0.1
 gn_params['out_noise'] = 0.1
+gn_params['activation'] = softplus_actfun
 
 # Symbolic input matrix to generator network
-X_noise_sym = T.matrix(name='X_noise_sym')
-X_data_sym = T.matrix(name='X_data_sym')
+Xp_sym = T.matrix(name='Xp_sym')
+Xd_sym = T.matrix(name='Xd_sym')
 
 # Initialize a generator network object
-GN = GenNet(rng=rng, input_var=X_noise_sym, prior_sigma=5.0, params=gn_params)
+GN = GenNet(rng=rng, Xp=Xp_sym, prior_sigma=5.0, params=gn_params)
 
 ###############################
 # Setup discriminator network #
@@ -76,7 +78,7 @@ dn_params['hid_drop'] = 0.5
 dn_params['reg_all_obs'] = False
 
 # Initialize a discriminator network object
-DN = EarNet(rng=rng, input=T.vertical_stack(X_data_sym, GN.output), params=dn_params)
+DN = EarNet(rng=rng, input=T.vertical_stack(Xd_sym, GN.output), params=dn_params)
 
 ########################################################################
 # Initialize the joint controller for the generator/discriminator pair #
@@ -85,7 +87,7 @@ DN = EarNet(rng=rng, input=T.vertical_stack(X_data_sym, GN.output), params=dn_pa
 gcp_params = {}
 gcp_params['d_net'] = DN
 gcp_params['g_net'] = GN
-gcp_params['lam_l2d'] = 1e-1
+gcp_params['lam_l2d'] = 1e-2
 gcp_params['mom_mix_rate'] = 0.03
 gcp_params['mom_match_weight'] = 0.05
 gcp_params['mom_match_proj'] = P
@@ -94,14 +96,14 @@ gcp_params['target_cov'] = target_cov
 
 # Initialize a GCPair instance using the previously constructed generator and
 # discriminator networks.
-GCP = GCPair(rng=rng, d_net=DN, g_net=GN, data_dim=28*28, data_var=X_data_sym, params=gcp_params)
+GCP = GCPair(rng=rng, d_net=DN, g_net=GN, data_dim=28*28, data_var=Xd_sym, params=gcp_params)
 
 gn_learn_rate = 0.04
-dn_learn_rate = 0.04
+dn_learn_rate = 0.02
 GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.8)
 GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.8)
 # Init generator's mean and covariance estimates with many samples
-GCP.init_moments(5000)
+GCP.init_moments(10000)
 
 batch_idx = T.lvector('batch_idx')
 batch_sample = theano.function(inputs=[ batch_idx ], \
@@ -117,7 +119,7 @@ for i in range(750000):
     data_idx = all_idx[:100]
     noise_idx = all_idx[100:]
     d_weight = 0.05 * min(1.0, float(i)/30000.0)
-    if (i < -20000):
+    if (i < 20000):
         GCP.set_disc_weights(dweight_gn=0.001)
         outputs = GCP.train_gn(Xd_batch, Xn_batch, data_idx, noise_idx)
     else:
@@ -136,7 +138,7 @@ for i in range(750000):
                 i, mom_match_cost, disc_cost_gn, disc_cost_dn))
     if ((i % 10000) == 0):
         file_name = "B_GN_SAMPLES_b{0:d}.png".format(i)
-        Xs = GCP.sample_from_gn(Xn_batch)
+        Xs = GCP.sample_from_gn(200)
         utils.visualize_samples(Xs, file_name)
         file_name = "B_DN_WEIGHTS_b{0:d}.png".format(i)
         utils.visualize(GCP.DN, 0, 0, file_name)

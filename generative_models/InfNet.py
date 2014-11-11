@@ -12,10 +12,10 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
-#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer
+from NetLayers import HiddenLayer, DiscLayer, relu_actfun
 
 ####################################
 # INFERENCE NETWORK IMPLEMENTATION #
@@ -31,10 +31,10 @@ class InfNet(object):
 
     Parameters:
         rng: a numpy.random RandomState object
-        input_data: symbolic input matrix for inputting observable data
-        input_cont: symbolic input matrix for inputting control data
-        input_mask: symbolic input matrix for a mask on which values to take
-                    from input_cont and which to take from input_data
+        Xd: symbolic input matrix for inputting observable data
+        Xc: symbolic input matrix for inputting control data
+        Xm: symbolic input matrix for a mask on which values to take
+                    from Xc and which to take from Xd
         prior_sigma: standard deviation of isotropic Gaussian prior that our
                      inferred posteriors will be penalized for deviating from.
         params: a dict of parameters describing the desired ensemble:
@@ -47,24 +47,25 @@ class InfNet(object):
             shared_config: list of "layer descriptions" for shared part
             mu_config: list of "layer descriptions" for mu part
             sigma_config: list of "layer descriptions" for sigma part
+            activation: "function handle" for the desired non-linearity
         mlp_param_dicts: parameters for the MLP controlled by this InfNet
     """
     def __init__(self, \
             rng=None, \
-            input_data=None, \
-            input_cont=None, \
-            input_mask=None, \
+            Xd=None, \
+            Xc=None, \
+            Xm=None, \
             prior_sigma=None, \
             params=None, \
             mlp_param_dicts=None):
         # Setup a shared random generator for this network 
-        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-                rng.randint(100000))
-        #self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
+        #        rng.randint(100000))
+        self.rng = CURAND_RandomStreams(rng.randint(1000000))
         # Grab the symbolic input matrix
-        self.input_data = input_data
-        self.input_cont = input_cont
-        self.input_mask = input_mask
+        self.Xd = Xd
+        self.Xc = Xc
+        self.Xm = Xm
         self.prior_sigma = prior_sigma
         #####################################################
         # Process user-supplied parameters for this network #
@@ -107,6 +108,10 @@ class InfNet(object):
         self.shared_config = params['shared_config']
         self.mu_config = params['mu_config']
         self.sigma_config = params['sigma_config']
+        if 'activation' in params:
+            self.activation = params['activation']
+        else:
+            self.activation = relu_actfun
         #########################################
         # Initialize the shared part of network #
         #########################################
@@ -116,8 +121,8 @@ class InfNet(object):
         layer_num = 0
         # Construct input by combining data input and control input, taking
         # unmasked values from data input and others from the control input
-        next_input = ((1.0 - self.input_mask) * self.input_data) + \
-                (self.input_mask * self.input_cont)
+        next_input = ((1.0 - self.Xm) * self.Xd) + \
+                (self.Xm * self.Xc)
         for in_def, out_def in layer_def_pairs:
             first_layer = (layer_num == 0)
             last_layer = (layer_num == (len(layer_def_pairs) - 1))
@@ -151,8 +156,8 @@ class InfNet(object):
                 ##########################################
                 # Initialize a layer with new parameters #
                 ##########################################
-                new_layer = HiddenLayer(rng=rng, \
-                        input=next_input, activation=None, pool_size=pool_size, \
+                new_layer = HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=1.0)
@@ -163,8 +168,8 @@ class InfNet(object):
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.mlp_param_dicts['shared'][layer_num]
-                new_layer = HiddenLayer(rng=rng, \
-                        input=next_input, activation=None, pool_size=pool_size, \
+                new_layer = HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
@@ -209,8 +214,8 @@ class InfNet(object):
                 ##########################################
                 # Initialize a layer with new parameters #
                 ##########################################
-                new_layer = HiddenLayer(rng=rng, \
-                        input=next_input, activation=None, pool_size=pool_size, \
+                new_layer = HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=1.0)
@@ -221,8 +226,8 @@ class InfNet(object):
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.mlp_param_dicts['mu'][layer_num]
-                new_layer = HiddenLayer(rng=rng, \
-                        input=next_input, activation=None, pool_size=pool_size, \
+                new_layer = HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
@@ -267,8 +272,8 @@ class InfNet(object):
                 ##########################################
                 # Initialize a layer with new parameters #
                 ##########################################
-                new_layer = HiddenLayer(rng=rng, \
-                        input=next_input, activation=None, pool_size=pool_size, \
+                new_layer = HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=1.0)
@@ -279,8 +284,8 @@ class InfNet(object):
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.mlp_param_dicts['sigma'][layer_num]
-                new_layer = HiddenLayer(rng=rng, \
-                        input=next_input, activation=None, pool_size=pool_size, \
+                new_layer = HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
@@ -311,7 +316,7 @@ class InfNet(object):
         # We'll also construct an output containing a single samples from each
         # of the distributions represented by the rows of self.output_mu and
         # self.output_sigma.
-        self.output_sample = self._construct_post_samples()
+        self.output = self._construct_post_samples()
         self.out_dim = self.sigma_layers[-1].out_dim
         # Get simple regularization penalty to moderate activation dynamics
         self.act_reg_cost = self.lam_l2a * self._act_reg_cost()
@@ -367,12 +372,11 @@ class InfNet(object):
         posterior for some set of inputs.
         """
         psample = theano.function([self.Xd, self.Xc, self.Xm], \
-                outputs=self.output_sample)
-        post_sampler = lambda x: psample(x, x*0.0, x*0.0)
-        return post_sampler
+                outputs=self.output)
+        return psample
 
-    def shared_param_clone(self, rng=None, input_data=None, input_cont=None, \
-            input_mask=None):
+    def shared_param_clone(self, rng=None, Xd=None, Xc=None, \
+            Xm=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
@@ -380,17 +384,16 @@ class InfNet(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = InfNet(rng=rng, input_data=input_data, \
-                input_cont=input_cont, input_mask=input_mask, \
+        clone_net = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
                 prior_sigma=self.prior_sigma, params=self.params, \
                 mlp_param_dicts=self.mlp_param_dicts)
         return clone_net
 
 if __name__=="__main__":
     # Do basic testing, to make sure classes aren't completely broken.
-    input_cont = T.matrix('CONTROL_INPUT')
-    input_mask = T.matrix('MASK_INPUT')
-    input_data_1 = T.matrix('DATA_INPUT_1')
+    Xc = T.matrix('CONTROL_INPUT')
+    Xm = T.matrix('MASK_INPUT')
+    Xd_1 = T.matrix('DATA_INPUT_1')
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
     # Choose some parameters for the generative network
@@ -408,16 +411,13 @@ if __name__=="__main__":
     in_params['bias_noise'] = 0.0
     in_params['input_noise'] = 0.0
     # Make the starter network
-    in_1 = InfNet(rng=rng, input_data=input_data_1, \
-            input_cont=input_cont, input_mask=input_mask, prior_sigma=5.0, \
+    in_1 = InfNet(rng=rng, Xd=Xd_1, Xc=Xc, Xm=Xm, prior_sigma=5.0, \
             params=in_params, mlp_param_dicts=None)
     # Make a clone of the network with a different symbolic input
-    input_data_2 = T.matrix('DATA_INPUT_2')
-    in_2 = InfNet(rng=rng, input_data=input_data_2, \
-            input_cont=input_cont, input_mask=input_mask, prior_sigma=5.0, \
+    Xd_2 = T.matrix('DATA_INPUT_2')
+    in_2 = InfNet(rng=rng, Xd=Xd_2, Xc=Xc, Xm=Xm, prior_sigma=5.0, \
             params=in_params, mlp_param_dicts=in_1.mlp_param_dicts)
     # Explicitly construct a clone via the helper function
-    input_data_3 = T.matrix('DATA_INPUT_3')
-    in_3 = in_1.shared_param_clone(rng=rng, input_data=input_data_3, \
-            input_cont=input_cont, input_mask=input_mask)
+    Xd_3 = T.matrix('DATA_INPUT_3')
+    in_3 = in_1.shared_param_clone(rng=rng, Xd=Xd_3, Xc=Xc, Xm=Xm)
     print("TESTING COMPLETE")
