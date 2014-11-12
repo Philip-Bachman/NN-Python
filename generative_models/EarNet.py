@@ -140,17 +140,21 @@ class EarNet(object):
             spawn_weights: the weight to multiply the classification loss of
                            each spawned-network by when computing the loss to
                            optimize for this generalized spawn-semble.
+        proto_param_dicts: parameters for the MLP controlled by this EarNet
     """
     def __init__(self,
-            rng,
-            input,
-            params):
+            rng=None, \
+            input=None, \
+            params=None, \
+            proto_param_dicts=None):
         # First, setup a shared random number generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
             rng.randint(100000))
         ################################################
         # Process user-suplied parameters for this net #
         ################################################
+        assert(not (params is None))
+        self.params = params
         lam_l2a = params['lam_l2a']
         if 'vis_drop' in params:
             self.vis_drop = params['vis_drop']
@@ -175,6 +179,19 @@ class EarNet(object):
         self.max_proto_depth = max([(len(pc)-1) for pc in self.proto_configs])
         self.spawn_count = len(self.spawn_configs)
         self.ear_pairs = self.spawn_count * (self.spawn_count - 1)
+        # Check if the params for this net were given a priori. This option
+        # will be used for creating "clones" of a generative network, with all
+        # of the network parameters shared between clones.
+        if proto_param_dicts is None:
+            # This is not a clone, and we will need to make a dict for
+            # referring to the parameters of each network layer
+            self.proto_param_dicts = []
+            self.is_clone = False
+        else:
+            # This is a clone, and its layer parameters can be found by
+            # referring to the given param dict (i.e. proto_param_dicts).
+            self.proto_param_dicts = proto_param_dicts
+            self.is_clone = True
         ########################################
         # Initialize all of the proto-networks #
         ########################################
@@ -206,16 +223,36 @@ class EarNet(object):
                     out_dim = out_def
                     pool_size = 0
                 # Add a new layer to the regular model
-                proto_net.append(HiddenLayer(rng=rng, \
-                        input=next_input, \
-                        activation=None, pool_size=pool_size, \
-                        drop_rate=0., input_noise=0., bias_noise=0., \
-                        in_dim=in_dim, out_dim=out_dim, name=pnl_name))
+                if not self.is_clone:
+                    ##########################################
+                    # Initialize a layer with new parameters #
+                    ##########################################
+                    new_layer = HiddenLayer(rng=rng, input=next_input, \
+                            activation=None, pool_size=pool_size, \
+                            drop_rate=0., input_noise=0., bias_noise=0., \
+                            in_dim=in_dim, out_dim=out_dim, \
+                            name=pnl_name, W_scale=1.0)
+                    proto_net.append(new_layer)
+                    self.proto_param_dicts[pn_num].append( \
+                            {'W': new_layer.W, 'b': new_layer.b})
+                else:
+                    ##################################################
+                    # Initialize a layer with some shared parameters #
+                    ##################################################
+                    init_params = self.proto_param_dicts[pn_num][layer_num]
+                    new_layer = HiddenLayer(rng=rng, input=next_input, \
+                            activation=None, pool_size=pool_size, \
+                            drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
+                            in_dim=in_dim, out_dim=out_dim, \
+                            W=init_params['W'], b=init_params['b'], \
+                            name=pnl_name, W_scale=1.0)
+                    proto_net.append(new_layer)
                 next_input = proto_net[-1].output
                 # Set the non-bias parameters of this layer to be clipped
                 self.clip_params[proto_net[-1].W] = 1
                 layer_num = layer_num + 1
-            # Add this network to the list of proto-networks
+            # Add this network to the list of proto-networks, and add its
+            # param dict to the list of pro-net param dicts, if not a clone
             self.proto_nets.append(proto_net)
         #################################################################
         # Initialize all of the spawned (i.e. noise-perturbed) networks #
@@ -287,7 +324,6 @@ class EarNet(object):
         # generalized spawn-semble.
         self.spawn_class_cost = lambda y: self._spawn_class_cost(y)
         self.spawn_reg_cost = lambda y: self._ear_cost(y, self.ear_type)
-        self.spawn_reg_cost_alt = lambda y, t: self._ear_cost(y, self.ear_type)
         self.spawn_ent_cost = lambda lam_ent, y: self._ent_cost(lam_ent, y)
         self.act_reg_cost = lam_l2a * self._act_reg_cost()
         return
@@ -482,6 +518,15 @@ class EarNet(object):
         """Set the Ensemble Agreement Regularization weight."""
         self.ear_lam.set_value(np.asarray([e_lam], dtype=theano.config.floatX))
         return
+
+    def shared_param_clone(self, rng=None, input=None):
+        """
+        Return a clone of this network, with shared parameters but with
+        different symbolic input variables.
+        """
+        clone_net = EarNet(rng=rng, input=input, params=self.params, \
+                proto_param_dicts=self.proto_param_dicts)
+        return clone_net
 
 
 

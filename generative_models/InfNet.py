@@ -375,6 +375,21 @@ class InfNet(object):
                 outputs=self.output)
         return psample
 
+    def init_biases(self, b_init=0.0):
+        """
+        Initialize the biases in all hidden layers to some constant.
+        """
+        for layer in self.shared_layers:
+            b_init = (0.0 * layer.b.get_value(borrow=False)) + b_init
+            layer.b.set_value(b_init)
+        for layer in self.mu_layers[:-1]:
+            b_init = (0.0 * layer.b.get_value(borrow=False)) + b_init
+            layer.b.set_value(b_init)
+        for layer in self.sigma_layers[:-1]:
+            b_init = (0.0 * layer.b.get_value(borrow=False)) + b_init
+            layer.b.set_value(b_init)
+        return
+
     def shared_param_clone(self, rng=None, Xd=None, Xc=None, \
             Xm=None):
         """

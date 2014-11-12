@@ -122,18 +122,22 @@ class HiddenLayer(object):
 
         self.clean_input = input
 
+        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+        self.input_noise = theano.shared(value=(zero_ary+input_noise), \
+                name="{0:s}_input_noise".format(name))
+        self.bias_noise = theano.shared(value=(zero_ary+bias_noise), \
+                name="{0:s}_bias_noise".format(name))
+        self.drop_rate = theano.shared(value=(zero_ary+drop_rate), \
+                name="{0:s}_bias_noise".format(name))
+
         # Add gaussian noise to the input (if desired)
-        if (input_noise > 1e-4):
-            self.fuzzy_input = input + self.rng.normal(size=input.shape, \
-                    avg=0.0, std=input_noise, dtype=theano.config.floatX)
-        else:
-            self.fuzzy_input = input
+        self.fuzzy_input = input + (self.input_noise[0] * \
+                self.rng.normal(size=input.shape, avg=0.0, std=1.0, \
+                dtype=theano.config.floatX))
 
         # Apply masking noise to the input (if desired)
-        if (drop_rate > 1e-4):
-            self.noisy_input = self._drop_from_input(self.fuzzy_input, drop_rate)
-        else:
-            self.noisy_input = self.fuzzy_input
+        self.noisy_input = self._drop_from_input(self.fuzzy_input, \
+                self.drop_rate[0])
 
         # Set some basic layer properties
         self.pool_size = pool_size
@@ -185,12 +189,9 @@ class HiddenLayer(object):
         self.linear_output = T.dot(self.noisy_input, self.W) + self.b
 
         # Add noise to the pre-activation features (if desired)
-        if bias_noise > 1e-3:
-            self.noisy_linear = self.linear_output  + \
-                    self.rng.normal(size=self.linear_output.shape, \
-                    avg=0.0, std=bias_noise, dtype=theano.config.floatX)
-        else:
-            self.noisy_linear = self.linear_output
+        self.noisy_linear = self.linear_output + (self.bias_noise[0] * \
+                self.rng.normal(size=self.linear_output.shape, avg=0.0, \
+                std=1.0, dtype=theano.config.floatX))
 
         # Apply activation function
         self.output = self.activation(self.noisy_linear)
@@ -250,18 +251,22 @@ class ConvPoolLayer(object):
 
         self.clean_input = input
 
+        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+        self.input_noise = theano.shared(value=(zero_ary+input_noise), \
+                name="{0:s}_input_noise".format(name))
+        self.bias_noise = theano.shared(value=(zero_ary+bias_noise), \
+                name="{0:s}_bias_noise".format(name))
+        self.drop_rate = theano.shared(value=(zero_ary+drop_rate), \
+                name="{0:s}_bias_noise".format(name))
+
         # Add gaussian noise to the input (if desired)
-        if (input_noise > 1e-4):
-            self.fuzzy_input = input + self.rng.normal(size=input.shape, \
-                    avg=0.0, std=input_noise, dtype=theano.config.floatX)
-        else:
-            self.fuzzy_input = input
+        self.fuzzy_input = input + (self.input_noise[0] * \
+                self.rng.normal(size=input.shape, avg=0.0, std=1.0, \
+                dtype=theano.config.floatX))
 
         # Apply masking noise to the input (if desired)
-        if (drop_rate > 1e-4):
-            self.noisy_input = self._drop_from_input(self.fuzzy_input, drop_rate)
-        else:
-            self.noisy_input = self.fuzzy_input
+        self.noisy_input = self._drop_from_input(self.fuzzy_input, \
+                self.drop_rate[0])
 
         # Set the activation function for the conv filters
         if activation:
