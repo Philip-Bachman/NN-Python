@@ -18,7 +18,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun
 from GenNet import GenNet
 from InfNet import InfNet
-from EarNet import EarNet
+from PeaNet import PeaNet
 
 def log_prob_bernoulli(p_true, p_approx):
     """
@@ -311,9 +311,9 @@ if __name__=="__main__":
     prior_sigma = 2.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
+    gn_config = [prior_dim, 1000, 1000, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = relu_actfun
+    gn_params['activation'] = softplus_actfun
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -321,8 +321,8 @@ if __name__=="__main__":
     gn_params['out_noise'] = 0.0
     # Choose some parameters for the inference network
     in_params = {}
-    shared_config = [data_dim, 800]
-    top_config = [shared_config[-1], 800, prior_dim]
+    shared_config = [data_dim, 1000, 1000]
+    top_config = [shared_config[-1], 1000, prior_dim]
     mu_config = top_config
     sigma_config = top_config
     in_params['shared_config'] = shared_config
@@ -330,10 +330,10 @@ if __name__=="__main__":
     in_params['sigma_config'] = sigma_config
     in_params['activation'] = relu_actfun
     in_params['lam_l2a'] = 1e-3
-    in_params['vis_drop'] = 0.2
+    in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
-    in_params['input_noise'] = 0.1
+    in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
             params=in_params, mlp_param_dicts=None)

@@ -109,7 +109,7 @@ def smooth_cross_entropy(p, q):
 # NETWORK IMPLEMENTATION #
 ##########################
 
-class EarNet(object):
+class PeaNet(object):
     """A multipurpose ensemble of noise-perturbed neural networks.
 
     Parameters:
@@ -140,7 +140,7 @@ class EarNet(object):
             spawn_weights: the weight to multiply the classification loss of
                            each spawned-network by when computing the loss to
                            optimize for this generalized spawn-semble.
-        proto_param_dicts: parameters for the MLP controlled by this EarNet
+        proto_param_dicts: parameters for the MLP controlled by this PeaNet
     """
     def __init__(self,
             rng=None, \
@@ -154,6 +154,8 @@ class EarNet(object):
         # Process user-suplied parameters for this net #
         ################################################
         assert(not (params is None))
+        assert(len(params['proto_configs']) == 1) # permit only one proto-net
+        assert(len(params['spawn_configs']) == 2) # require two spawn nets
         self.params = params
         lam_l2a = params['lam_l2a']
         if 'vis_drop' in params:
@@ -197,7 +199,7 @@ class EarNet(object):
         ########################################
         self.clip_params = {}
         self.proto_nets = []
-        self.input = input
+        self.Xd = input
         # Construct the proto-networks from which to generate spawn-sembles
         for (pn_num, proto_config) in enumerate(self.proto_configs):
             layer_defs = [ld for ld in proto_config]
@@ -388,7 +390,7 @@ class EarNet(object):
 
         This regularizes for agreement among members of a 'pseudo-ensemble'.
         Y is used to generate a mask on EAR costs, restricting optimization of
-        the regularizer to only unlabelled examples whenever the EarNet
+        the regularizer to only unlabelled examples whenever the PeaNet
         instance is operating in 'semi-supervised' mode. The particular type
         of EAR to apply is selected by 'ear_type'.
         """
@@ -524,7 +526,7 @@ class EarNet(object):
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
         """
-        clone_net = EarNet(rng=rng, input=input, params=self.params, \
+        clone_net = PeaNet(rng=rng, input=input, params=self.params, \
                 proto_param_dicts=self.proto_param_dicts)
         return clone_net
 

@@ -68,12 +68,12 @@ class GCPair(object):
     Controller for training a generator/discriminator pair.
 
     The generator must be an instance of the GEN_NET class implemented in
-    "GINets.py". The discriminator must be an instance of the EarNet class,
-    as implemented in "EarNet.py".
+    "GINets.py". The discriminator must be an instance of the PeaNet class,
+    as implemented in "PeaNet.py".
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
-        d_net: The EarNet instance that will serve as the discriminator
+        d_net: The PeaNet instance that will serve as the discriminator
         g_net: The GenNet instance that will serve as the generator
         data_dim: Dimensions of generated data
         params: a dict of parameters for controlling various costs

@@ -18,7 +18,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun
 from GenNet import GenNet, projected_moments
 from InfNet import InfNet
-from EarNet import EarNet
+from PeaNet import PeaNet
 
 
 #
@@ -66,8 +66,8 @@ class GILoop(object):
     Controller for propagating through a generate<->inference loop.
 
     The generator must be an instance of the GenNet class implemented in
-    "GINets.py". The discriminator must be an instance of the EarNet class,
-    as implemented in "EarNet.py".
+    "GINets.py". The discriminator must be an instance of the PeaNet class,
+    as implemented in "PeaNet.py".
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)

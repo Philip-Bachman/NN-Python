@@ -5,7 +5,7 @@ import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 from load_data import load_udm, load_udm_ss, load_mnist
-from EarNet import EarNet
+from PeaNet import PeaNet
 from GenNet import GenNet, projected_moments
 from GCPair import GCPair
 from NetLayers import relu_actfun, softplus_actfun
@@ -78,7 +78,7 @@ dn_params['hid_drop'] = 0.5
 dn_params['reg_all_obs'] = False
 
 # Initialize a discriminator network object
-DN = EarNet(rng=rng, input=T.vertical_stack(Xd_sym, GN.output), params=dn_params)
+DN = PeaNet(rng=rng, input=T.vertical_stack(Xd_sym, GN.output), params=dn_params)
 
 ########################################################################
 # Initialize the joint controller for the generator/discriminator pair #
