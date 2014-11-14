@@ -75,10 +75,9 @@ dn_params['ear_lam'] = 0.0
 dn_params['lam_l2a'] = 1e-3
 dn_params['vis_drop'] = 0.2
 dn_params['hid_drop'] = 0.5
-dn_params['reg_all_obs'] = False
 
-# Initialize a discriminator network object
-DN = PeaNet(rng=rng, input=T.vertical_stack(Xd_sym, GN.output), params=dn_params)
+# Initialize a network object to use as the discriminator
+DN = PeaNet(rng=rng, Xd=Xd_sym, params=dn_params)
 
 ########################################################################
 # Initialize the joint controller for the generator/discriminator pair #
@@ -96,7 +95,8 @@ gcp_params['target_cov'] = target_cov
 
 # Initialize a GCPair instance using the previously constructed generator and
 # discriminator networks.
-GCP = GCPair(rng=rng, d_net=DN, g_net=GN, data_dim=28*28, data_var=Xd_sym, params=gcp_params)
+GCP = GCPair(rng=rng, Xd=Xd_sym, Xp=Xp_sym, d_net=DN, g_net=GN, \
+        data_dim=28*28, params=gcp_params)
 
 gn_learn_rate = 0.04
 dn_learn_rate = 0.02

@@ -60,21 +60,41 @@ class GIPair(object):
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
+        Xd: symbolic "data" input to this VAE
+        Xc: symbolic "control" input to this VAE
+        Xm: symbolic "mask" input to this VAE
         g_net: The GenNet instance that will serve as the base generator
         i_net: The InfNet instance that will serve as the base inferer
         data_dim: dimension of the "observable data" variables
         prior_dim: dimension of the "latent prior" variables
+        params: dict for passing additional parameters
+        shared_param_dicts: dict for retrieving some shared parameters required
+                            by a GIPair. if this parameter is passed, then this
+                            GIPair will be initialized as a "shared-parameter"
+                            clone of some other GIPair.
     """
-    def __init__(self, rng=None, g_net=None, i_net=None, data_dim=None, \
-            prior_dim=None, params=None):
-        # Do some stuff!
+    def __init__(self, rng=None, \
+            Xd=None, Xc=None, Xm=None, \
+            g_net=None, i_net=None, \
+            data_dim=None, prior_dim=None, \
+            params=None, shared_param_dicts=None):
+        # setup a rng for this GIPair
         self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
-        self.IN = i_net
+        # record the symbolic variables that will provide inputs to the
+        # computation graph created to describe this GIPair
+        self.Xd = Xd
+        self.Xc = Xc
+        self.Xm = Xm
+        # create "shared-parameter" clones of the inferencer and generator
+        # that this GIPair will be built on.
+        self.IN = i_net.shared_param_clone(rng=rng, \
+                Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
         self.GN = g_net.shared_param_clone(rng=rng, Xp=self.IN.output)
+
+        # record and validate the data dimensionality parameters
         self.data_dim = data_dim
         self.prior_dim = prior_dim
-
         # output of the generator and input to the inferencer should both be
         # equal to self.data_dim
         assert(self.data_dim == self.GN.mlp_layers[-1].out_dim)
@@ -85,27 +105,53 @@ class GIPair(object):
         assert(self.prior_dim == self.IN.mu_layers[-1].out_dim)
         assert(self.prior_dim == self.IN.sigma_layers[-1].out_dim)
 
-        # create symbolic vars for feeding inputs to the inferencer
-        self.Xd = self.IN.Xd
-        self.Xc = self.IN.Xc
-        self.Xm = self.IN.Xm
+        # determine whether this GIPair is a clone or an original
+        if shared_param_dicts is None:
+            # This is not a clone, and we will need to make a dict for
+            # referring to the parameters of each network layer
+            self.shared_param_dicts = {}
+            self.is_clone = False
+        else:
+            # This is a clone, and its layer parameters can be found by
+            # referring to the given param dict (i.e. shared_param_dicts).
+            self.shared_param_dicts = shared_param_dicts
+            self.is_clone = True
 
-        # shared var learning rate for generator and inferencer
-        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-        self.lr_gn = theano.shared(value=zero_ary, name='gil_lr_gn')
-        self.lr_in = theano.shared(value=zero_ary, name='gil_lr_in')
-        # shared var momentum parameters for generator and inferencer
-        self.mo_gn = theano.shared(value=zero_ary, name='gil_mo_gn')
-        self.mo_in = theano.shared(value=zero_ary, name='gil_mo_in')
-        # init parameters for controlling learning dynamics
-        self.set_gn_sgd_params() # init SGD rate/momentum for GN
-        self.set_in_sgd_params() # init SGD rate/momentum for IN
+        if not self.is_clone:
+            # shared var learning rate for generator and inferencer
+            zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+            self.lr_gn = theano.shared(value=zero_ary, name='gil_lr_gn')
+            self.lr_in = theano.shared(value=zero_ary, name='gil_lr_in')
+            # shared var momentum parameters for generator and inferencer
+            self.mo_gn = theano.shared(value=zero_ary, name='gil_mo_gn')
+            self.mo_in = theano.shared(value=zero_ary, name='gil_mo_in')
+            # init parameters for controlling learning dynamics
+            self.set_gn_sgd_params() # init SGD rate/momentum for GN
+            self.set_in_sgd_params() # init SGD rate/momentum for IN
+            # init shared var for weighting prior kld against reconstruction
+            self.lam_kld = theano.shared(value=zero_ary, name='gil_lam_kld')
+            self.set_lam_kld()
+            # record shared parameters that are to be shared among clones
+            self.shared_param_dicts['gil_lr_gn'] = self.lr_gn
+            self.shared_param_dicts['gil_lr_in'] = self.lr_in
+            self.shared_param_dicts['gil_mo_gn'] = self.mo_gn
+            self.shared_param_dicts['gil_mo_in'] = self.mo_in
+            self.shared_param_dicts['gil_lam_kld'] = self.lam_kld
+        else:
+            # use some shared parameters that are shared among all clones of
+            # some "base" GIPair
+            self.lr_gn = self.shared_param_dicts['gil_lr_gn']
+            self.lr_in = self.shared_param_dicts['gil_lr_in']
+            self.mo_gn = self.shared_param_dicts['gil_mo_gn']
+            self.mo_in = self.shared_param_dicts['gil_mo_in']
+            self.lam_kld = self.shared_param_dicts['gil_lam_kld']
+
 
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
         self.data_nll_cost = self._construct_data_nll_cost()
-        self.post_kld_cost = self._construct_post_kld_cost()
+        self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
         self.act_reg_cost = (self.IN.act_reg_cost + self.GN.act_reg_cost) / \
                 self.Xd.shape[0]
         self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
@@ -221,6 +267,15 @@ class GIPair(object):
         self.mo_in.set_value(new_mo.astype(theano.config.floatX))
         return
 
+    def set_lam_kld(self, lam_kld=1.0):
+        """
+        Set the relative weight of prior KL-divergence vs. data likelihood.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_kld
+        self.lam_kld.set_value(new_lam.astype(theano.config.floatX))
+        return
+
     def _construct_data_nll_cost(self, prob_type='bernoulli'):
         """
         Construct the negative log-likelihood part of cost to minimize.
@@ -256,6 +311,15 @@ class GIPair(object):
             max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
             print_output_file=True, assert_nb_all_strings=-1)
         return func
+
+    def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None):
+        """
+        Create a "shared-parameter" clone of this GIPair.
+
+        This can be used for chaining and/or stacking VAEs.
+        """
+
+
 
     def sample_gil_from_data(self, X_d, loop_iters=5):
         """
@@ -321,8 +385,8 @@ if __name__=="__main__":
     gn_params['out_noise'] = 0.0
     # Choose some parameters for the inference network
     in_params = {}
-    shared_config = [data_dim, 1000, 1000]
-    top_config = [shared_config[-1], 1000, prior_dim]
+    shared_config = [data_dim, (200, 4), (200, 4)]
+    top_config = [shared_config[-1], (200, 4), prior_dim]
     mu_config = top_config
     sigma_config = top_config
     in_params['shared_config'] = shared_config
@@ -336,15 +400,15 @@ if __name__=="__main__":
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
-            params=in_params, mlp_param_dicts=None)
+            params=in_params, shared_param_dicts=None)
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
-            params=gn_params, mlp_param_dicts=None)
+            params=gn_params, shared_param_dicts=None)
     # Initialize biases in IN and GN
     IN.init_biases(0.1)
     GN.init_biases(0.1)
     # Initialize the GIPair
-    GIP = GIPair(rng=rng, g_net=GN, i_net=IN, data_dim=data_dim, \
-            prior_dim=prior_dim, params=None)
+    GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
+            data_dim=data_dim, prior_dim=prior_dim, params=None)
     # Set initial learning rate and basic SGD hyper parameters
     in_learn_rate = 0.005
     gn_learn_rate = 0.005
@@ -352,6 +416,16 @@ if __name__=="__main__":
     GIP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.8)
 
     for i in range(750000):
+        if (i < 50000):
+            scale = float(i) / 50000.0
+            GIP.set_in_sgd_params(learn_rate=(scale*in_learn_rate), momentum=0.8)
+            GIP.set_gn_sgd_params(learn_rate=(scale*gn_learn_rate), momentum=0.8)
+            GIP.set_lam_kld(lam_kld=scale)
+        if ((i+1 % 100000) == 0):
+            in_learn_rate = in_learn_rate * 0.7
+            gn_learn_rate = gn_learn_rate * 0.7
+            GIP.set_in_sgd_params(learn_rate=in_learn_rate, momentum=0.9)
+            GIP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.9)
         # get some data to train with
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = binarize_data(Xtr.take(tr_idx, axis=0))
@@ -363,21 +437,13 @@ if __name__=="__main__":
         data_nll_cost = 1.0 * outputs[1]
         post_kld_cost = 1.0 * outputs[2]
         act_reg_cost = 1.0 * outputs[3]
-        if (i < 50000):
-            scale = float(i) / 50000.0
-            GIP.set_in_sgd_params(learn_rate=(scale*in_learn_rate), momentum=0.8)
-            GIP.set_gn_sgd_params(learn_rate=(scale*gn_learn_rate), momentum=0.8)
-        if ((i+1 % 100000) == 0):
-            in_learn_rate = in_learn_rate * 0.7
-            gn_learn_rate = gn_learn_rate * 0.7
-            GIP.set_in_sgd_params(learn_rate=in_learn_rate, momentum=0.9)
-            GIP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.9)
         if ((i % 1000) == 0):
             print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, act_reg_cost: {4:.4f}".format( \
                     i, joint_cost, data_nll_cost, post_kld_cost, act_reg_cost))
         if ((i % 10000) == 0):
             file_name = "GN_SAMPLES_b{0:d}.png".format(i)
-            Xs = GN.sample_from_model(200)
+            sample_lists = GIP.sample_gil_from_data(Xd_batch[0:25,:], loop_iters=10)
+            Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name)
 
     print("TESTING COMPLETE!")

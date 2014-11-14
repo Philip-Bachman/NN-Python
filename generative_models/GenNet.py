@@ -40,14 +40,14 @@ class GenNet(object):
             out_noise: standard dev for noise on the output of this net
             mlp_config: list of "layer descriptions"
             activation: "function handle" for the desired non-linearity
-        mlp_param_dicts: parameters for the MLP controlled by this GenNet
+        shared_param_dicts: parameters for the MLP controlled by this GenNet
     """
     def __init__(self, \
             rng=None, \
             Xp=None, \
             prior_sigma=None, \
             params=None, \
-            mlp_param_dicts=None):
+            shared_param_dicts=None):
         # First, setup a shared random number generator for this layer
         #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
         #    rng.randint(100000))
@@ -84,15 +84,15 @@ class GenNet(object):
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of a generative network, with all
         # of the network parameters shared between clones.
-        if mlp_param_dicts is None:
+        if shared_param_dicts is None:
             # This is not a clone, and we will need to make a dict for
             # referring to the parameters of each network layer
-            self.mlp_param_dicts = []
+            self.shared_param_dicts = []
             self.is_clone = False
         else:
             # This is a clone, and its layer parameters can be found by
-            # referring to the given param dict (i.e. mlp_param_dicts).
-            self.mlp_param_dicts = mlp_param_dicts
+            # referring to the given param dict (i.e. shared_param_dicts).
+            self.shared_param_dicts = shared_param_dicts
             self.is_clone = True
         # Get the configuration/prototype for this network. The config is a
         # list of layer descriptions, including a description for the input
@@ -151,12 +151,12 @@ class GenNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=1.0)
                 self.mlp_layers.append(new_layer)
-                self.mlp_param_dicts.append({'W': new_layer.W, 'b': new_layer.b})
+                self.shared_param_dicts.append({'W': new_layer.W, 'b': new_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
-                init_params = self.mlp_param_dicts[layer_num]
+                init_params = self.shared_param_dicts[layer_num]
                 self.mlp_layers.append(HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
@@ -288,7 +288,7 @@ class GenNet(object):
         """
         clone_net = GenNet(rng=rng, Xp=Xp, \
                 prior_sigma=self.prior_sigma, params=self.params, \
-                mlp_param_dicts=self.mlp_param_dicts)
+                shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
 #############################################
@@ -341,7 +341,7 @@ if __name__=="__main__":
     gn_params['out_noise'] = 0.0
     # Make the starter network
     gn_1 = GenNet(rng=rng, Xp=Xp_1, prior_sigma=5.0, \
-            params=gn_params, mlp_param_dicts=None)
+            params=gn_params, shared_param_dicts=None)
     # Make a clone of the network with a different symbolic input
     Xp_2 = T.matrix('INPUT_2')
     gn_2 = gn_1.shared_param_clone(rng=rng, Xp=Xp_2)

@@ -148,14 +148,13 @@ class HiddenLayer(object):
         else:
             self.filt_count = self.out_dim * self.pool_size
         self.pool_count = self.filt_count / max(self.pool_size, 1)
-        if activation:
+        if activation is None:
+            activation = relu_actfun
+        if self.pool_size <= 1:
             self.activation = activation
         else:
-            if self.pool_size <= 1:
-                self.activation = lambda x: relu_actfun(x)
-            else:
-                self.activation = lambda x: \
-                        maxout_actfun(x, self.pool_size, self.filt_count)
+            self.activation = lambda x: \
+                    maxout_actfun(x, self.pool_size, self.filt_count)
 
         # Get some random initial weights and biases, if not given
         if W is None:
@@ -197,7 +196,7 @@ class HiddenLayer(object):
         self.output = self.activation(self.noisy_linear)
 
         # Compute some properties of the activations, probably to regularize
-        self.act_l2_sum = T.sum(self.output**2.) / self.output.size
+        self.act_l2_sum = T.sum(self.noisy_linear**2.) / self.output.size
         self.row_l1_sum = T.sum(abs(row_normalize(self.output))) / \
                 self.output.shape[0]
         self.col_l1_sum = T.sum(abs(col_normalize(self.output))) / \

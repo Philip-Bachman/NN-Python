@@ -18,7 +18,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun
 
 ####################################
-# INFERENCE NETWORK IMPLEMENTATION #
+# INFREENCE NETWORK IMPLEMENTATION #
 ####################################
 
 
@@ -48,7 +48,7 @@ class InfNet(object):
             mu_config: list of "layer descriptions" for mu part
             sigma_config: list of "layer descriptions" for sigma part
             activation: "function handle" for the desired non-linearity
-        mlp_param_dicts: parameters for the MLP controlled by this InfNet
+        shared_param_dicts: parameters for the MLP controlled by this InfNet
     """
     def __init__(self, \
             rng=None, \
@@ -57,7 +57,7 @@ class InfNet(object):
             Xm=None, \
             prior_sigma=None, \
             params=None, \
-            mlp_param_dicts=None):
+            shared_param_dicts=None):
         # Setup a shared random generator for this network 
         #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
         #        rng.randint(100000))
@@ -91,15 +91,15 @@ class InfNet(object):
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
-        if mlp_param_dicts is None:
+        if shared_param_dicts is None:
             # This is not a clone, and we will need to make a dict for
             # referring to the parameters of each network layer
-            self.mlp_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
+            self.shared_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
             self.is_clone = False
         else:
             # This is a clone, and its layer parameters can be found by
-            # referring to the given param dict (i.e. mlp_param_dicts).
-            self.mlp_param_dicts = mlp_param_dicts
+            # referring to the given param dict (i.e. shared_param_dicts).
+            self.shared_param_dicts = shared_param_dicts
             self.is_clone = True
         # Get the configuration/prototype for this network. The config is a
         # list of layer descriptions, including a description for the input
@@ -162,12 +162,12 @@ class InfNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=1.0)
                 self.shared_layers.append(new_layer)
-                self.mlp_param_dicts['shared'].append({'W': new_layer.W, 'b': new_layer.b})
+                self.shared_param_dicts['shared'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
-                init_params = self.mlp_param_dicts['shared'][layer_num]
+                init_params = self.shared_param_dicts['shared'][layer_num]
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
@@ -220,12 +220,12 @@ class InfNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=1.0)
                 self.mu_layers.append(new_layer)
-                self.mlp_param_dicts['mu'].append({'W': new_layer.W, 'b': new_layer.b})
+                self.shared_param_dicts['mu'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
-                init_params = self.mlp_param_dicts['mu'][layer_num]
+                init_params = self.shared_param_dicts['mu'][layer_num]
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
@@ -278,12 +278,12 @@ class InfNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=1.0)
                 self.sigma_layers.append(new_layer)
-                self.mlp_param_dicts['sigma'].append({'W': new_layer.W, 'b': new_layer.b})
+                self.shared_param_dicts['sigma'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
-                init_params = self.mlp_param_dicts['sigma'][layer_num]
+                init_params = self.shared_param_dicts['sigma'][layer_num]
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
@@ -390,8 +390,7 @@ class InfNet(object):
             layer.b.set_value(b_init)
         return
 
-    def shared_param_clone(self, rng=None, Xd=None, Xc=None, \
-            Xm=None):
+    def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
@@ -401,7 +400,7 @@ class InfNet(object):
         """
         clone_net = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
                 prior_sigma=self.prior_sigma, params=self.params, \
-                mlp_param_dicts=self.mlp_param_dicts)
+                shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
 if __name__=="__main__":
@@ -427,11 +426,11 @@ if __name__=="__main__":
     in_params['input_noise'] = 0.0
     # Make the starter network
     in_1 = InfNet(rng=rng, Xd=Xd_1, Xc=Xc, Xm=Xm, prior_sigma=5.0, \
-            params=in_params, mlp_param_dicts=None)
+            params=in_params, shared_param_dicts=None)
     # Make a clone of the network with a different symbolic input
     Xd_2 = T.matrix('DATA_INPUT_2')
     in_2 = InfNet(rng=rng, Xd=Xd_2, Xc=Xc, Xm=Xm, prior_sigma=5.0, \
-            params=in_params, mlp_param_dicts=in_1.mlp_param_dicts)
+            params=in_params, shared_param_dicts=in_1.shared_param_dicts)
     # Explicitly construct a clone via the helper function
     Xd_3 = T.matrix('DATA_INPUT_3')
     in_3 = in_1.shared_param_clone(rng=rng, Xd=Xd_3, Xc=Xc, Xm=Xm)

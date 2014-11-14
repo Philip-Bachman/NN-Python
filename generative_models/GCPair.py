@@ -73,6 +73,8 @@ class GCPair(object):
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
+        Xd: symbolic var for providing samples from the data distribution
+        Xp: symbolic var for providing samples from the generator's prior
         d_net: The PeaNet instance that will serve as the discriminator
         g_net: The GenNet instance that will serve as the generator
         data_dim: Dimensions of generated data
@@ -85,29 +87,28 @@ class GCPair(object):
             target_mean: first-order moment to try and match with g_net
             target_cov: second-order moment to try and match with g_net
     """
-    def __init__(self, rng=None, d_net=None, g_net=None, data_dim=None, \
-            data_var=None, params=None):
+    def __init__(self, rng=None, Xd=None, Xp=None, d_net=None, g_net=None, \
+                data_dim=None, params=None):
         # Do some stuff!
         self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
-        self.DN = d_net
-        self.GN = g_net
-        self.input_noise = self.GN.Xp
-        self.input_data = data_var
-        self.sample_data = self.GN.output
         self.data_dim = data_dim
-        # set input to the discriminator to be the true data samples
-        # concatenated with the samples from the generator network
-        #self.DN.input = T.vertical_stack(self.input_data, self.sample_data)
 
-        # symbolic var data input
-        self.Xd = T.matrix(name='gcp_Xd')
-        # symbolic var noise input
-        self.Xn = T.matrix(name='gcp_Xn')
+        # symbolic var for inputting samples from the data distribution
+        self.Xd = Xd
+        # symbolic var for inputting samples from the generator's prior
+        self.Xp = Xp
         # symbolic matrix of indices for data inputs
         self.Id = T.lvector(name='gcp_Id')
         # symbolic matrix of indices for noise inputs
         self.In = T.lvector(name='gcp_In')
+
+        # create clones of the given generator and discriminator, after
+        # rewiring their computation graphs to take the right inputs
+        self.GN = g_net.shared_param_clone(rng=rng, Xp=self.Xp)
+        self.DN = d_net.shared_param_clone(rng=rng, \
+                Xd=T.vertical_stack(Xd, self.GN.output))
+
         # shared var learning rate for generator and discriminator
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         self.lr_gn = theano.shared(value=zero_ary, name='gcp_lr_gn')
@@ -401,7 +402,7 @@ class GCPair(object):
         dist_cov = self.GN.dist_cov
         # Get the generated sample observations for this batch, transformed
         # linearly into the desired space for moment matching...
-        X_b = T.dot(self.sample_data, self.mom_match_proj)
+        X_b = T.dot(self.GN.output, self.mom_match_proj)
         # Get their mean
         batch_mean = T.mean(X_b, axis=0)
         # Get the updated generator distribution mean
@@ -428,11 +429,9 @@ class GCPair(object):
         Construct theano function to train generator on its own.
         """
         outputs = [self.mom_match_cost, self.disc_cost_gn, self.disc_cost_dn]
-        func = theano.function(inputs=[ self.Xd, self.Xn, self.Id, self.In ], \
+        func = theano.function(inputs=[ self.Xd, self.Xp, self.Id, self.In ], \
                 outputs=outputs, \
-                updates=self.gn_updates, \
-                givens={self.input_data: self.Xd, \
-                        self.input_noise: self.Xn})
+                updates=self.gn_updates)
         theano.printing.pydotprint(func, \
             outfile='gn_func_graph.png', compact=True, format='png', with_ids=False, \
             high_contrast=True, cond_highlight=None, colorCodes=None, \
@@ -445,11 +444,9 @@ class GCPair(object):
         Construct theano function to train discriminator on its own.
         """
         outputs = [self.mom_match_cost, self.disc_cost_gn, self.disc_cost_dn]
-        func = theano.function(inputs=[ self.Xd, self.Xn, self.Id, self.In ], \
+        func = theano.function(inputs=[ self.Xd, self.Xp, self.Id, self.In ], \
                 outputs=outputs, \
-                updates=self.dn_updates, \
-                givens={self.input_data: self.Xd, \
-                        self.input_noise: self.Xn})
+                updates=self.dn_updates)
         theano.printing.pydotprint(func, \
             outfile='dn_func_graph.png', compact=True, format='png', with_ids=False, \
             high_contrast=True, cond_highlight=None, colorCodes=None, \
@@ -462,11 +459,9 @@ class GCPair(object):
         Construct theano function to train generator and discriminator jointly.
         """
         outputs = [self.mom_match_cost, self.disc_cost_gn, self.disc_cost_dn]
-        func = theano.function(inputs=[ self.Xd, self.Xn, self.Id, self.In ], \
+        func = theano.function(inputs=[ self.Xd, self.Xp, self.Id, self.In ], \
                 outputs=outputs, \
-                updates=self.joint_updates, \
-                givens={self.input_data: self.Xd, \
-                        self.input_noise: self.Xn})
+                updates=self.joint_updates)
         return func
 
 if __name__=="__main__":

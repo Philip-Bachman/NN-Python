@@ -114,7 +114,7 @@ class PeaNet(object):
 
     Parameters:
         rng: a numpy.random RandomState object
-        input: Theano symbolic matrix representing inputs to this ensemble
+        Xd: Theano symbolic matrix representing inputs to this ensemble
         params: a dict of parameters describing the desired ensemble:
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on input layers (when desired)
@@ -140,13 +140,13 @@ class PeaNet(object):
             spawn_weights: the weight to multiply the classification loss of
                            each spawned-network by when computing the loss to
                            optimize for this generalized spawn-semble.
-        proto_param_dicts: parameters for the MLP controlled by this PeaNet
+        shared_param_dicts: parameters for the MLP controlled by this PeaNet
     """
     def __init__(self,
             rng=None, \
-            input=None, \
+            Xd=None, \
             params=None, \
-            proto_param_dicts=None):
+            shared_param_dicts=None):
         # First, setup a shared random number generator for this layer
         self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
             rng.randint(100000))
@@ -155,7 +155,7 @@ class PeaNet(object):
         ################################################
         assert(not (params is None))
         assert(len(params['proto_configs']) == 1) # permit only one proto-net
-        assert(len(params['spawn_configs']) == 2) # require two spawn nets
+        assert(len(params['spawn_configs']) <= 2) # use one or two spawn nets
         self.params = params
         lam_l2a = params['lam_l2a']
         if 'vis_drop' in params:
@@ -168,9 +168,6 @@ class PeaNet(object):
             self.hid_drop = 0.5
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
-        self.reg_all_obs = True
-        if 'reg_all_obs' in params:
-            self.reg_all_obs = params['reg_all_obs']
         self.ear_type = params['ear_type']
         self.ear_lam = theano.shared(value=np.asarray([params['ear_lam']], \
                 dtype=theano.config.floatX), name='ear_lam')
@@ -184,29 +181,29 @@ class PeaNet(object):
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of a generative network, with all
         # of the network parameters shared between clones.
-        if proto_param_dicts is None:
+        if shared_param_dicts is None:
             # This is not a clone, and we will need to make a dict for
             # referring to the parameters of each network layer
-            self.proto_param_dicts = []
+            self.shared_param_dicts = []
             self.is_clone = False
         else:
             # This is a clone, and its layer parameters can be found by
-            # referring to the given param dict (i.e. proto_param_dicts).
-            self.proto_param_dicts = proto_param_dicts
+            # referring to the given param dict (i.e. shared_param_dicts).
+            self.shared_param_dicts = shared_param_dicts
             self.is_clone = True
         ########################################
         # Initialize all of the proto-networks #
         ########################################
         self.clip_params = {}
         self.proto_nets = []
-        self.Xd = input
+        self.Xd = Xd
         # Construct the proto-networks from which to generate spawn-sembles
         for (pn_num, proto_config) in enumerate(self.proto_configs):
             layer_defs = [ld for ld in proto_config]
             layer_connect_defs = zip(layer_defs[:-1], layer_defs[1:])
             layer_num = 0
             proto_net = []
-            next_input = self.input
+            next_input = self.Xd
             for in_def, out_def in layer_connect_defs:
                 last_layer = (layer_num == (len(layer_connect_defs) - 1))
                 pnl_name = "pn{0:d}l{1:d}".format(pn_num, layer_num)
@@ -235,16 +232,16 @@ class PeaNet(object):
                             in_dim=in_dim, out_dim=out_dim, \
                             name=pnl_name, W_scale=1.0)
                     proto_net.append(new_layer)
-                    self.proto_param_dicts[pn_num].append( \
+                    self.shared_param_dicts.append( \
                             {'W': new_layer.W, 'b': new_layer.b})
                 else:
                     ##################################################
                     # Initialize a layer with some shared parameters #
                     ##################################################
-                    init_params = self.proto_param_dicts[pn_num][layer_num]
+                    init_params = self.shared_param_dicts[layer_num]
                     new_layer = HiddenLayer(rng=rng, input=next_input, \
                             activation=None, pool_size=pool_size, \
-                            drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
+                            drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
                             W=init_params['W'], b=init_params['b'], \
                             name=pnl_name, W_scale=1.0)
@@ -273,7 +270,7 @@ class PeaNet(object):
             # Get info about the proto-network to spawn from
             layer_num = 0
             spawn_net = []
-            next_input = self.input
+            next_input = self.Xd
             proto_net = self.proto_nets[proto_key]
             for proto_layer in proto_net:
                 last_layer = (layer_num == (len(proto_net) - 1))
@@ -319,26 +316,18 @@ class PeaNet(object):
             value=np.asarray([0.2]).astype(theano.config.floatX))
         self._construct_dae_layers(rng, lam_l1=self.dae_lam_l1, nz_lvl=0.25)
 
-        # Get metrics for tracking performance over the mean of the outputs
-        # of the proto-nets underlying this ensemble.
-        self.proto_class_loss, self.proto_class_errors = self._proto_metrics()
-        # Get loss functions to optimize based on the spawned-nets in this
-        # generalized spawn-semble.
-        self.spawn_class_cost = lambda y: self._spawn_class_cost(y)
-        self.spawn_reg_cost = lambda y: self._ear_cost(y, self.ear_type)
-        self.spawn_ent_cost = lambda lam_ent, y: self._ent_cost(lam_ent, y)
-        self.act_reg_cost = lam_l2a * self._act_reg_cost()
-        return
+        # create symbolic "hooks" for observing the output of this network,
+        # either without perturbations or subject to perturbations
+        self.output_proto = self.proto_nets[0][-1].linear_output
+        self.output_spawn = [sn[-1].linear_output for sn in self.spawn_nets]
 
-    def _proto_metrics(self):
-        """Compute classification loss and error rate over proto-nets."""
-        # Create a layer that joins the linear outputs of the proto-networks
-        if len(self.proto_nets) > 1:
-            proto_out_layers = [pn[-1] for pn in self.proto_nets]
-        else:
-            proto_out_layers = [self.proto_nets[0][-1], self.proto_nets[0][-1]]
-        proto_out_func = MCL2HingeSS(JoinLayer(proto_out_layers))
-        return [proto_out_func.loss_func, proto_out_func.errors]
+        # get a cost function for encouraging "pseudo-ensemble agreement"
+        self.pea_reg_cost = self._ear_cost(self.ear_type)
+        # get a cost function for penalizing/rewarding prediction entropy
+        self.ent_reg_cost = lambda lam_ent: self._ent_cost(lam_ent)
+        self.act_reg_cost = (lam_l2a * self._act_reg_cost()) + \
+                (1e-3 * T.mean(self.output_spawn[0]**2.0))
+        return
 
     def _act_reg_cost(self):
         """Apply L2 regularization to the activations in each spawn-net."""
@@ -365,7 +354,7 @@ class PeaNet(object):
         total_loss = T.sum(spawn_class_losses)
         return total_loss
 
-    def _ear_cost(self, y, ear_type):
+    def _ear_cost(self, ear_type):
         """Compute the cost of ensemble agreement regularization."""
         ear_losses = []
         for i in range(self.spawn_count):
@@ -374,47 +363,31 @@ class PeaNet(object):
                     x1 = self.spawn_nets[i][-1].linear_output
                     x2 = self.spawn_nets[j][-1].linear_output
                     ear_loss = self.ear_lam[0] * \
-                            self._ear_loss(x1, x2, y, ear_type)
+                            self._ear_loss(x1, x2, ear_type)
                     ear_losses.append(ear_loss)
         if (self.spawn_count > 1):
             total_loss = T.sum(ear_losses) / self.ear_pairs
         else:
             x1 = self.spawn_nets[0][-1].linear_output
             x2 = self.spawn_nets[0][-1].linear_output
-            total_loss = 0.0 * \
-                self._ear_loss(x1, x2, y, ear_type)
+            total_loss = 0.0 * self._ear_loss(x1, x2, ear_type)
         return total_loss
 
-    def _ear_loss(self, X1, X2, Y, ear_type):
-        """Compute Ensemble Agreement Regularization cost for outputs X1/X2.
+    def _ear_loss(self, X1, X2, ear_type):
+        """
+        Compute Ensemble Agreement Regularization cost for outputs X1/X2.
 
         This regularizes for agreement among members of a 'pseudo-ensemble'.
-        Y is used to generate a mask on EAR costs, restricting optimization of
-        the regularizer to only unlabelled examples whenever the PeaNet
-        instance is operating in 'semi-supervised' mode. The particular type
-        of EAR to apply is selected by 'ear_type'.
+        The particular type of EAR to apply is selected by 'ear_type'.
         """
-        if self.reg_all_obs:
-            # Compute EAR regularizer using _all_ observations, not just those
-            # with class label 0. (assume -1 is not a class label...)
-            print("PEAR for sup + unsup")
-            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
-        else:
-            # Compute EAR regularizer only for observations with class label 0
-            print("PEAR for unsup only")
-            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
-        var_fun = lambda x1, x2: \
-                T.sum(((x1 - x2) * ss_mask)**2.) / T.sum(ss_mask)
+        var_fun = lambda x1, x2: T.sum((x1 - x2)**2.)
         tanh_fun = lambda x1, x2: var_fun(T.tanh(x1), T.tanh(x2))
         norm_fun = lambda x1, x2: var_fun(row_normalize(x1), row_normalize(x2))
-        sigm_fun = lambda x1, x2: \
-                var_fun(T.nnet.sigmoid(x1), T.nnet.sigmoid(x2))
-        bent_fun = lambda p, q: T.sum(ss_mask * T.nnet.binary_crossentropy( \
-                T.nnet.sigmoid(xo), T.nnet.sigmoid(xt))) / T.sum(ss_mask)
-        ment_fun = lambda p, q: \
-                T.sum(ss_mask * smooth_cross_entropy(p, q)) / T.sum(ss_mask)
-        kl_fun = lambda p, q: \
-                T.sum(ss_mask * smooth_kl_divergence(p, q)) / T.sum(ss_mask)
+        sigm_fun = lambda x1, x2: var_fun(T.nnet.sigmoid(x1), T.nnet.sigmoid(x2))
+        bent_fun = lambda p, q: T.sum(T.nnet.binary_crossentropy( \
+                T.nnet.sigmoid(xo), T.nnet.sigmoid(xt)))
+        ment_fun = lambda p, q: T.sum(smooth_cross_entropy(p, q))
+        kl_fun = lambda p, q: T.sum(smooth_kl_divergence(p, q))
         if (ear_type == 1):
             # Unit-normalized variance (like fake cosine distance)
             ear_fun = norm_fun
@@ -437,26 +410,25 @@ class PeaNet(object):
             ear_fun = var_fun
         return ear_fun(X1, X2)
 
-    def _ent_cost(self, lam_ent, y):
-        """Compute cost for entropy regularization, weighted by lam_ent."""
+    def _ent_cost(self, lam_ent, ent_type=1):
+        """
+        Compute cost for entropy regularization, weighted by lam_ent.
+        """
         ent_losses = []
         for i in range(self.spawn_count):
             x = self.spawn_nets[i][-1].linear_output
-            ent_loss = lam_ent * self.ear_lam[0] * self._ent_loss(x, y, 1)
+            ent_loss = lam_ent * self.ear_lam[0] * self._ent_loss(x, 1)
             ent_losses.append(ent_loss)
         total_loss = T.sum(ent_losses) / self.spawn_count
         return total_loss
 
-    def _ent_loss(self, X, Y, ent_type=0):
-        """Compute the entropy regularizer. Either binary or multinomial.
+    def _ent_loss(self, X, ent_type=1):
+        """
+        Compute the entropy regularizer. Either binary or multinomial.
 
         Note: entropy can be computed as the cross-entropy of a distribution
-               with itself.
+              with itself.
         """
-        if self.reg_all_obs:
-            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
-        else:
-            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
         bent_fun = lambda x: T.sum((ss_mask * T.nnet.binary_crossentropy( \
                 T.nnet.sigmoid(x), T.nnet.sigmoid(x))) / T.sum(ss_mask))
         ment_fun = lambda x: T.sum((ss_mask * smooth_cross_entropy(x, x))) / \
@@ -521,13 +493,13 @@ class PeaNet(object):
         self.ear_lam.set_value(np.asarray([e_lam], dtype=theano.config.floatX))
         return
 
-    def shared_param_clone(self, rng=None, input=None):
+    def shared_param_clone(self, rng=None, Xd=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
         """
-        clone_net = PeaNet(rng=rng, input=input, params=self.params, \
-                proto_param_dicts=self.proto_param_dicts)
+        clone_net = PeaNet(rng=rng, Xd=Xd, params=self.params, \
+                shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
 

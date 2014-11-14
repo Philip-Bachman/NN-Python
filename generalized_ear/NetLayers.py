@@ -141,14 +141,15 @@ class HiddenLayer(object):
         else:
             self.filt_count = self.out_dim * self.pool_size
         self.pool_count = self.filt_count / max(self.pool_size, 1)
-        if activation:
+        if activation is None:
+            activation = relu_actfun
+        if self.pool_size <= 1:
+            # Use the given activation if this isn't a "pooling" layer
             self.activation = activation
         else:
-            if self.pool_size <= 1:
-                self.activation = lambda x: relu_actfun(x)
-            else:
-                self.activation = lambda x: \
-                        maxout_actfun(x, self.pool_size, self.filt_count)
+            # Pooling layers do max pooling over disjoint groups (aka maxout)
+            self.activation = lambda x: \
+                    maxout_actfun(x, self.pool_size, self.filt_count)S
 
         # Get some random initial weights and biases, if not given
         if W is None:
