@@ -1,6 +1,12 @@
-################################################################
-# Code for managing and training a generator/inferencer pair.  #
-################################################################
+################################################################################
+# Code for managing and training a triplet system comprising:                  #
+#   1. a generator conditioned on both continuous latent variables and a       #
+#      "one-hot" vector of binary latent variables                             #
+#   2. an inferencer for approximating posteriors over the continuous latent   #
+#      variables given some input                                              #
+#   3. an inferencer for approximating posteriors over the "one-hot" binary    #
+#      latent variables given some input                                       #
+################################################################################
 
 # basic python
 import numpy as np
@@ -45,28 +51,34 @@ def log_prob_gaussian(mu_true, mu_approx, le_sigma=1.0):
 #
 # Important symbolic variables:
 #   Xd: Xd represents input at the "data variables" of the inferencer
+#   Yd: Yd represents input at the "label variables" of the inferencer
 #   Xc: Xc represents input at the "control variables" of the inferencer
 #   Xm: Xm represents input at the "mask variables" of the inferencer
 #
 #
 
-class GIPair(object):
+class GITrip(object):
     """
     Controller for training a variational autoencoder.
 
     The generator must be an instance of the GenNet class implemented in
-    "GINet.py". The inferencer must be an instance of the InfNet class
-    implemented in "InfNet.py".
+    "GINet.py". The inferencer for the continuous latent variables must be an
+    instance of the InfNet class implemented in "InfNet.py". The inferencer
+    for the categorical latent variables must be an instance of the PeaNet
+    class implemented in "PeaNet.py".
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
         Xd: symbolic "data" input to this VAE
+        Yd: symbolic "label" input to this VAE
         Xc: symbolic "control" input to this VAE
         Xm: symbolic "mask" input to this VAE
         g_net: The GenNet instance that will serve as the base generator
-        i_net: The InfNet instance that will serve as the base inferer
+        i_net: The InfNet instance for inferring continuous posteriors
+        p_net: The PeaNet instance for inferring categorical posteriors
         data_dim: dimension of the "observable data" variables
         prior_dim: dimension of the "latent prior" variables
+        label_dim: dimension of the "one-hot" "label prior" variables
         params: dict for passing additional parameters
         shared_param_dicts: dict for retrieving some shared parameters required
                             by a GIPair. if this parameter is passed, then this
@@ -74,42 +86,52 @@ class GIPair(object):
                             clone of some other GIPair.
     """
     def __init__(self, rng=None, \
-            Xd=None, Xc=None, Xm=None, \
-            g_net=None, i_net=None, \
-            data_dim=None, prior_dim=None, \
+            Xd=None, Yd=None, Xc=None, Xm=None, \
+            g_net=None, i_net=None, p_net=None, \
+            data_dim=None, prior_dim=None, label_dim=None, \
             params=None, shared_param_dicts=None):
         # setup a rng for this GIPair
         self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
                 rng.randint(100000))
-        self.params = params
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this GIPair
         self.Xd = Xd
+        self.Yd = Yd
         self.Xc = Xc
         self.Xm = Xm
-        # create "shared-parameter" clones of the inferencer and generator
-        # that this GIPair will be built on.
+        # create "shared-parameter" clones of the generator and inferencers
+        # that this GITrip will be built on.
         self.IN = i_net.shared_param_clone(rng=rng, \
                 Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
+        self.PN = p_net.shared_param_clone(rng=rng, Xd=self.Xd, Yd=self.Yd)
         self.GN = g_net.shared_param_clone(rng=rng, Xp=self.IN.output)
+        # we will be assuming one proto-net in the pseudo-ensemble represented
+        # by self.PN, and either one or two spawn-nets for that proto-net.
+        assert(len(self.PN.proto_nets) == 1)
+        assert((len(self.PN.spawn_nets) == 1) or \
+                (len(self.PN.spawn_nets) == 2))
 
         # record and validate the data dimensionality parameters
         self.data_dim = data_dim
         self.prior_dim = prior_dim
+        self.label_dim = label_dim
         # output of the generator and input to the inferencer should both be
         # equal to self.data_dim
         assert(self.data_dim == self.GN.mlp_layers[-1].out_dim)
         assert(self.data_dim == self.IN.shared_layers[0].in_dim)
-        # input of the generator and mu/sigma outputs of the inferencer should
-        # both be equal to self.prior_dim
-        assert(self.prior_dim == self.GN.mlp_layers[0].in_dim)
+        assert(self.data_dim == self.PN.proto_nets[0][0].in_dim)
+        # mu/sigma outputs of self.IN should be equal to prior_dim, output of
+        # self.PN should be equal to label_dim, and input of self.GN should be
+        # equal to prior_dim + label_dim
         assert(self.prior_dim == self.IN.mu_layers[-1].out_dim)
         assert(self.prior_dim == self.IN.sigma_layers[-1].out_dim)
+        assert(self.label_dim == self.PN.proto_nets[0][-1].out_dim)
+        assert((self.prior_dim + self.label_dim) == self.GN.mlp_layers[0].in_dim)
 
-        # determine whether this GIPair is a clone or an original
+        # determine whether this GITrip is a clone or an original
         if shared_param_dicts is None:
             # This is not a clone, and we will need to make a dict for
-            # referring to the parameters of each network layer
+            # referring to some important shared parameters.
             self.shared_param_dicts = {}
             self.is_clone = False
         else:
@@ -121,52 +143,69 @@ class GIPair(object):
         if not self.is_clone:
             # shared var learning rate for generator and inferencer
             zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-            self.lr_gn = theano.shared(value=zero_ary, name='gil_lr_gn')
-            self.lr_in = theano.shared(value=zero_ary, name='gil_lr_in')
+            self.lr_gn = theano.shared(value=zero_ary, name='git_lr_gn')
+            self.lr_in = theano.shared(value=zero_ary, name='git_lr_in')
+            self.lr_pn = theano.shared(value=zero_ary, name='git_lr_pn')
             # shared var momentum parameters for generator and inferencer
-            self.mo_gn = theano.shared(value=zero_ary, name='gil_mo_gn')
-            self.mo_in = theano.shared(value=zero_ary, name='gil_mo_in')
+            self.mo_gn = theano.shared(value=zero_ary, name='git_mo_gn')
+            self.mo_in = theano.shared(value=zero_ary, name='git_mo_in')
+            self.mo_pn = theano.shared(value=zero_ary, name='git_mo_pn')
             # init parameters for controlling learning dynamics
             self.set_gn_sgd_params() # init SGD rate/momentum for GN
             self.set_in_sgd_params() # init SGD rate/momentum for IN
+            self.set_pn_sgd_params() # init SGD rate/momentum for PN
             # init shared var for weighting prior kld against reconstruction
-            self.lam_kld = theano.shared(value=zero_ary, name='gil_lam_kld')
+            self.lam_kld = theano.shared(value=zero_ary, name='git_lam_kld')
             self.set_lam_kld()
+            # init shared var for weighting ensemble agreement regularization
+            self.lam_ear = theano.shared(value=zero_ary, name='git_lam_ear')
+            self.set_lam_ear()
             # record shared parameters that are to be shared among clones
-            self.shared_param_dicts['gil_lr_gn'] = self.lr_gn
-            self.shared_param_dicts['gil_lr_in'] = self.lr_in
-            self.shared_param_dicts['gil_mo_gn'] = self.mo_gn
-            self.shared_param_dicts['gil_mo_in'] = self.mo_in
-            self.shared_param_dicts['gil_lam_kld'] = self.lam_kld
+            self.shared_param_dicts['git_lr_gn'] = self.lr_gn
+            self.shared_param_dicts['git_lr_in'] = self.lr_in
+            self.shared_param_dicts['git_lr_pn'] = self.lr_pn
+            self.shared_param_dicts['git_mo_gn'] = self.mo_gn
+            self.shared_param_dicts['git_mo_in'] = self.mo_in
+            self.shared_param_dicts['git_mo_pn'] = self.mo_pn
+            self.shared_param_dicts['git_lam_kld'] = self.lam_kld
+            self.shared_param_dicts['git_lam_ear'] = self.lam_ear
         else:
             # use some shared parameters that are shared among all clones of
             # some "base" GIPair
-            self.lr_gn = self.shared_param_dicts['gil_lr_gn']
-            self.lr_in = self.shared_param_dicts['gil_lr_in']
-            self.mo_gn = self.shared_param_dicts['gil_mo_gn']
-            self.mo_in = self.shared_param_dicts['gil_mo_in']
-            self.lam_kld = self.shared_param_dicts['gil_lam_kld']
+            self.lr_gn = self.shared_param_dicts['git_lr_gn']
+            self.lr_in = self.shared_param_dicts['git_lr_in']
+            self.lr_pn = self.shared_param_dicts['git_lr_pn']
+            self.mo_gn = self.shared_param_dicts['git_mo_gn']
+            self.mo_in = self.shared_param_dicts['git_mo_in']
+            self.mo_pn = self.shared_param_dicts['git_mo_pn']
+            self.lam_kld = self.shared_param_dicts['git_lam_kld']
+            self.lam_ear = self.shared_param_dicts['git_lam_ear']
+
 
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
         self.data_nll_cost = self._construct_data_nll_cost()
         self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
-        self.act_reg_cost = (self.IN.act_reg_cost + self.GN.act_reg_cost) / \
+        self.post_ear_cost = self.lam_ear[0] * self.PN.ear_cost
+        self.act_reg_cost = (self.IN.act_reg_cost + self.GN.act_reg_cost + \
+                self.PN.act_reg_cost) / \
                 self.Xd.shape[0]
         self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
                 self.act_reg_cost
 
         # Grab the full set of "optimizable" parameters from the generator
         # and inferencer networks that we'll be working with.
-        self.in_params = [p for p in self.IN.mlp_params]
         self.gn_params = [p for p in self.GN.mlp_params]
+        self.in_params = [p for p in self.IN.mlp_params]
+        self.pn_params = [p for p in self.PN.proto_params]
 
         # Initialize momentums for mini-batch SGD updates. All parameters need
         # to be safely nestled in their lists by now.
         self.joint_moms = OrderedDict()
-        self.in_moms = OrderedDict()
         self.gn_moms = OrderedDict()
+        self.in_moms = OrderedDict()
+        self.pn_moms = OrderedDict()
         for p in self.gn_params:
             p_mo = np.zeros(p.get_value(borrow=True).shape)
             self.gn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
@@ -247,7 +286,7 @@ class GIPair(object):
 
     def set_gn_sgd_params(self, learn_rate=0.02, momentum=0.9):
         """
-        Set learning rate and momentum parameter for generator updates.
+        Set learning rate and momentum parameter for self.GN updates.
         """
         zero_ary = np.zeros((1,))
         new_lr = zero_ary + learn_rate
@@ -258,7 +297,7 @@ class GIPair(object):
 
     def set_in_sgd_params(self, learn_rate=0.02, momentum=0.9):
         """
-        Set learning rate and momentum parameter for discriminator updates.
+        Set learning rate and momentum parameter for self.IN updates.
         """
         zero_ary = np.zeros((1,))
         new_lr = zero_ary + learn_rate
@@ -267,9 +306,31 @@ class GIPair(object):
         self.mo_in.set_value(new_mo.astype(theano.config.floatX))
         return
 
+    def set_pn_sgd_params(self, learn_rate=0.02, momentum=0.9):
+        """
+        Set learning rate and momentum parameter for self.PN updates.
+        """
+        zero_ary = np.zeros((1,))
+        new_lr = zero_ary + learn_rate
+        self.lr_pn.set_value(new_lr.astype(theano.config.floatX))
+        new_mo = zero_ary + momentum
+        self.mo_pn.set_value(new_mo.astype(theano.config.floatX))
+        return
+
     def set_lam_kld(self, lam_kld=1.0):
         """
-        Set the relative weight of prior KL-divergence vs. data likelihood.
+        Set the strength of regularization on KL-divergence for continuous
+        and categorical posterior variables. When set to 1.0, this reproduces
+        the standard role of KL(posterior || prior) in variational learning.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_kld
+        self.lam_kld.set_value(new_lam.astype(theano.config.floatX))
+        return
+
+    def set_lam_ear(self, lam_ear=0.0):
+        """
+        Set the strength of PEA regularization on the categorical posterior.
         """
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_kld
@@ -312,19 +373,19 @@ class GIPair(object):
             print_output_file=True, assert_nb_all_strings=-1)
         return func
 
-    def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None):
+    def shared_param_clone(self, rng=None, Xd=None, Yd=None, Xc=None, Xm=None):
         """
-        Create a "shared-parameter" clone of this GIPair.
+        Create a "shared-parameter" clone of this GITrip.
 
         This can be used for chaining VAEs for BPTT.
         """
-        clone_gip = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
-            g_net=self.GN, i_net=self.IN, \
-            data_dim=self.data_dim, prior_dim=self.prior_dim, \
+        clone_git = GITrip(rng=rng, Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
+            g_net=self.GN, i_net=self.IN, p_net=self.PN, \
+            data_dim=self.data_dim, prior_dim=self.prior_dim, label_dim=self.label_dim, \
             params=self.params, shared_param_dicts=self.shared_param_dicts)
-        return clone_gip
+        return clone_git
 
-    def sample_gil_from_data(self, X_d, loop_iters=5):
+    def sample_git_from_data(self, X_d, loop_iters=5):
         """
         Sample for several rounds through the I<->G loop, initialized with the
         the "data variable" samples in X_d.
@@ -374,7 +435,7 @@ if __name__=="__main__":
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 64
+    prior_dim = 128
     prior_sigma = 2.0
     # Choose some parameters for the generator network
     gn_params = {}
@@ -382,7 +443,7 @@ if __name__=="__main__":
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = softplus_actfun
     gn_params['lam_l2a'] = 1e-3
-    gn_params['vis_drop'] = 0.0
+    gn_params['vis_drop'] = 0.5
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.2
     gn_params['out_noise'] = 0.0
@@ -442,9 +503,9 @@ if __name__=="__main__":
             print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, act_reg_cost: {4:.4f}".format( \
                     i, joint_cost, data_nll_cost, post_kld_cost, act_reg_cost))
         if ((i % 10000) == 0):
-            file_name = "GN_SAMPLES_X_b{0:d}.png".format(i)
+            file_name = "GN_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
-            sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=10)
+            sample_lists = GIP.sample_git_from_data(Xd_samps, loop_iters=10)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name)
 

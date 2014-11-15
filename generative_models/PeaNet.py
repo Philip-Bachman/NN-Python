@@ -110,11 +110,17 @@ def smooth_cross_entropy(p, q):
 ##########################
 
 class PeaNet(object):
-    """A multipurpose ensemble of noise-perturbed neural networks.
+    """
+    A multi-purpose ensemble of noise-perturbed neural networks. This class
+    constructs and manages the computation graph for a pseudo-ensemble, and
+    provides costs for imposing pseudo-ensemble agreement regularization on
+    the pseudo-ensemble. (i.e. droppy fuzzy networks)
+
 
     Parameters:
         rng: a numpy.random RandomState object
-        Xd: Theano symbolic matrix representing inputs to this ensemble
+        Xd: Theano symbolic matrix for "observation" inputs to this PeaNet
+        Yd: Theano symbolic matrix for "label" inputs to this PeaNet
         params: a dict of parameters describing the desired ensemble:
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on input layers (when desired)
@@ -145,6 +151,7 @@ class PeaNet(object):
     def __init__(self,
             rng=None, \
             Xd=None, \
+            Yd=None, \
             params=None, \
             shared_param_dicts=None):
         # First, setup a shared random number generator for this layer
@@ -156,6 +163,9 @@ class PeaNet(object):
         assert(not (params is None))
         assert(len(params['proto_configs']) == 1) # permit only one proto-net
         assert(len(params['spawn_configs']) <= 2) # use one or two spawn nets
+        self.Xd = Xd # symbolic input to this computation graph
+        self.Yd = Yd # symbolic label input, only here for compatibility with
+                     # the interface provided by GITrip (for now, at least)
         self.params = params
         lam_l2a = params['lam_l2a']
         if 'vis_drop' in params:
@@ -196,7 +206,6 @@ class PeaNet(object):
         ########################################
         self.clip_params = {}
         self.proto_nets = []
-        self.Xd = Xd
         # Construct the proto-networks from which to generate spawn-sembles
         for (pn_num, proto_config) in enumerate(self.proto_configs):
             layer_defs = [ld for ld in proto_config]
@@ -330,7 +339,9 @@ class PeaNet(object):
         return
 
     def _act_reg_cost(self):
-        """Apply L2 regularization to the activations in each spawn-net."""
+        """
+        Apply L2 regularization to the activations in each spawn-net.
+        """
         act_sq_sums = []
         for i in range(self.spawn_count):
             sn = self.spawn_nets[i]
@@ -339,23 +350,10 @@ class PeaNet(object):
         full_act_sq_sum = T.sum(act_sq_sums) / self.spawn_count
         return full_act_sq_sum
 
-    def _spawn_class_cost(self, y):
-        """Compute the weighted sum of class losses over the spawn-nets.
-
-        Classification cost/loss is computed for each spawn-net in this
-        generalized pseudo-ensemble."""
-        spawn_class_losses = []
-        for i in range(self.spawn_count):
-            spawn_net = self.spawn_nets[i]
-            spawn_out_func = MCL2HingeSS(spawn_net[-1])
-            spawn_class_loss = \
-                    self.spawn_weights[i] * spawn_out_func.loss_func(y)
-            spawn_class_losses.append(spawn_class_loss)
-        total_loss = T.sum(spawn_class_losses)
-        return total_loss
-
     def _ear_cost(self, ear_type):
-        """Compute the cost of ensemble agreement regularization."""
+        """
+        Compute the cost of ensemble agreement regularization.
+        """
         ear_losses = []
         for i in range(self.spawn_count):
             for j in range(self.spawn_count):
@@ -378,7 +376,7 @@ class PeaNet(object):
         Compute Ensemble Agreement Regularization cost for outputs X1/X2.
 
         This regularizes for agreement among members of a 'pseudo-ensemble'.
-        The particular type of EAR to apply is selected by 'ear_type'.
+        The particular type of PEAR to apply is selected by 'ear_type'.
         """
         var_fun = lambda x1, x2: T.sum((x1 - x2)**2.)
         tanh_fun = lambda x1, x2: var_fun(T.tanh(x1), T.tanh(x2))
@@ -493,12 +491,12 @@ class PeaNet(object):
         self.ear_lam.set_value(np.asarray([e_lam], dtype=theano.config.floatX))
         return
 
-    def shared_param_clone(self, rng=None, Xd=None):
+    def shared_param_clone(self, rng=None, Xd=None, Yd=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
         """
-        clone_net = PeaNet(rng=rng, Xd=Xd, params=self.params, \
+        clone_net = PeaNet(rng=rng, Xd=Xd, Yd=Yd, params=self.params, \
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
