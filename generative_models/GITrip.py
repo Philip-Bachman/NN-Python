@@ -548,7 +548,7 @@ if __name__=="__main__":
     in_params['input_noise'] = 0.0
     # choose some parameters for the categorical inferencer
     pn_params = {}
-    pc0 = [data_dim, 800, 800, 10]
+    pc0 = [data_dim, 800, 800, label_dim]
     pn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
