@@ -336,6 +336,8 @@ class PeaNet(object):
         self.ent_reg_cost = lambda lam_ent: self._ent_cost(lam_ent)
         self.act_reg_cost = (lam_l2a * self._act_reg_cost()) + \
                 (1e-3 * T.mean(self.output_spawn[0]**2.0))
+        # construct a function for sampling from a categorical
+        self.sample_posterior = self._construct_sample_posterior()
         return
 
     def _act_reg_cost(self):
@@ -484,6 +486,28 @@ class PeaNet(object):
             # for DAEs at depth d (in self.dae_costs[d][1]).
             self.dae_costs.append([T.sum([c[0] for c in d_costs]), \
                     T.sum([c[1] for c in d_costs])])
+        return
+
+    def _construct_sample_posterior(self):
+        """
+        Construct a function for sampling from the categorical distribution
+        resulting from taking a softmax of the output of this PeaNet.
+        """
+        func = theano.function([self.Xd], \
+                outputs=safe_softmax(self.output_proto))
+        def sampler(x):
+            y = func(x)
+            y_bin = 1.0 * (y >= np.max(y, axis=1, keepdims=True))
+            return y_bin
+        return sampler
+
+    def init_biases(self, b_init=0.0):
+        """
+        Initialize the biases in all hidden layers to some constant.
+        """
+        for layer in self.proto_nets[0][:-1]:
+            b_init = (0.0 * layer.b.get_value(borrow=False)) + b_init
+            layer.b.set_value(b_init)
         return
 
     def set_ear_lam(self, e_lam):

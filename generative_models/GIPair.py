@@ -132,12 +132,16 @@ class GIPair(object):
             # init shared var for weighting prior kld against reconstruction
             self.lam_kld = theano.shared(value=zero_ary, name='gil_lam_kld')
             self.set_lam_kld()
+            # init shared var for controlling l2 regularization on params
+            self.lam_l2w = theano.shared(value=zero_ary, name='gil_lam_l2w')
+            self.set_lam_l2w(1e-4)
             # record shared parameters that are to be shared among clones
             self.shared_param_dicts['gil_lr_gn'] = self.lr_gn
             self.shared_param_dicts['gil_lr_in'] = self.lr_in
             self.shared_param_dicts['gil_mo_gn'] = self.mo_gn
             self.shared_param_dicts['gil_mo_in'] = self.mo_in
             self.shared_param_dicts['gil_lam_kld'] = self.lam_kld
+            self.shared_param_dicts['gil_lam_l2w'] = self.lam_l2w
         else:
             # use some shared parameters that are shared among all clones of
             # some "base" GIPair
@@ -146,6 +150,7 @@ class GIPair(object):
             self.mo_gn = self.shared_param_dicts['gil_mo_gn']
             self.mo_in = self.shared_param_dicts['gil_mo_in']
             self.lam_kld = self.shared_param_dicts['gil_lam_kld']
+            self.lam_l2w = self.shared_param_dicts['gil_lam_l2w']
 
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
@@ -184,7 +189,8 @@ class GIPair(object):
             # these updates are for trainable params in the inferencer net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]) + \
+                    (self.lam_l2w[0] * var)
             # get the momentum for this var
             var_mom = self.in_moms[var]
             # update the momentum for this var using its grad
@@ -210,7 +216,8 @@ class GIPair(object):
             # these updates are for trainable params in the generator net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]) + \
+                    (self.lam_l2w[0] * var)
             # get the momentum for this var
             var_mom = self.gn_moms[var]
             # update the momentum for this var using its grad
@@ -274,6 +281,15 @@ class GIPair(object):
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_kld
         self.lam_kld.set_value(new_lam.astype(theano.config.floatX))
+        return
+
+    def set_lam_l2w(self, lam_l2w=1e-3):
+        """
+        Set the relative strength of l2 regularization on network params.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_l2w
+        self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
     def _construct_data_nll_cost(self, prob_type='bernoulli'):
@@ -374,21 +390,21 @@ if __name__=="__main__":
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 64
+    prior_dim = 128
     prior_sigma = 2.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 800, 800, 800, data_dim]
+    gn_config = [prior_dim, 1000, 1000, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = softplus_actfun
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.2
+    gn_params['bias_noise'] = 0.1
     gn_params['out_noise'] = 0.0
     # Choose some parameters for the inference network
     in_params = {}
-    shared_config = [data_dim, (200, 4), (200, 4)]
+    shared_config = [data_dim, (200, 4)]
     top_config = [shared_config[-1], (200, 4), prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
@@ -397,7 +413,7 @@ if __name__=="__main__":
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.2
+    in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
@@ -410,14 +426,15 @@ if __name__=="__main__":
     # Initialize the GIPair
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
+    GIP.set_lam_l2w(1e-2)
     # Set initial learning rate and basic SGD hyper parameters
-    in_learn_rate = 0.005
-    gn_learn_rate = 0.005
+    in_learn_rate = 0.0025
+    gn_learn_rate = 0.0025
     GIP.set_in_sgd_params(learn_rate=in_learn_rate, momentum=0.8)
     GIP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.8)
 
     for i in range(750000):
-        if (i < 100000):
+        if (i < 50000):
             scale = float(i) / 50000.0
             GIP.set_in_sgd_params(learn_rate=(scale*in_learn_rate), momentum=0.75)
             GIP.set_gn_sgd_params(learn_rate=(scale*gn_learn_rate), momentum=0.75)
@@ -442,7 +459,7 @@ if __name__=="__main__":
             print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, act_reg_cost: {4:.4f}".format( \
                     i, joint_cost, data_nll_cost, post_kld_cost, act_reg_cost))
         if ((i % 10000) == 0):
-            file_name = "GN_SAMPLES_X_b{0:d}.png".format(i)
+            file_name = "GN_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
             sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=10)
             Xs = np.vstack(sample_lists["data samples"])

@@ -312,7 +312,8 @@ class InfNet(object):
         # The output of this inference network is given by the noisy output
         # of the final layers of its mu and sigma networks.
         self.output_mu = self.mu_layers[-1].noisy_linear
-        self.output_sigma = T.log(1.0 + T.exp(self.sigma_layers[-1].noisy_linear))
+        self.output_sigma = T.exp(self.sigma_layers[-1].noisy_linear)
+        #self.output_sigma = T.log(1.0 + T.exp(self.sigma_layers[-1].noisy_linear))
         # We'll also construct an output containing a single samples from each
         # of the distributions represented by the rows of self.output_mu and
         # self.output_sigma.
