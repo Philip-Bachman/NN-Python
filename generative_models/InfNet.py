@@ -11,8 +11,8 @@ from collections import OrderedDict
 import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
-import theano.tensor.shared_randomstreams
-from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+from theano.tensor.shared_randomstreams import RandomStreams as RandStream
+#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun
@@ -59,9 +59,7 @@ class InfNet(object):
             params=None, \
             shared_param_dicts=None):
         # Setup a shared random generator for this network 
-        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-        #        rng.randint(100000))
-        self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        self.rng = RandStream(rng.randint(1000000))
         # Grab the symbolic input matrix
         self.Xd = Xd
         self.Xc = Xc
@@ -311,9 +309,9 @@ class InfNet(object):
 
         # The output of this inference network is given by the noisy output
         # of the final layers of its mu and sigma networks.
-        self.output_mu = self.mu_layers[-1].noisy_linear
-        self.output_sigma = T.exp(self.sigma_layers[-1].noisy_linear)
-        #self.output_sigma = T.log(1.0 + T.exp(self.sigma_layers[-1].noisy_linear))
+        self.output_mu = self.mu_layers[-1].linear_output
+        #self.output_sigma = T.exp(self.sigma_layers[-1].linear_output)
+        self.output_sigma = T.log(1.0 + T.exp(self.sigma_layers[-1].linear_output))
         # We'll also construct an output containing a single samples from each
         # of the distributions represented by the rows of self.output_mu and
         # self.output_sigma.

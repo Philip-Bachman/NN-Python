@@ -11,8 +11,8 @@ from collections import OrderedDict
 import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
-import theano.tensor.shared_randomstreams
-from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+from theano.tensor.shared_randomstreams import RandomStreams as RandStream
+#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun
@@ -49,9 +49,7 @@ class GenNet(object):
             params=None, \
             shared_param_dicts=None):
         # First, setup a shared random number generator for this layer
-        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-        #    rng.randint(100000))
-        self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        self.rng = RandStream(rng.randint(1000000))
         # Grab the symbolic input matrix
         self.Xp = Xp
         self.prior_sigma = prior_sigma
@@ -183,8 +181,8 @@ class GenNet(object):
         # latent noise source with its deep non-linear transform. These will
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
-        #self.output = self.mlp_layers[-1].noisy_linear
-        self.output = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear)
+        #self.output = self.mlp_layers[-1].linear_output
+        self.output = T.nnet.sigmoid(self.mlp_layers[-1].linear_output)
         self.out_dim = self.mlp_layers[-1].out_dim
         C_init = np.zeros((self.out_dim,self.out_dim)).astype(theano.config.floatX)
         m_init = np.zeros((self.out_dim,)).astype(theano.config.floatX)

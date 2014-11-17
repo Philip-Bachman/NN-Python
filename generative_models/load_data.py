@@ -8,7 +8,8 @@ import theano
 import theano.tensor as T
 
 def _shared_dataset(data_xy):
-    """ Function that loads the dataset into shared variables
+    """
+    Function that loads the dataset into shared variables
 
     The reason we store our dataset in shared variables is to allow
     Theano to copy it into the GPU memory (when code is run on GPU).
@@ -47,7 +48,8 @@ def load_mnist(path, zero_mean=True):
     return rval
 
 def load_udm_ss(dataset, sup_count, rng, zero_mean=True):
-    """Load semi-supervised version of the standard UdM MNIST data.
+    """
+    Load semi-supervised version of the standard UdM MNIST data.
 
     For this, the training data is split into labeled and unlabeled portions.
     The number of labeled examples is 'sup_count', and an equal number of

@@ -1,11 +1,10 @@
 ################################################################################
 # Code for managing and training a triplet system comprising:                  #
-#   1. a generator conditioned on both continuous latent variables and a       #
-#      "one-hot" vector of binary latent variables                             #
+#   1. a generator conditioned on some continuous latent variables             #
 #   2. an inferencer for approximating posteriors over the continuous latent   #
 #      variables given some input                                              #
-#   3. an inferencer for approximating posteriors over the "one-hot" binary    #
-#      latent variables given some input                                       #
+#   3. a "classifier" for predicting a posterior over some categorical labels, #
+#      which samples from the continuous latent variable posterior as input.   #
 ################################################################################
 
 # basic python
@@ -16,7 +15,6 @@ from collections import OrderedDict
 # theano business
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
 from theano.tensor.shared_randomstreams import RandomStreams as RandStream
 #from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
@@ -48,30 +46,30 @@ def log_prob_gaussian(mu_true, mu_approx, le_sigma=1.0):
     row_log_probs = T.sum(ind_log_probs, axis=1, keepdims=True)
     return row_log_probs
 
-def cat_entropy(p):
+def cat_entropy(row_dists):
     """
     Compute the entropy of (row-wise) categorical distributions in p.
     """
-    row_ents = -T.sum((p * T.log(p)), axis=1, keepdims=True)
+    row_ents = -T.sum((row_dists * T.log(row_dists)), axis=1, keepdims=True)
     return row_ents
 
 #
 #
 # Important symbolic variables:
 #   Xd: Xd represents input at the "data variables" of the inferencer
-#   Yd: Yd represents input at the "label variables" of the inferencer
+#   Yd: Yd represents label information for use in semi-supervised learning
 #   Xc: Xc represents input at the "control variables" of the inferencer
 #   Xm: Xm represents input at the "mask variables" of the inferencer
 #
 #
 
-class GITrip(object):
+class GIStack1(object):
     """
     Controller for training a variational autoencoder.
 
     The generator must be an instance of the GenNet class implemented in
     "GenNet.py". The inferencer for the continuous latent variables must be an
-    instance of the InfNet class implemented in "InfNet.py". The inferencer
+    instance of the InfNet class implemented in "InfNet.py". The "classifier"
     for the categorical latent variables must be an instance of the PeaNet
     class implemented in "PeaNet.py".
 
@@ -103,65 +101,52 @@ class GITrip(object):
             data_dim=None, prior_dim=None, label_dim=None, \
             batch_size=None, \
             params=None, shared_param_dicts=None):
-        # setup a rng for this GITrip
+        # setup a rng for this GIStack1
         self.rng = RandStream(rng.randint(100000))
         # record the symbolic variables that will provide inputs to the
-        # computation graph created to describe this GITrip
+        # computation graph created to describe this GIStack1
         self.Xd = Xd
         self.Yd = Yd
         self.Xc = Xc
         self.Xm = Xm
-        # record the dimensionality of the data handled by this GITrip
+        # record the dimensionality of the data handled by this GIStack1
         self.data_dim = data_dim
         self.label_dim = label_dim
         self.prior_dim = prior_dim
         self.batch_size = batch_size
-        # construct a vertically-repeated identity matrix for marginalizing
-        # over possible values of the categorical latent variable.
-        Ic = np.vstack([np.identity(label_dim) for i in range(batch_size)])
-        self.Ic = theano.shared(value=Ic.astype(theano.config.floatX), name='git_Ic')
-        # create "shared-parameter" clones of the continuous and categorical
-        # inferencers that this GITrip will be built on.
+        # create "shared-parameter" clones of the continuous inferencer
         self.IN = i_net.shared_param_clone(rng=rng, \
                 Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
-        self.PN = p_net.shared_param_clone(rng=rng, Xd=self.Xd, Yd=self.Yd)
-        # create symbolic variables for the approximate posteriors over the 
-        # continuous and categorical latent variables
+        # capture a handle for the output of the continuous inferencer
         self.Xp = self.IN.output
+        # feed it into a shared-parameter clone of the generator
+        self.GN = g_net.shared_param_clone(rng=rng, Xp=self.Xp)
+        # and feed it into a shared-parameter clone of the label inferencer
+        self.PN = p_net.shared_param_clone(rng=rng, Xd=self.Xp, Yd=self.Yd)
+        # capture a handle for the output of the label inferencer. we'll use
+        # the output of the "first" spawn-net. it may be useful to try using
+        # the output of the proto-net instead...
         self.Yp = safe_softmax(self.PN.output_spawn[0])
-        self.Yp_sum = T.sum(cat_entropy(self.Yp)) / self.Yp.shape[0]
-        # create a symbolic variable structured to allow easy "marginalization"
-        # over possible settings of the categorical latent variable. the left
-        # matrix (i.e. self.Ic) comprises batch_size copies of the label_dim
-        # dimensional identity matrix stacked on top of each other, and the
-        # right matrix comprises a single sample from the approximate posterior
-        # over the continuous latent variables for each of batch_size examples
-        # with each sample repeated label_dim times.
-        self.XYp = T.horizontal_stack(self.Ic, T.repeat(self.Xp, \
-                self.label_dim, axis=0))
-        # pipe the "convenient marginlization" matrix into a shared parameter
-        # clone of the generator network
-        self.GN = g_net.shared_param_clone(rng=rng, Xp=self.XYp)
 
         # we will be assuming one proto-net in the pseudo-ensemble represented
         # by self.PN, and either one or two spawn-nets for that proto-net.
         assert(len(self.PN.proto_nets) == 1)
         assert((len(self.PN.spawn_nets) == 1) or \
                 (len(self.PN.spawn_nets) == 2))
-        # output of the generator and input to the inferencer should both be
-        # equal to self.data_dim
+        # output of the generator and input to the continuous inferencer should
+        # both be equal to self.data_dim
         assert(self.data_dim == self.GN.mlp_layers[-1].out_dim)
         assert(self.data_dim == self.IN.shared_layers[0].in_dim)
-        assert(self.data_dim == self.PN.proto_nets[0][0].in_dim)
-        # mu/sigma outputs of self.IN should be equal to prior_dim, output of
-        # self.PN should be equal to label_dim, and input of self.GN should be
-        # equal to prior_dim + label_dim
+        # mu/sigma outputs of self.IN should be equal to prior_dim, as should
+        # the inputs to self.GN and self.PN. self.PN should produce output with
+        # dimension label_dim.
         assert(self.prior_dim == self.IN.mu_layers[-1].out_dim)
         assert(self.prior_dim == self.IN.sigma_layers[-1].out_dim)
+        assert(self.prior_dim == self.GN.mlp_layers[0].in_dim)
+        assert(self.prior_dim == self.PN.proto_nets[0][0].in_dim)
         assert(self.label_dim == self.PN.proto_nets[0][-1].out_dim)
-        assert((self.prior_dim + self.label_dim) == self.GN.mlp_layers[0].in_dim)
 
-        # determine whether this GITrip is a clone or an original
+        # determine whether this GIStack1 is a clone or an original
         if shared_param_dicts is None:
             # This is not a clone, and we will need to make a dict for
             # referring to some important shared parameters.
@@ -176,46 +161,57 @@ class GITrip(object):
         if not self.is_clone:
             # shared var learning rate for generator and inferencer
             zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-            self.lr_gn = theano.shared(value=zero_ary, name='git_lr_gn')
-            self.lr_in = theano.shared(value=zero_ary, name='git_lr_in')
-            self.lr_pn = theano.shared(value=zero_ary, name='git_lr_pn')
+            self.lr_gn = theano.shared(value=zero_ary, name='gis_lr_gn')
+            self.lr_in = theano.shared(value=zero_ary, name='gis_lr_in')
+            self.lr_pn = theano.shared(value=zero_ary, name='gis_lr_pn')
             # shared var momentum parameters for generator and inferencer
-            self.mo_gn = theano.shared(value=zero_ary, name='git_mo_gn')
-            self.mo_in = theano.shared(value=zero_ary, name='git_mo_in')
-            self.mo_pn = theano.shared(value=zero_ary, name='git_mo_pn')
+            self.mo_gn = theano.shared(value=zero_ary, name='gis_mo_gn')
+            self.mo_in = theano.shared(value=zero_ary, name='gis_mo_in')
+            self.mo_pn = theano.shared(value=zero_ary, name='gis_mo_pn')
             # init parameters for controlling learning dynamics
             self.set_all_sgd_params()
             # init shared var for weighting prior kld against reconstruction
-            self.lam_kld = theano.shared(value=zero_ary, name='git_lam_kld')
+            self.lam_kld = theano.shared(value=zero_ary, name='gis_lam_kld')
             self.set_lam_kld(lam_kld=1.0)
+            # init shared var for weighting semi-supervised classification
+            self.lam_cat = theano.shared(value=zero_ary, name='gis_lam_cat')
+            self.set_lam_cat(lam_cat=0.0)
             # init shared var for weighting ensemble agreement regularization
-            self.lam_pea = theano.shared(value=zero_ary, name='git_lam_pea')
+            self.lam_pea = theano.shared(value=zero_ary, name='gis_lam_pea')
             self.set_lam_pea(lam_pea=0.0)
+            # init shared var for weighting entropy regularization on the
+            # inferred posteriors over the categorical variable of interest
+            self.lam_ent = theano.shared(value=zero_ary, name='gis_lam_ent')
+            self.set_lam_ent(lam_ent=0.0)
             # init shared var for controlling l2 regularization on params
             self.lam_l2w = theano.shared(value=zero_ary, name='gil_lam_l2w')
             self.set_lam_l2w(lam_l2w=1e-3)
             # record shared parameters that are to be shared among clones
-            self.shared_param_dicts['git_lr_gn'] = self.lr_gn
-            self.shared_param_dicts['git_lr_in'] = self.lr_in
-            self.shared_param_dicts['git_lr_pn'] = self.lr_pn
-            self.shared_param_dicts['git_mo_gn'] = self.mo_gn
-            self.shared_param_dicts['git_mo_in'] = self.mo_in
-            self.shared_param_dicts['git_mo_pn'] = self.mo_pn
-            self.shared_param_dicts['git_lam_kld'] = self.lam_kld
-            self.shared_param_dicts['git_lam_pea'] = self.lam_pea
-            self.shared_param_dicts['gil_lam_l2w'] = self.lam_l2w
+            self.shared_param_dicts['gis_lr_gn'] = self.lr_gn
+            self.shared_param_dicts['gis_lr_in'] = self.lr_in
+            self.shared_param_dicts['gis_lr_pn'] = self.lr_pn
+            self.shared_param_dicts['gis_mo_gn'] = self.mo_gn
+            self.shared_param_dicts['gis_mo_in'] = self.mo_in
+            self.shared_param_dicts['gis_mo_pn'] = self.mo_pn
+            self.shared_param_dicts['gis_lam_kld'] = self.lam_kld
+            self.shared_param_dicts['gis_lam_cat'] = self.lam_cat
+            self.shared_param_dicts['gis_lam_pea'] = self.lam_pea
+            self.shared_param_dicts['gis_lam_ent'] = self.lam_ent
+            self.shared_param_dicts['gis_lam_l2w'] = self.lam_l2w
         else:
             # use some shared parameters that are shared among all clones of
-            # some "base" GITrip
-            self.lr_gn = self.shared_param_dicts['git_lr_gn']
-            self.lr_in = self.shared_param_dicts['git_lr_in']
-            self.lr_pn = self.shared_param_dicts['git_lr_pn']
-            self.mo_gn = self.shared_param_dicts['git_mo_gn']
-            self.mo_in = self.shared_param_dicts['git_mo_in']
-            self.mo_pn = self.shared_param_dicts['git_mo_pn']
-            self.lam_kld = self.shared_param_dicts['git_lam_kld']
-            self.lam_pea = self.shared_param_dicts['git_lam_pea']
-            self.lam_l2w = self.shared_param_dicts['gil_lam_l2w']
+            # some "base" GIStack1
+            self.lr_gn = self.shared_param_dicts['gis_lr_gn']
+            self.lr_in = self.shared_param_dicts['gis_lr_in']
+            self.lr_pn = self.shared_param_dicts['gis_lr_pn']
+            self.mo_gn = self.shared_param_dicts['gis_mo_gn']
+            self.mo_in = self.shared_param_dicts['gis_mo_in']
+            self.mo_pn = self.shared_param_dicts['gis_mo_pn']
+            self.lam_kld = self.shared_param_dicts['gis_lam_kld']
+            self.lam_cat = self.shared_param_dicts['gis_lam_cat']
+            self.lam_pea = self.shared_param_dicts['gis_lam_pea']
+            self.lam_ent = self.shared_param_dicts['gis_lam_ent']
+            self.lam_l2w = self.shared_param_dicts['gis_lam_l2w']
 
         # Grab the full set of "optimizable" parameters from the generator
         # and inferencer networks that we'll be working with.
@@ -228,13 +224,15 @@ class GITrip(object):
         ###################################
         self.data_nll_cost = self._construct_data_nll_cost()
         self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
+        self.post_cat_cost = self.lam_cat[0] * self._construct_post_cat_cost()
         self.post_pea_cost = self.lam_pea[0] * self._construct_post_pea_cost()
+        self.post_ent_cost = self.lam_ent[0] * self._construct_post_ent_cost()
         self.other_reg_cost = self._construct_other_reg_cost()
-        self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
-                self.post_pea_cost + self.other_reg_cost
+        self.joint_cost = self.data_nll_cost + self.post_kld_cost + self.post_cat_cost + \
+                self.post_pea_cost + self.post_ent_cost + self.other_reg_cost
 
-        # Initialize momentums for mini-batch SGD updates. All parameters need
-        # to be safely nestled in their lists by now.
+        # Initialize momentums for mini-batch SGD updates. All optimizable
+        # parameters need to be safely nestled in their lists by now.
         self.joint_moms = OrderedDict()
         self.gn_moms = OrderedDict()
         self.in_moms = OrderedDict()
@@ -252,7 +250,7 @@ class GITrip(object):
             self.pn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
             self.joint_moms[p] = self.pn_moms[p]
 
-        # Now, we need to construct updates for inferencers and the generator
+        # now, must construct updates for all parameters and their momentums
         self.joint_updates = OrderedDict()
         self.gn_updates = OrderedDict()
         self.in_updates = OrderedDict()
@@ -273,16 +271,15 @@ class GITrip(object):
             self.joint_updates[var_mom] = self.gn_updates[var_mom]
             # make basic update to the var
             var_new = var - (self.lr_gn[0] * var_mom)
+            # apply "norm clipping" if desired
             if ((var in self.GN.clip_params) and \
                     (var in self.GN.clip_norms) and \
                     (self.GN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.GN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.gn_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.gn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.gn_updates[var]
@@ -302,16 +299,15 @@ class GITrip(object):
             self.joint_updates[var_mom] = self.in_updates[var_mom]
             # make basic update to the var
             var_new = var - (self.lr_in[0] * var_mom)
+            # apply "norm clipping" if desired
             if ((var in self.IN.clip_params) and \
                     (var in self.IN.clip_norms) and \
                     (self.IN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.IN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.in_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.in_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.in_updates[var]
@@ -331,16 +327,15 @@ class GITrip(object):
             self.joint_updates[var_mom] = self.pn_updates[var_mom]
             # make basic update to the var
             var_new = var - (self.lr_pn[0] * var_mom)
+            # apply "norm clipping" if desired
             if ((var in self.PN.clip_params) and \
                     (var in self.PN.clip_norms) and \
                     (self.PN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.PN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.pn_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.pn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.pn_updates[var]
@@ -390,36 +385,36 @@ class GITrip(object):
         Set learning rate and momentum parameter for all updates.
         """
         zero_ary = np.zeros((1,))
-        # set learning rates
+        # set learning rates for GN, IN, PN
         new_lr = zero_ary + learn_rate
         self.lr_gn.set_value(new_lr.astype(theano.config.floatX))
         self.lr_in.set_value(new_lr.astype(theano.config.floatX))
         self.lr_pn.set_value(new_lr.astype(theano.config.floatX))
-        # set momentums
+        # set momentums for GN, IN, PN
         new_mo = zero_ary + momentum
         self.mo_gn.set_value(new_mo.astype(theano.config.floatX))
         self.mo_in.set_value(new_mo.astype(theano.config.floatX))
         self.mo_pn.set_value(new_mo.astype(theano.config.floatX))
         return
 
+    def set_lam_cat(self, lam_cat=0.0):
+        """
+        Set the strength of semi-supervised classification cost.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_cat
+        self.lam_cat.set_value(new_lam.astype(theano.config.floatX))
+        return
+
     def set_lam_kld(self, lam_kld=1.0):
         """
         Set the strength of regularization on KL-divergence for continuous
-        and categorical posterior variables. When set to 1.0, this reproduces
-        the standard role of KL(posterior || prior) in variational learning.
+        posterior variables. When set to 1.0, this reproduces the standard
+        role of KL(posterior || prior) in variational learning.
         """
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_kld
         self.lam_kld.set_value(new_lam.astype(theano.config.floatX))
-        return
-
-    def set_lam_l2w(self, lam_l2w=1e-3):
-        """
-        Set the relative strength of l2 regularization on network params.
-        """
-        zero_ary = np.zeros((1,))
-        new_lam = zero_ary + lam_l2w
-        self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
     def set_lam_pea(self, lam_pea=0.0):
@@ -431,29 +426,53 @@ class GITrip(object):
         self.lam_pea.set_value(new_lam.astype(theano.config.floatX))
         return
 
+    def set_lam_ent(self, lam_ent=0.0):
+        """
+        Set the strength of entropy regularization on the categorical posterior.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_ent
+        self.lam_ent.set_value(new_lam.astype(theano.config.floatX))
+        return
+
+    def set_lam_l2w(self, lam_l2w=1e-3):
+        """
+        Set the relative strength of l2 regularization on network params.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_l2w
+        self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
+        return
+
     def _construct_data_nll_cost(self, prob_type='bernoulli'):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
         assert((prob_type == 'bernoulli') or (prob_type == 'gaussian'))
-        Xd_rep = T.repeat(self.Xd, self.label_dim, axis=0)
         if (prob_type == 'bernoulli'):
-            log_prob_cost = log_prob_bernoulli(Xd_rep, self.GN.output)
+            log_prob_cost = log_prob_bernoulli(self.Xd, self.GN.output)
         else:
-            log_prob_cost = log_prob_gaussian(Xd_rep, self.GN.output, \
+            log_prob_cost = log_prob_gaussian(self.Xd, self.GN.output, \
                     le_sigma=1.0)
-        cat_probs = T.flatten(self.Yp).dimshuffle(0, 'x')
-        nll_cost = -T.sum((cat_probs * log_prob_cost)) / self.Xd.shape[0]
+        nll_cost = -T.sum(log_prob_cost) / self.Xd.shape[0]
         return nll_cost
 
     def _construct_post_kld_cost(self):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
-        kld_cost_con = T.sum(self.IN.kld_cost)
-        kld_cost_cat = 0.5 * T.sum(cat_entropy(self.Yp))
-        kld_cost_joint = (kld_cost_con + kld_cost_cat) / self.Xd.shape[0]
-        return kld_cost_joint
+        kld_cost = T.sum(self.IN.kld_cost) / self.Xd.shape[0]
+        return kld_cost
+
+    def _construct_post_cat_cost(self):
+        """
+        Construct the label-based semi-supervised cost.
+        """
+        row_idx = T.arange(self.Yd.shape[0])
+        row_mask = T.neq(self.Yd, 0).reshape((self.Yd.shape[0], 1))
+        wacky_mat = (self.Yp * row_mask) + (1. - row_mask)
+        cat_cost = -T.sum(T.log(wacky_mat[row_idx,(self.Yd-1)])) / (T.sum(row_mask) + 1e-4)
+        return cat_cost
 
     def _construct_post_pea_cost(self):
         """
@@ -462,6 +481,13 @@ class GITrip(object):
         """
         pea_cost = T.sum(self.PN.pea_reg_cost) / self.Xd.shape[0]
         return pea_cost
+
+    def _construct_post_ent_cost(self):
+        """
+        Construct the entropy cost on the categorical posterior.
+        """
+        ent_cost = T.sum(cat_entropy(self.Yp)) / self.Xd.shape[0]
+        return ent_cost
 
     def _construct_other_reg_cost(self):
         """
@@ -482,39 +508,41 @@ class GITrip(object):
         Construct theano function to train inferencer and generator jointly.
         """
         outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
-                self.post_pea_cost, self.other_reg_cost, self.Yp_sum]
-        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+                self.post_cat_cost, self.post_pea_cost, self.post_ent_cost, \
+                self.other_reg_cost]
+        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Yd ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
         COMMENT="""
         theano.printing.pydotprint(func, \
-            outfile='GITrip_train_joint.svg', compact=True, format='svg', with_ids=False, \
+            outfile='GIStack1_train_joint.svg', compact=True, format='svg', with_ids=False, \
             high_contrast=True, cond_highlight=None, colorCodes=None, \
             max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
             print_output_file=True, assert_nb_all_strings=-1)
         """
         return func
 
-    def shared_param_clone(self, rng=None, Xd=None, Yd=None, Xc=None, Xm=None):
+    def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None, Yd=None):
         """
-        Create a "shared-parameter" clone of this GITrip.
+        Create a "shared-parameter" clone of this GIStack1.
 
         This can be used for chaining VAEs for BPTT. (and other stuff too)
         """
-        clone_git = GITrip(rng=rng, Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
+        clone_gis = GIStack1(rng=rng, Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
             g_net=self.GN, i_net=self.IN, p_net=self.PN, \
             data_dim=self.data_dim, prior_dim=self.prior_dim, label_dim=self.label_dim, \
             batch_size=self.batch_size, params=self.params, \
             shared_param_dicts=self.shared_param_dicts)
-        return clone_git
+        return clone_gis
 
-    def sample_git_from_data(self, X_d, loop_iters=5):
+    def sample_gis_from_data(self, X_d, loop_iters=5):
         """
         Sample for several rounds through the I<->G loop, initialized with the
         the "data variable" samples in X_d.
         """
         data_samples = []
         prior_samples = []
+        label_samples = []
         X_c = 0.0 * X_d
         X_m = 0.0 * X_d
         for i in range(loop_iters):
@@ -522,13 +550,14 @@ class GITrip(object):
             data_samples.append(1.0 * X_d)
             # sample from their inferred posteriors
             X_p = self.IN.sample_posterior(X_d, X_c, X_m)
-            Y_p = self.PN.sample_posterior(X_d)
-            XY_p = np.hstack([Y_p, X_p]).astype(theano.config.floatX)
+            Y_p = self.PN.sample_posterior(X_p)
             # record the sampled points (in the "prior space")
-            prior_samples.append(1.0 * XY_p)
+            prior_samples.append(1.0 * X_p)
+            label_samples.append(1.0 * Y_p)
             # get next data samples by transforming the prior-space points
-            X_d = self.GN.transform_prior(XY_p)
-        result = {"data samples": data_samples, "prior samples": prior_samples}
+            X_d = self.GN.transform_prior(X_p)
+        result = {"data samples": data_samples, "prior samples": prior_samples, \
+                "label samples": label_samples}
         return result
 
 def binarize_data(X):
@@ -548,9 +577,18 @@ if __name__=="__main__":
     rng = np.random.RandomState(1234)
 
     # Load some data to train/validate/test with
+    sup_count = 1000
     dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0].get_value(borrow=False).astype(theano.config.floatX)
+    datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
+    Xtr_su = datasets[0][0].get_value(borrow=False)
+    Ytr_su = datasets[0][1].get_value(borrow=False)
+    Xtr_un = datasets[1][0].get_value(borrow=False)
+    Ytr_un = datasets[1][1].get_value(borrow=False)
+    Xtr = np.vstack([Xtr_su, Xtr_un]).astype(theano.config.floatX)
+    Ytr = np.vstack([Ytr_su[:,np.newaxis], Ytr_un[:,np.newaxis]]).astype(np.int32)
+    #Xva = datasets[2][0].get_value(borrow=False).astype(theano.config.floatX)
+    #Yva = datasets[2][1].get_value(borrow=False).astype(np.int32)
+
     tr_samples = Xtr.shape[0]
     batch_size = 100
 
@@ -560,14 +598,14 @@ if __name__=="__main__":
     Xd = T.matrix('Xd_base')
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
-    Yd = T.lvector('Yd_base')
+    Yd = T.icol('Yd_base')
     data_dim = Xtr.shape[1]
-    label_dim = 5
+    label_dim = 10
     prior_dim = 50
     prior_sigma = 2.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [(prior_dim + label_dim), 150, 150, data_dim]
+    gn_config = [prior_dim, 200, 200, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = softplus_actfun
     gn_params['lam_l2a'] = 1e-3
@@ -577,20 +615,20 @@ if __name__=="__main__":
     gn_params['out_noise'] = 0.0
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 150]
-    top_config = [shared_config[-1], 150, prior_dim]
+    shared_config = [data_dim, 200]
+    top_config = [shared_config[-1], 200, prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
     in_params['lam_l2a'] = 1e-3
-    in_params['vis_drop'] = 0.0
+    in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # choose some parameters for the categorical inferencer
     pn_params = {}
-    pc0 = [data_dim, 150, 150, label_dim]
+    pc0 = [prior_dim, 200, 200, label_dim]
     pn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': True}
@@ -601,7 +639,7 @@ if __name__=="__main__":
     pn_params['activation'] = relu_actfun
     pn_params['ear_type'] = 6
     pn_params['lam_l2a'] = 1e-3
-    pn_params['vis_drop'] = 0.2
+    pn_params['vis_drop'] = 0.0
     pn_params['hid_drop'] = 0.5
 
     # Initialize the base networks for this GIPair
@@ -610,55 +648,62 @@ if __name__=="__main__":
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
             params=in_params, shared_param_dicts=None)
     PN = PeaNet(rng=rng, Xd=Xd, params=pn_params)
-    # Initialize biases in IN and GN
+    # Initialize biases in GN, IN, and PN
     GN.init_biases(0.1)
     IN.init_biases(0.1)
     PN.init_biases(0.1)
-    # Initialize the GIPair
-    GIT = GITrip(rng=rng, \
+    # Initialize the GIStack1
+    GIS = GIStack1(rng=rng, \
             Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
             g_net=GN, i_net=IN, p_net=PN, \
             data_dim=data_dim, prior_dim=prior_dim, \
             label_dim=label_dim, batch_size=batch_size, \
             params={}, shared_param_dicts=None)
     # set regularization parameters
-    GIT.set_lam_kld(1.0)
-    GIT.set_lam_pea(0.1)
-    GIT.set_lam_l2w(1e-3)
+    GIS.set_lam_kld(1.0)
+    GIS.set_lam_cat(0.0)
+    GIS.set_lam_pea(0.0)
+    GIS.set_lam_ent(0.0)
+    GIS.set_lam_l2w(1e-3)
     # Set initial learning rate and basic SGD hyper parameters
-    learn_rate = 0.01
-    GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.8)
+    learn_rate = 0.005
+    GIS.set_all_sgd_params(learn_rate=learn_rate, momentum=0.8)
 
     for i in range(750000):
-        if (i < 10000):
-            scale = float(i+1) / 10000.0
-            GIT.set_lam_kld(lam_kld=scale)
-            if (i < 50000):
-                GIT.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.8)
+        if (i < 25000):
+            scale = float(i+1) / 25000.0
+            GIS.set_lam_kld(lam_kld=scale)
+            GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.8)
+            GIS.set_pn_sgd_params(learn_rate=0.0, momentum=0.8)
+            GIS.set_lam_cat(scale * 0.5)
+            GIS.set_lam_pea(scale * 0.5)
+            GIS.set_lam_ent(scale * 0.1)
+            GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.8)
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.75
-            GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.9)
+            GIS.set_all_sgd_params(learn_rate=learn_rate, momentum=0.9)
         # get some data to train with
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = binarize_data(Xtr.take(tr_idx, axis=0))
+        Yd_batch = Ytr.take(tr_idx, axis=0)
         Xc_batch = 0.0 * Xd_batch
         Xm_batch = 0.0 * Xd_batch
         # do a minibatch update of the model, and compute some costs
-        outputs = GIT.train_joint(Xd_batch, Xc_batch, Xm_batch)
+        outputs = GIS.train_joint(Xd_batch, Xc_batch, Xm_batch, Yd_batch)
         joint_cost = 1.0 * outputs[0]
         data_nll_cost = 1.0 * outputs[1]
         post_kld_cost = 1.0 * outputs[2]
-        post_pea_cost = 1.0 * outputs[3]
-        other_reg_cost = 1.0 * outputs[4]
-        Yp_sum = 1.0 * outputs[5]
+        post_cat_cost = 1.0 * outputs[3]
+        post_pea_cost = 1.0 * outputs[4]
+        post_ent_cost = 1.0 * outputs[5]
+        other_reg_cost = 1.0 * outputs[6]
         if ((i % 100) == 0):
-            print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, post_pea_cost: {4:.4f}, other_reg_cost: {5:.4f}".format( \
-                    i, joint_cost, data_nll_cost, post_kld_cost, post_pea_cost, other_reg_cost))
-            print("    Yp_sum: {0:.4f}".format(Yp_sum))
-        if ((i % 500) == 0):
-            file_name = "GN_SAMPLES_b{0:d}.png".format(i)
+            print("batch: {0:d}, joint_cost: {1:.4f}, nll: {2:.4f}, kld: {3:.4f}, cat: {4:.4f}, pea: {5:.4f}, other_reg: {6:.4f}".format( \
+                    i, joint_cost, data_nll_cost, post_kld_cost, post_cat_cost, post_pea_cost, other_reg_cost))
+        if ((i % 50000) == 0):
+            file_name = "GIS_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
-            sample_lists = GIT.sample_git_from_data(Xd_samps, loop_iters=10)
+            sample_lists = GIS.sample_gis_from_data(Xd_samps, loop_iters=10)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name)
 
@@ -670,3 +715,4 @@ if __name__=="__main__":
 ##############
 # EYE BUFFER #
 ##############
+

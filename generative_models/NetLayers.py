@@ -2,8 +2,8 @@ import numpy as np
 import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
-import theano.tensor.shared_randomstreams
-from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+from theano.tensor.shared_randomstreams import RandomStreams as RandStream
+#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 #from pylearn2.sandbox.cuda_convnet.filter_acts import FilterActs
 #from pylearn2.sandbox.cuda_convnet.pool import MaxPool
 #from theano.sandbox.cuda.basic_ops import gpu_contiguous
@@ -116,9 +116,7 @@ class HiddenLayer(object):
                  W=None, b=None, name="", W_scale=1.0):
 
         # Setup a shared random generator for this layer
-        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-        #        rng.randint(100000))
-        self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        self.rng = RandStream(rng.randint(1000000))
 
         self.clean_input = input
 
@@ -160,7 +158,7 @@ class HiddenLayer(object):
         if W is None:
             if self.pool_size <= 10000:
                 # Generate random initial filters in a typical way
-                W_init = 0.03 * np.asarray(rng.normal( \
+                W_init = 0.02 * np.asarray(rng.normal( \
                           size=(self.in_dim, self.filt_count)), \
                           dtype=theano.config.floatX)
             else:
@@ -170,9 +168,9 @@ class HiddenLayer(object):
                 filters = []
                 f_size = (self.in_dim, 1)
                 for g_num in range(self.pool_count):
-                    g_filt = 0.03 * rng.normal(size=f_size)
+                    g_filt = 0.02 * rng.normal(size=f_size)
                     for f_num in range(self.pool_size):
-                        f_filt = g_filt + 0.003 * rng.normal(size=f_size)
+                        f_filt = g_filt + 0.005 * rng.normal(size=f_size)
                         filters.append(f_filt)
                 W_init = np.hstack(filters).astype(theano.config.floatX)
             W = theano.shared(value=(W_scale*W_init), name="{0:s}_W".format(name))
@@ -244,9 +242,7 @@ class ConvPoolLayer(object):
             W=None, b=None, name="", W_scale=1.0):
 
         # Setup a shared random generator for this layer
-        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-        #        rng.randint(100000))
-        self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        self.rng = RandStream(rng.randint(100000))
 
         self.clean_input = input
 
@@ -388,9 +384,7 @@ class Reshape4D2DLayer(object):
 class DiscLayer(object):
     def __init__(self, rng, input, in_dim, W=None, b=None):
         # Setup a shared random generator for this layer
-        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-        #        rng.randint(100000))
-        self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        self.rng = RandStream(rng.randint(1000000))
 
         self.input = input
         self.in_dim = in_dim
@@ -440,9 +434,7 @@ class DAELayer(object):
             W=None, b_h=None, b_v=None):
 
         # Setup a shared random generator for this layer
-        #self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-        #        rng.randint(100000))
-        self.rng = CURAND_RandomStreams(rng.randint(1000000))
+        self.rng = RandStream(rng.randint(1000000))
 
         # Grab the layer input and perturb it with some sort of noise. This
         # is, afterall, a _denoising_ autoencoder...
