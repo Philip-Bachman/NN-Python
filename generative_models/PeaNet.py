@@ -7,8 +7,8 @@ import numpy.random as npr
 import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
-from theano.tensor.shared_randomstreams import RandomStreams as RandStream
-#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
+#from theano.tensor.shared_randomstreams import RandomStreams as RandStream
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 from NetLayers import HiddenLayer, JoinLayer, DAELayer
 
@@ -132,7 +132,6 @@ class PeaNet(object):
     Parameters:
         rng: a numpy.random RandomState object
         Xd: Theano symbolic matrix for "observation" inputs to this PeaNet
-        Yd: Theano symbolic matrix for "label" inputs to this PeaNet
         params: a dict of parameters describing the desired ensemble:
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on input layers (when desired)
@@ -160,7 +159,6 @@ class PeaNet(object):
     def __init__(self,
             rng=None, \
             Xd=None, \
-            Yd=None, \
             params=None, \
             shared_param_dicts=None):
         # First, setup a shared random number generator for this layer
@@ -172,8 +170,6 @@ class PeaNet(object):
         assert(len(params['proto_configs']) == 1) # permit only one proto-net
         assert(len(params['spawn_configs']) <= 2) # use one or two spawn nets
         self.Xd = Xd # symbolic input to this computation graph
-        self.Yd = Yd # symbolic label input, only here for compatibility with
-                     # the interface provided by GITrip (for now, at least)
         self.params = params
         lam_l2a = params['lam_l2a']
         if 'vis_drop' in params:
@@ -259,7 +255,7 @@ class PeaNet(object):
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
                             W=init_params['W'], b=init_params['b'], \
-                            name=pnl_name, W_scale=5.0)
+                            name=pnl_name, W_scale=2.0)
                     proto_net.append(new_layer)
                 next_input = proto_net[-1].output
                 # Set the non-bias parameters of this layer to be clipped
@@ -368,6 +364,8 @@ class PeaNet(object):
             x1 = self.spawn_nets[0][-1].linear_output
             x2 = self.spawn_nets[1][-1].linear_output
             ear_loss = smooth_js_divergence(x1, x2)
+            #ear_loss = (smooth_kl_divergence(x1, x2) + \
+            #        smooth_kl_divergence(x2, x1)) / 2.0
         return ear_loss
 
     def _ent_cost(self, ent_type=1):
@@ -446,6 +444,7 @@ class PeaNet(object):
         """
         func = theano.function([self.Xd], \
                 outputs=safe_softmax(self.output_proto))
+        # this function is based on "roulette wheel" sampling
         def sampler(x):
             y_probs = func(x)
             y_cumsum = np.cumsum(y_probs, axis=1)
@@ -468,12 +467,12 @@ class PeaNet(object):
             layer.b.set_value(b_init)
         return
 
-    def shared_param_clone(self, rng=None, Xd=None, Yd=None):
+    def shared_param_clone(self, rng=None, Xd=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
         """
-        clone_net = PeaNet(rng=rng, Xd=Xd, Yd=Yd, params=self.params, \
+        clone_net = PeaNet(rng=rng, Xd=Xd, params=self.params, \
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
 

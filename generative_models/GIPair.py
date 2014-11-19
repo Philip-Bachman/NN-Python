@@ -10,9 +10,8 @@ from collections import OrderedDict
 # theano business
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
-import theano.tensor.shared_randomstreams
-from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+#from theano.tensor.shared_randomstreams import RandomStreams as RandStream
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun
@@ -79,8 +78,7 @@ class GIPair(object):
             data_dim=None, prior_dim=None, \
             params=None, shared_param_dicts=None):
         # setup a rng for this GIPair
-        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-                rng.randint(100000))
+        self.rng = RandStream(rng.randint(100000))
         self.params = params
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this GIPair
@@ -92,6 +90,8 @@ class GIPair(object):
         self.IN = i_net.shared_param_clone(rng=rng, \
                 Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
         self.GN = g_net.shared_param_clone(rng=rng, Xp=self.IN.output)
+        # capture a handle for sampled reconstructions from the generator
+        self.Xg = self.GN.output
 
         # record and validate the data dimensionality parameters
         self.data_dim = data_dim
@@ -171,11 +171,11 @@ class GIPair(object):
         self.in_moms = OrderedDict()
         self.gn_moms = OrderedDict()
         for p in self.gn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape)
+            p_mo = np.zeros(p.get_value(borrow=True).shape) + 2.0
             self.gn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
             self.joint_moms[p] = self.gn_moms[p]
         for p in self.in_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape)
+            p_mo = np.zeros(p.get_value(borrow=True).shape) + 2.0
             self.in_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
             self.joint_moms[p] = self.in_moms[p]
 
@@ -183,32 +183,9 @@ class GIPair(object):
         self.joint_updates = OrderedDict()
         self.gn_updates = OrderedDict()
         self.in_updates = OrderedDict()
-        for var in self.in_params:
-            # these updates are for trainable params in the inferencer net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
-            # get the momentum for this var
-            var_mom = self.in_moms[var]
-            # update the momentum for this var using its grad
-            self.in_updates[var_mom] = (self.mo_in[0] * var_mom) + \
-                    ((1.0 - self.mo_in[0]) * var_grad)
-            self.joint_updates[var_mom] = self.in_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_in[0] * var_mom)
-            if ((var in self.IN.clip_params) and \
-                    (var in self.IN.clip_norms) and \
-                    (self.IN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
-                clip_norm = self.IN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.in_updates[var] = var_new * var_scale
-            else:
-                # otherwise, just use the basic updated var
-                self.in_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.in_updates[var]
+        #######################################
+        # Construct updates for the generator #
+        #######################################
         for var in self.gn_params:
             # these updates are for trainable params in the generator net...
             # first, get gradient of cost w.r.t. var
@@ -218,23 +195,50 @@ class GIPair(object):
             var_mom = self.gn_moms[var]
             # update the momentum for this var using its grad
             self.gn_updates[var_mom] = (self.mo_gn[0] * var_mom) + \
-                    ((1.0 - self.mo_gn[0]) * var_grad)
+                    ((1.0 - self.mo_gn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.gn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_gn[0] * var_mom)
+            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
+            # apply "norm clipping" if desired
             if ((var in self.GN.clip_params) and \
                     (var in self.GN.clip_norms) and \
                     (self.GN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.GN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.gn_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.gn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.gn_updates[var]
+        ###################################################
+        # Construct updates for the continuous inferencer #
+        ###################################################
+        for var in self.in_params:
+            # these updates are for trainable params in the inferencer net...
+            # first, get gradient of cost w.r.t. var
+            var_grad = T.grad(self.joint_cost, var, \
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+            # get the momentum for this var
+            var_mom = self.in_moms[var]
+            # update the momentum for this var using its grad
+            self.in_updates[var_mom] = (self.mo_in[0] * var_mom) + \
+                    ((1.0 - self.mo_in[0]) * (var_grad**2.0))
+            self.joint_updates[var_mom] = self.in_updates[var_mom]
+            # make basic update to the var
+            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
+            # apply "norm clipping" if desired
+            if ((var in self.IN.clip_params) and \
+                    (var in self.IN.clip_norms) and \
+                    (self.IN.clip_params[var] == 1)):
+                clip_norm = self.IN.clip_norms[var]
+                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
+                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
+                self.in_updates[var] = var_new * var_scale
+            else:
+                self.in_updates[var] = var_new
+            # add this var's update to the joint updates too
+            self.joint_updates[var] = self.in_updates[var]
 
         # Construct batch-based training functions for the generator and
         # inferer networks, as well as a joint training function.
@@ -415,22 +419,22 @@ if __name__=="__main__":
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 50
+    prior_dim = 128
     prior_sigma = 2.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 100, 100, data_dim]
+    gn_config = [prior_dim, 800, 800, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = softplus_actfun
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.0
+    gn_params['bias_noise'] = 0.1
     gn_params['out_noise'] = 0.0
-    # Choose some parameters for the inference network
+    # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 100]
-    top_config = [shared_config[-1], 100, prior_dim]
+    shared_config = [data_dim, (200, 4)]
+    top_config = [shared_config[-1], (200, 4), prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
@@ -438,7 +442,7 @@ if __name__=="__main__":
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.0
+    in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
@@ -454,7 +458,7 @@ if __name__=="__main__":
     GIP.set_lam_l2w(1e-3)
     # Set initial learning rate and basic SGD hyper parameters
     learn_rate = 0.0025
-    GIP.set_all_sgd_params(learn_rate=in_learn_rate, momentum=0.8)
+    GIP.set_all_sgd_params(learn_rate=learn_rate, momentum=0.8)
 
     for i in range(750000):
         if (i < 100000):
@@ -463,8 +467,8 @@ if __name__=="__main__":
                 GIP.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.8)
             GIP.set_lam_kld(lam_kld=scale)
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.7
-            GIP.set_all_sgd_params(learn_rate=in_learn_rate, momentum=0.9)
+            learn_rate = learn_rate * 0.75
+            GIP.set_all_sgd_params(learn_rate=learn_rate, momentum=0.9)
         # get some data to train with
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = binarize_data(Xtr.take(tr_idx, axis=0))
@@ -476,11 +480,11 @@ if __name__=="__main__":
         data_nll_cost = 1.0 * outputs[1]
         post_kld_cost = 1.0 * outputs[2]
         other_reg_cost = 1.0 * outputs[3]
-        if ((i % 1000) == 0):
+        if ((i % 500) == 0):
             print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
                     i, joint_cost, data_nll_cost, post_kld_cost, other_reg_cost))
-        if ((i % 10000) == 0):
-            file_name = "GN_SAMPLES_b{0:d}.png".format(i)
+        if ((i % 2500) == 0):
+            file_name = "GIP_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
             sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=10)
             Xs = np.vstack(sample_lists["data samples"])

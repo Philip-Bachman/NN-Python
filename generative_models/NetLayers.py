@@ -1,9 +1,9 @@
 import numpy as np
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
-from theano.tensor.shared_randomstreams import RandomStreams as RandStream
-#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
+#from theano.tensor.shared_randomstreams import RandomStreams as RandStream
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
+
 #from pylearn2.sandbox.cuda_convnet.filter_acts import FilterActs
 #from pylearn2.sandbox.cuda_convnet.pool import MaxPool
 #from theano.sandbox.cuda.basic_ops import gpu_contiguous

@@ -17,8 +17,8 @@ from collections import OrderedDict
 import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
-from theano.tensor.shared_randomstreams import RandomStreams as RandStream
-#from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
+#from theano.tensor.shared_randomstreams import RandomStreams as RandStream
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import relu_actfun, softplus_actfun, \
@@ -124,7 +124,7 @@ class GITrip(object):
         # inferencers that this GITrip will be built on.
         self.IN = i_net.shared_param_clone(rng=rng, \
                 Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
-        self.PN = p_net.shared_param_clone(rng=rng, Xd=self.Xd, Yd=self.Yd)
+        self.PN = p_net.shared_param_clone(rng=rng, Xd=self.Xd)
         # create symbolic variables for the approximate posteriors over the 
         # continuous and categorical latent variables
         self.Xp = self.IN.output
@@ -142,6 +142,8 @@ class GITrip(object):
         # pipe the "convenient marginlization" matrix into a shared parameter
         # clone of the generator network
         self.GN = g_net.shared_param_clone(rng=rng, Xp=self.XYp)
+        # capture a handle for sampled reconstructions from the generator
+        self.Xg = self.GN.output
 
         # we will be assuming one proto-net in the pseudo-ensemble represented
         # by self.PN, and either one or two spawn-nets for that proto-net.
@@ -185,14 +187,24 @@ class GITrip(object):
             self.mo_pn = theano.shared(value=zero_ary, name='git_mo_pn')
             # init parameters for controlling learning dynamics
             self.set_all_sgd_params()
-            # init shared var for weighting prior kld against reconstruction
+            # init shared var for weighting nll of data given posterior sample
+            self.lam_nll = theano.shared(value=zero_ary, name='git_lam_nll')
+            self.set_lam_nll(lam_nll=1.0)
+            # init shared var for weighting posterior KL-div from prior
             self.lam_kld = theano.shared(value=zero_ary, name='git_lam_kld')
             self.set_lam_kld(lam_kld=1.0)
+            # init shared var for weighting semi-supervised classification
+            self.lam_cat = theano.shared(value=zero_ary, name='git_lam_cat')
+            self.set_lam_cat(lam_cat=0.0)
             # init shared var for weighting ensemble agreement regularization
             self.lam_pea = theano.shared(value=zero_ary, name='git_lam_pea')
             self.set_lam_pea(lam_pea=0.0)
+            # init shared var for weighting entropy regularization on the
+            # inferred posteriors over the categorical variable of interest
+            self.lam_ent = theano.shared(value=zero_ary, name='git_lam_ent')
+            self.set_lam_ent(lam_ent=0.0)
             # init shared var for controlling l2 regularization on params
-            self.lam_l2w = theano.shared(value=zero_ary, name='gil_lam_l2w')
+            self.lam_l2w = theano.shared(value=zero_ary, name='git_lam_l2w')
             self.set_lam_l2w(lam_l2w=1e-3)
             # record shared parameters that are to be shared among clones
             self.shared_param_dicts['git_lr_gn'] = self.lr_gn
@@ -201,9 +213,12 @@ class GITrip(object):
             self.shared_param_dicts['git_mo_gn'] = self.mo_gn
             self.shared_param_dicts['git_mo_in'] = self.mo_in
             self.shared_param_dicts['git_mo_pn'] = self.mo_pn
+            self.shared_param_dicts['git_lam_nll'] = self.lam_nll
             self.shared_param_dicts['git_lam_kld'] = self.lam_kld
+            self.shared_param_dicts['git_lam_cat'] = self.lam_cat
             self.shared_param_dicts['git_lam_pea'] = self.lam_pea
-            self.shared_param_dicts['gil_lam_l2w'] = self.lam_l2w
+            self.shared_param_dicts['git_lam_ent'] = self.lam_ent
+            self.shared_param_dicts['git_lam_l2w'] = self.lam_l2w
         else:
             # use some shared parameters that are shared among all clones of
             # some "base" GITrip
@@ -213,9 +228,12 @@ class GITrip(object):
             self.mo_gn = self.shared_param_dicts['git_mo_gn']
             self.mo_in = self.shared_param_dicts['git_mo_in']
             self.mo_pn = self.shared_param_dicts['git_mo_pn']
+            self.lam_nll = self.shared_param_dicts['git_lam_nll']
             self.lam_kld = self.shared_param_dicts['git_lam_kld']
+            self.lam_cat = self.shared_param_dicts['git_lam_cat']
             self.lam_pea = self.shared_param_dicts['git_lam_pea']
-            self.lam_l2w = self.shared_param_dicts['gil_lam_l2w']
+            self.lam_ent = self.shared_param_dicts['git_lam_ent']
+            self.lam_l2w = self.shared_param_dicts['git_lam_l2w']
 
         # Grab the full set of "optimizable" parameters from the generator
         # and inferencer networks that we'll be working with.
@@ -226,12 +244,14 @@ class GITrip(object):
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
-        self.data_nll_cost = self._construct_data_nll_cost()
+        self.data_nll_cost = self.lam_nll[0] * self._construct_data_nll_cost()
         self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
+        self.post_cat_cost = self.lam_cat[0] * self._construct_post_cat_cost()
         self.post_pea_cost = self.lam_pea[0] * self._construct_post_pea_cost()
+        self.post_ent_cost = self.lam_ent[0] * self._construct_post_ent_cost()
         self.other_reg_cost = self._construct_other_reg_cost()
-        self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
-                self.post_pea_cost + self.other_reg_cost
+        self.joint_cost = self.data_nll_cost + self.post_kld_cost + self.post_cat_cost + \
+                self.post_pea_cost + self.post_ent_cost + self.other_reg_cost
 
         # Initialize momentums for mini-batch SGD updates. All parameters need
         # to be safely nestled in their lists by now.
@@ -240,15 +260,15 @@ class GITrip(object):
         self.in_moms = OrderedDict()
         self.pn_moms = OrderedDict()
         for p in self.gn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape)
+            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
             self.gn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
             self.joint_moms[p] = self.gn_moms[p]
         for p in self.in_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape)
+            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
             self.in_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
             self.joint_moms[p] = self.in_moms[p]
         for p in self.pn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape)
+            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
             self.pn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
             self.joint_moms[p] = self.pn_moms[p]
 
@@ -269,20 +289,19 @@ class GITrip(object):
             var_mom = self.gn_moms[var]
             # update the momentum for this var using its grad
             self.gn_updates[var_mom] = (self.mo_gn[0] * var_mom) + \
-                    ((1.0 - self.mo_gn[0]) * var_grad)
+                    ((1.0 - self.mo_gn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.gn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_gn[0] * var_mom)
+            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            # apply "norm clipping" if desired
             if ((var in self.GN.clip_params) and \
                     (var in self.GN.clip_norms) and \
                     (self.GN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.GN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.gn_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.gn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.gn_updates[var]
@@ -298,20 +317,19 @@ class GITrip(object):
             var_mom = self.in_moms[var]
             # update the momentum for this var using its grad
             self.in_updates[var_mom] = (self.mo_in[0] * var_mom) + \
-                    ((1.0 - self.mo_in[0]) * var_grad)
+                    ((1.0 - self.mo_in[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.in_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_in[0] * var_mom)
+            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            # apply "norm clipping" if desired
             if ((var in self.IN.clip_params) and \
                     (var in self.IN.clip_norms) and \
                     (self.IN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.IN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.in_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.in_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.in_updates[var]
@@ -327,20 +345,19 @@ class GITrip(object):
             var_mom = self.pn_moms[var]
             # update the momentum for this var using its grad
             self.pn_updates[var_mom] = (self.mo_pn[0] * var_mom) + \
-                    ((1.0 - self.mo_pn[0]) * var_grad)
+                    ((1.0 - self.mo_pn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.pn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_pn[0] * var_mom)
+            var_new = var - (self.lr_pn[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            # apply "norm clipping" if desired
             if ((var in self.PN.clip_params) and \
                     (var in self.PN.clip_norms) and \
                     (self.PN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.PN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.pn_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.pn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.pn_updates[var]
@@ -402,24 +419,33 @@ class GITrip(object):
         self.mo_pn.set_value(new_mo.astype(theano.config.floatX))
         return
 
+    def set_lam_nll(self, lam_nll=1.0):
+        """
+        Set weight for controlling the influence of the data likelihood.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_nll
+        self.lam_nll.set_value(new_lam.astype(theano.config.floatX))
+        return
+
+    def set_lam_cat(self, lam_cat=0.0):
+        """
+        Set the strength of semi-supervised classification cost.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_cat
+        self.lam_cat.set_value(new_lam.astype(theano.config.floatX))
+        return
+
     def set_lam_kld(self, lam_kld=1.0):
         """
         Set the strength of regularization on KL-divergence for continuous
-        and categorical posterior variables. When set to 1.0, this reproduces
-        the standard role of KL(posterior || prior) in variational learning.
+        posterior variables. When set to 1.0, this reproduces the standard
+        role of KL(posterior || prior) in variational learning.
         """
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_kld
         self.lam_kld.set_value(new_lam.astype(theano.config.floatX))
-        return
-
-    def set_lam_l2w(self, lam_l2w=1e-3):
-        """
-        Set the relative strength of l2 regularization on network params.
-        """
-        zero_ary = np.zeros((1,))
-        new_lam = zero_ary + lam_l2w
-        self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
     def set_lam_pea(self, lam_pea=0.0):
@@ -429,6 +455,24 @@ class GITrip(object):
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_pea
         self.lam_pea.set_value(new_lam.astype(theano.config.floatX))
+        return
+
+    def set_lam_ent(self, lam_ent=0.0):
+        """
+        Set the strength of entropy regularization on the categorical posterior.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_ent
+        self.lam_ent.set_value(new_lam.astype(theano.config.floatX))
+        return
+
+    def set_lam_l2w(self, lam_l2w=1e-3):
+        """
+        Set the relative strength of l2 regularization on network params.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_l2w
+        self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
     def _construct_data_nll_cost(self, prob_type='bernoulli'):
@@ -450,10 +494,19 @@ class GITrip(object):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
-        kld_cost_con = T.sum(self.IN.kld_cost)
-        kld_cost_cat = 0.5 * T.sum(cat_entropy(self.Yp))
-        kld_cost_joint = (kld_cost_con + kld_cost_cat) / self.Xd.shape[0]
-        return kld_cost_joint
+        kld_cost = T.sum(self.IN.kld_cost) / self.Xd.shape[0]
+        return kld_cost
+
+    def _construct_post_cat_cost(self):
+        """
+        Construct the label-based semi-supervised cost.
+        """
+        row_idx = T.arange(self.Yd.shape[0])
+        row_mask = T.neq(self.Yd, 0).reshape((self.Yd.shape[0], 1))
+        wacky_mat = (self.Yp * row_mask) + (1. - row_mask)
+        cat_cost = -T.sum(T.log(wacky_mat[row_idx,(self.Yd.flatten()-1)])) \
+                / (T.sum(row_mask) + 1e-4)
+        return cat_cost
 
     def _construct_post_pea_cost(self):
         """
@@ -462,6 +515,13 @@ class GITrip(object):
         """
         pea_cost = T.sum(self.PN.pea_reg_cost) / self.Xd.shape[0]
         return pea_cost
+
+    def _construct_post_ent_cost(self):
+        """
+        Construct the entropy cost on the categorical posterior.
+        """
+        ent_cost = T.sum(cat_entropy(self.Yp)) / self.Xd.shape[0]
+        return ent_cost
 
     def _construct_other_reg_cost(self):
         """
@@ -482,8 +542,9 @@ class GITrip(object):
         Construct theano function to train inferencer and generator jointly.
         """
         outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
-                self.post_pea_cost, self.other_reg_cost, self.Yp_sum]
-        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+                self.post_cat_cost, self.post_pea_cost, self.post_ent_cost, \
+                self.other_reg_cost]
+        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Yd ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
         COMMENT="""
@@ -531,6 +592,25 @@ class GITrip(object):
         result = {"data samples": data_samples, "prior samples": prior_samples}
         return result
 
+    def classification_error(self, X_d, Y_d):
+        """
+        Compute classification error for a set of observations X_d with known
+        labels Y_d, based on passing X_d through the categorical inferencer
+        (i.e. self.PN).
+        """
+        # first, convert labels to account for semi-supervised labeling
+        Y_mask = 1.0 * (Y_d != 0)
+        Y_d = Y_d - 1
+        # make a function for computing self.Yp
+        func = theano.function([self.Xd], outputs=self.Yp)
+        # compute self.Yp for the observations in X_d
+        Y_p = func(X_d)
+        # get the implied class labels
+        Y_c = np.argmax(Y_p, axis=1).reshape((Y_d.shape[0],1))
+        # compute the classification error for points with valid labels
+        err_rate = np.sum(((Y_d != Y_c) * Y_mask)) / np.sum(Y_mask)
+        return err_rate
+
 def binarize_data(X):
     """
     Make a sample of bernoulli variables with probabilities given by X.
@@ -548,116 +628,166 @@ if __name__=="__main__":
     rng = np.random.RandomState(1234)
 
     # Load some data to train/validate/test with
+    sup_count = 1000
     dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0].get_value(borrow=False).astype(theano.config.floatX)
-    tr_samples = Xtr.shape[0]
-    batch_size = 100
+    datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
+    Xtr_su = datasets[0][0].get_value(borrow=False)
+    Ytr_su = datasets[0][1].get_value(borrow=False)
+    Xtr_un = datasets[1][0].get_value(borrow=False)
+    Ytr_un = datasets[1][1].get_value(borrow=False)
+    # get the unlabeled data
+    Xtr_un = np.vstack([Xtr_su, Xtr_un]).astype(theano.config.floatX)
+    Ytr_un = np.vstack([Ytr_su[:,np.newaxis], Ytr_un[:,np.newaxis]]).astype(np.int32)
+    Ytr_un = 0 * Ytr_un
+    # get the labeled data
+    Xtr_su = Xtr_su.astype(theano.config.floatX)
+    Ytr_su = Ytr_su[:,np.newaxis].astype(np.int32)
+    # get observations and labels for the validation set
+    Xva = datasets[2][0].get_value(borrow=False).astype(theano.config.floatX)
+    Yva = datasets[2][1].get_value(borrow=False).astype(np.int32)
+    Yva = Yva[:,np.newaxis] # numpy is dumb
+    # get size information for the data
+    un_samples = Xtr_un.shape[0]
+    su_samples = Xtr_su.shape[0]
+    va_sample = Xva.shape[0]
 
-    # Construct a GenNet and an InfNet, then test constructor for GIPair.
-    # Do basic testing, to make sure classes aren't completely broken.
+    # set up some symbolic variables for input to the GITrip
     Xp = T.matrix('Xp_base')
     Xd = T.matrix('Xd_base')
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
-    Yd = T.lvector('Yd_base')
-    data_dim = Xtr.shape[1]
-    label_dim = 5
-    prior_dim = 50
+    Yd = T.icol('Yd_base')
+    # set some "shape" parameters for the networks
+    data_dim = Xtr_un.shape[1]
+    label_dim = 10
+    prior_dim = 64
     prior_sigma = 2.0
-    # Choose some parameters for the generator network
+    batch_size = 100
+    # set parameters for the generator network
     gn_params = {}
-    gn_config = [(prior_dim + label_dim), 150, 150, data_dim]
+    gn_config = [(prior_dim + label_dim), 500, 500, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = softplus_actfun
-    gn_params['lam_l2a'] = 1e-3
+    gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
     gn_params['out_noise'] = 0.0
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 150]
-    top_config = [shared_config[-1], 150, prior_dim]
+    shared_config = [data_dim, 500]
+    top_config = [shared_config[-1], 500, prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
-    in_params['activation'] = relu_actfun
-    in_params['lam_l2a'] = 1e-3
+    in_params['activation'] = softplus_actfun
+    in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # choose some parameters for the categorical inferencer
     pn_params = {}
-    pc0 = [data_dim, 150, 150, label_dim]
+    pc0 = [data_dim, 500, 500, label_dim]
     pn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': True}
-    pn_params['spawn_configs'] = [sc0, sc1]
-    pn_params['spawn_weights'] = [0.5, 0.5]
+    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
+    #sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
+    pn_params['spawn_configs'] = [sc0] #[sc0, sc1]
+    pn_params['spawn_weights'] = [1.0] #[0.5, 0.5]
     # Set remaining params
     pn_params['activation'] = relu_actfun
     pn_params['ear_type'] = 6
-    pn_params['lam_l2a'] = 1e-3
+    pn_params['lam_l2a'] = 1e-2
     pn_params['vis_drop'] = 0.2
     pn_params['hid_drop'] = 0.5
 
-    # Initialize the base networks for this GIPair
+    # Initialize the base networks for this GITrip
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
             params=gn_params, shared_param_dicts=None)
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
             params=in_params, shared_param_dicts=None)
     PN = PeaNet(rng=rng, Xd=Xd, params=pn_params)
-    # Initialize biases in IN and GN
+    # Initialize biases in GN, IN, and PN
     GN.init_biases(0.1)
     IN.init_biases(0.1)
     PN.init_biases(0.1)
-    # Initialize the GIPair
+
+    # Initialize the GITrip
     GIT = GITrip(rng=rng, \
             Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
             g_net=GN, i_net=IN, p_net=PN, \
             data_dim=data_dim, prior_dim=prior_dim, \
             label_dim=label_dim, batch_size=batch_size, \
             params={}, shared_param_dicts=None)
-    # set regularization parameters
+    # set weighting parameters for the various costs...
+    GIT.set_lam_nll(1.0)
     GIT.set_lam_kld(1.0)
-    GIT.set_lam_pea(0.1)
+    GIT.set_lam_cat(0.0)
+    GIT.set_lam_pea(0.0)
+    GIT.set_lam_ent(0.0)
     GIT.set_lam_l2w(1e-3)
     # Set initial learning rate and basic SGD hyper parameters
-    learn_rate = 0.01
-    GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.8)
+    learn_rate = 0.001
+    GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
 
     for i in range(750000):
-        if (i < 10000):
-            scale = float(i+1) / 10000.0
-            GIT.set_lam_kld(lam_kld=scale)
-            if (i < 50000):
-                GIT.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.8)
+        scale = 1.0
+        if (i < 25000):
+            scale = float(i+1) / 25000.0
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.75
-            GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.9)
-        # get some data to train with
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
-        Xd_batch = binarize_data(Xtr.take(tr_idx, axis=0))
-        Xc_batch = 0.0 * Xd_batch
-        Xm_batch = 0.0 * Xd_batch
-        # do a minibatch update of the model, and compute some costs
-        outputs = GIT.train_joint(Xd_batch, Xc_batch, Xm_batch)
-        joint_cost = 1.0 * outputs[0]
-        data_nll_cost = 1.0 * outputs[1]
-        post_kld_cost = 1.0 * outputs[2]
-        post_pea_cost = 1.0 * outputs[3]
-        other_reg_cost = 1.0 * outputs[4]
-        Yp_sum = 1.0 * outputs[5]
-        if ((i % 100) == 0):
-            print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, post_pea_cost: {4:.4f}, other_reg_cost: {5:.4f}".format( \
-                    i, joint_cost, data_nll_cost, post_kld_cost, post_pea_cost, other_reg_cost))
-            print("    Yp_sum: {0:.4f}".format(Yp_sum))
+        # do a minibatch update using unlabeled data
+        if True:
+            # get some data to train with
+            un_idx = npr.randint(low=0,high=un_samples,size=(batch_size,))
+            Xd_un = binarize_data(Xtr_un.take(un_idx, axis=0))
+            Yd_un = Ytr_un.take(un_idx, axis=0)
+            Xc_un = 0.0 * Xd_un
+            Xm_un = 0.0 * Xd_un
+            # do a minibatch update of the model, and compute some costs
+            GIT.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
+            GIT.set_lam_nll(1.0)
+            GIT.set_lam_kld((scale**2.0) * 1.0)
+            GIT.set_lam_cat(0.0)
+            GIT.set_lam_pea(scale * 1.0)
+            GIT.set_lam_ent(scale * 0.1)
+            outputs = GIT.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
+            joint_cost = 1.0 * outputs[0]
+            data_nll_cost = 1.0 * outputs[1]
+            post_kld_cost = 1.0 * outputs[2]
+            post_cat_cost = 1.0 * outputs[3]
+            post_pea_cost = 1.0 * outputs[4]
+            post_ent_cost = 1.0 * outputs[5]
+            other_reg_cost = 1.0 * outputs[6]
+        # do another minibatch update for incorporating label information
+        if True:
+            # get some data to train with
+            su_idx = npr.randint(low=0,high=su_samples,size=(batch_size,))
+            Xd_su = binarize_data(Xtr_su.take(su_idx, axis=0))
+            Yd_su = Ytr_su.take(su_idx, axis=0)
+            Xc_su = 0.0 * Xd_su
+            Xm_su = 0.0 * Xd_su
+            # update only based on the label-based classification cost
+            GIT.set_all_sgd_params(learn_rate=((scale**2.0)*learn_rate), momentum=0.98)
+            GIT.set_lam_nll(0.0)
+            GIT.set_lam_kld(0.0)
+            GIT.set_lam_cat(scale * 1.0)
+            GIT.set_lam_pea(0.0)
+            GIT.set_lam_ent(0.0)
+            outputs = GIT.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
+            post_cat_cost = 1.0 * outputs[3]
         if ((i % 500) == 0):
-            file_name = "GN_SAMPLES_b{0:d}.png".format(i)
-            Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
+            print("batch: {0:d}, joint_cost: {1:.4f}, nll: {2:.4f}, kld: {3:.4f}, cat: {4:.4f}, pea: {5:.4f}, ent: {6:.4f}, other_reg: {7:.4f}".format( \
+                    i, joint_cost, data_nll_cost, post_kld_cost, post_cat_cost, post_pea_cost, post_ent_cost, other_reg_cost))
+            if ((i % 1000) == 0):
+                # check classification error on training and validation set
+                train_err = GIT.classification_error(Xtr_su, Ytr_su)
+                va_err = GIT.classification_error(Xva, Yva)
+                print("    tr_err: {0:.4f}, va_err: {1:.4f}".format(train_err, va_err))
+        if ((i % 5000) == 0):
+            file_name = "GIT_SAMPLES_b{0:d}.png".format(i)
+            Xd_samps = np.repeat(Xd_un[0:10,:], 3, axis=0)
             sample_lists = GIT.sample_git_from_data(Xd_samps, loop_iters=10)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name)
