@@ -10,12 +10,12 @@ from collections import OrderedDict
 # theano business
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
 #from theano.tensor.shared_randomstreams import RandomStreams as RandStream
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun
+from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
+                      softplus_actfun, safe_log
 
 ####################################
 # INFREENCE NETWORK IMPLEMENTATION #
@@ -310,8 +310,8 @@ class InfNet(object):
         # The output of this inference network is given by the noisy output
         # of the final layers of its mu and sigma networks.
         self.output_mu = self.mu_layers[-1].linear_output
-        #self.output_sigma = T.exp(self.sigma_layers[-1].linear_output)
-        self.output_sigma = T.log(1.0 + T.exp(self.sigma_layers[-1].linear_output))
+        self.output_logvar = self.sigma_layers[-1].linear_output
+        self.output_sigma = T.sqrt(T.exp(self.output_logvar))
         # We'll also construct an output containing a single samples from each
         # of the distributions represented by the rows of self.output_mu and
         # self.output_sigma.
@@ -360,9 +360,10 @@ class InfNet(object):
         distribution with mean 0 and standard deviation self.prior_sigma.
         """
         prior_sigma_sq = self.prior_sigma**2.0
-        kld_cost = 0.5 * T.sum( ((self.output_mu**2.0 / prior_sigma_sq) + \
-                (self.output_sigma**2.0 / prior_sigma_sq) - \
-                T.log(self.output_sigma**2.0 / prior_sigma_sq) - 1.0), axis=1, keepdims=True)
+        prior_log_sigma_sq = np.log(prior_sigma_sq)
+        kld_cost = 0.5 * T.sum(((self.output_mu**2.0 / prior_sigma_sq) + \
+                (T.exp(self.output_logvar) / prior_sigma_sq) - \
+                (self.output_logvar - prior_log_sigma_sq) - 1.0), axis=1, keepdims=True)
         return kld_cost
 
     def _construct_sample_posterior(self):

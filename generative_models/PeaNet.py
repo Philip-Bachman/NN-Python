@@ -6,103 +6,35 @@ import numpy as np
 import numpy.random as npr
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
 #from theano.tensor.shared_randomstreams import RandomStreams as RandStream
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
-from NetLayers import HiddenLayer, JoinLayer, DAELayer
+from NetLayers import HiddenLayer, JoinLayer, DAELayer, safe_log, \
+                      relu_actfun, safe_softmax
 
 #####################################################################
 # NON-LINEARITIES: Some activation functions, for your convenience. #
 #####################################################################
 
-def row_normalize(x):
-    """Normalize rows of matrix x to unit (L2) norm."""
-    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1)+1e-6)
-    return x_normed
-
-def col_normalize(x):
-    """Normalize cols of matrix x to unit (L2) norm."""
-    x_normed = x / T.sqrt(T.sum(x**2.,axis=0,keepdims=1)+1e-6)
-    return x_normed
-
-def rehu_actfun(x):
-    """Compute rectified huberized activation for x."""
-    M_quad = (x > 0.0) * (x < 0.5)
-    M_line = (x >= 0.5)
-    x_rehu = (M_quad * x**2.) + (M_line * (x - 0.25))
-    return x_rehu
-
-def relu_actfun(x):
-    """Compute rectified linear activation for x."""
-    x_relu = T.maximum(0., x)
-    return x_relu
-
-def maxout_actfun(input, pool_size, filt_count):
-    """Apply maxout over non-overlapping sets of values."""
-    last_start = filt_count - pool_size
-    mp_vals = None
-    for i in xrange(pool_size):
-        cur = input[:,i:(last_start+i+1):pool_size]
-        if mp_vals is None:
-            mp_vals = cur
-        else:
-            mp_vals = T.maximum(mp_vals, cur)
-    return mp_vals
-
-def normout_actfun(input, pool_size, filt_count):
-    """Apply (L2) normout over non-overlapping sets of values."""
-    l_start = filt_count - pool_size
-    relu_vals = T.stack(\
-        *[input[:,i:(l_start+i+1):pool_size] for i in range(pool_size)])
-    pooled_vals = T.sqrt(T.mean(relu_vals**2.0, axis=0))
-    return pooled_vals
-
-def noop_actfun(x):
-    """Do nothing activation. For output layer probably."""
-    return x
-
-def safe_softmax(x):
-    """Softmax that shouldn't overflow."""
-    e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
-    x_sm = e_x / T.sum(e_x, axis=1, keepdims=True)
-    return x_sm
-
-def smooth_softmax(x):
-    """Softmax that shouldn't overflow, with Laplacish smoothing."""
-    eps = 0.0001
-    e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
-    p = (e_x / T.sum(e_x, axis=1, keepdims=True)) + eps
-    p_sm = p / T.sum(p, axis=1, keepdims=True)
-    return p_sm
-
-def smooth_entropy(p):
-    """Measure the entropy of distribution p, after converting it from an
-    encoding in terms of relative log-likelihoods into an encoding as a
-    sum-to-one distribution."""
-    p_sm = smooth_softmax(p)
-    ent_sm = -T.sum((T.log(p_sm) * p_sm), axis=1, keepdims=True)
-    return ent_sm
-
 def smooth_kl_divergence(p, q):
     """Measure the KL-divergence from "approximate" distribution q to "true"
     distribution p. Use smoothed softmax to convert p and q from encodings
     in terms of relative log-likelihoods into sum-to-one distributions."""
-    p_sm = smooth_softmax(p)
-    q_sm = smooth_softmax(q)
+    p_sm = safe_softmax(p)
+    q_sm = safe_softmax(q)
     # This term is: cross_entropy(p, q) - entropy(p)
-    kl_sm = T.sum(((T.log(p_sm) - T.log(q_sm)) * p_sm), axis=1, keepdims=True)
+    kl_sm = T.sum(((safe_log(p_sm) - safe_log(q_sm)) * p_sm), axis=1, keepdims=True)
     return kl_sm
 
 def smooth_js_divergence(p, q):
     """
     Measure the Jensen-Shannon divergence between (log-space) p and q.
     """
-    p_sm = smooth_softmax(p)
-    q_sm = smooth_softmax(q)
+    p_sm = safe_softmax(p)
+    q_sm = safe_softmax(q)
     mean_dist = (p_sm + q_sm) / 2.0
-    js_1 = T.sum(p_sm * (T.log(p_sm) - T.log(mean_dist)), axis=1, keepdims=True)
-    js_2 = T.sum(q_sm * (T.log(q_sm) - T.log(mean_dist)), axis=1, keepdims=True)
+    js_1 = T.sum(p_sm * (safe_log(p_sm) - safe_log(mean_dist)), axis=1, keepdims=True)
+    js_2 = T.sum(q_sm * (safe_log(q_sm) - safe_log(mean_dist)), axis=1, keepdims=True)
     js_div = (js_1 + js_2) / 2.0
     return js_div
 
@@ -110,10 +42,10 @@ def smooth_cross_entropy(p, q):
     """Measure the cross-entropy between "approximate" distribution q and
     "true" distribution p. Use smoothed softmax to convert p and q from
     encodings in terms of relative log-likelihoods into sum-to-one dists."""
-    p_sm = smooth_softmax(p)
-    q_sm = smooth_softmax(q)
+    p_sm = safe_softmax(p)
+    q_sm = safe_softmax(q)
     # This term is: entropy(p) + kl_divergence(p, q)
-    ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
+    ce_sm = -T.sum((p_sm * safe_log(q_sm)), axis=1, keepdims=True)
     return ce_sm
 
 
@@ -241,7 +173,7 @@ class PeaNet(object):
                             activation=None, pool_size=pool_size, \
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
-                            name=pnl_name, W_scale=2.0)
+                            name=pnl_name, W_scale=1.0)
                     proto_net.append(new_layer)
                     self.shared_param_dicts.append( \
                             {'W': new_layer.W, 'b': new_layer.b})
@@ -255,7 +187,7 @@ class PeaNet(object):
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
                             W=init_params['W'], b=init_params['b'], \
-                            name=pnl_name, W_scale=2.0)
+                            name=pnl_name, W_scale=1.0)
                     proto_net.append(new_layer)
                 next_input = proto_net[-1].output
                 # Set the non-bias parameters of this layer to be clipped
@@ -363,9 +295,9 @@ class PeaNet(object):
         else:
             x1 = self.spawn_nets[0][-1].linear_output
             x2 = self.spawn_nets[1][-1].linear_output
-            ear_loss = smooth_js_divergence(x1, x2)
-            #ear_loss = (smooth_kl_divergence(x1, x2) + \
-            #        smooth_kl_divergence(x2, x1)) / 2.0
+            #ear_loss = smooth_js_divergence(x1, x2)
+            ear_loss = (smooth_kl_divergence(x1, x2) + \
+                    smooth_kl_divergence(x2, x1)) / 2.0
         return ear_loss
 
     def _ent_cost(self, ent_type=1):

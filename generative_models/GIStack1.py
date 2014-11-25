@@ -20,7 +20,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import relu_actfun, softplus_actfun, \
-                      safe_softmax, smooth_softmax
+                      safe_softmax, safe_log
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
@@ -31,8 +31,8 @@ def log_prob_bernoulli(p_true, p_approx):
     given by p_true, for probability estimates given by p_approx. We'll
     compute joint log probabilities over row-wise groups.
     """
-    log_prob_1 = p_true * T.log(p_approx)
-    log_prob_0 = (1.0 - p_true) * T.log(1.0 - p_approx)
+    log_prob_1 = p_true * safe_log(p_approx)
+    log_prob_0 = (1.0 - p_true) * safe_log(1.0 - p_approx)
     row_log_probs = T.sum((log_prob_1 + log_prob_0), axis=1, keepdims=True)
     return row_log_probs
 
@@ -50,8 +50,17 @@ def cat_entropy(row_dists):
     """
     Compute the entropy of (row-wise) categorical distributions in p.
     """
-    row_ents = -T.sum((row_dists * T.log(row_dists)), axis=1, keepdims=True)
+    row_ents = -T.sum((row_dists * safe_log(row_dists)), axis=1, keepdims=True)
     return row_ents
+
+def binarize_data(X):
+    """
+    Make a sample of bernoulli variables with probabilities given by X.
+    """
+    X_shape = X.shape
+    probs = npr.rand(*X_shape)
+    X_binary = 1.0 * (probs < X)
+    return X_binary.astype(theano.config.floatX)
 
 #
 #
@@ -129,6 +138,7 @@ class GIStack1(object):
         # the output of the "first" spawn-net. it may be useful to try using
         # the output of the proto-net instead...
         self.Yp = safe_softmax(self.PN.output_spawn[0])
+        self.Yp_proto = safe_softmax(self.PN.output_proto)
 
         # we will be assuming one proto-net in the pseudo-ensemble represented
         # by self.PN, and either one or two spawn-nets for that proto-net.
@@ -269,7 +279,7 @@ class GIStack1(object):
             # these updates are for trainable params in the generator net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
             # get the momentum for this var
             var_mom = self.gn_moms[var]
             # update the momentum for this var using its grad
@@ -297,7 +307,7 @@ class GIStack1(object):
             # these updates are for trainable params in the inferencer net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
             # get the momentum for this var
             var_mom = self.in_moms[var]
             # update the momentum for this var using its grad
@@ -325,7 +335,7 @@ class GIStack1(object):
             # these updates are for trainable params in the inferencer net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
             # get the momentum for this var
             var_mom = self.pn_moms[var]
             # update the momentum for this var using its grad
@@ -487,7 +497,7 @@ class GIStack1(object):
         row_idx = T.arange(self.Yd.shape[0])
         row_mask = T.neq(self.Yd, 0).reshape((self.Yd.shape[0], 1))
         wacky_mat = (self.Yp * row_mask) + (1. - row_mask)
-        cat_cost = -T.sum(T.log(wacky_mat[row_idx,(self.Yd.flatten()-1)])) \
+        cat_cost = -T.sum(safe_log(wacky_mat[row_idx,(self.Yd.flatten()-1)])) \
                 / (T.sum(row_mask) + 1e-4)
         return cat_cost
 
@@ -590,7 +600,33 @@ class GIStack1(object):
         # make a function for computing the raw output of the categorical
         # inferencer (i.e. prior to any softmax)
         func = theano.function([self.Xd, self.Xc, self.Xm], \
-            outputs=self.PN.output_proto)
+            outputs=self.Yp_proto)
+        X_c = 0.0 * X_d
+        X_m = 0.0 * X_d
+        # compute the expected output for X_d
+        Y_p = None
+        for i in range(samples):
+            if Y_p == None:
+                Y_p = func(binarize_data(X_d), X_c, X_m)
+            else:
+                Y_p += func(binarize_data(X_d), X_c, X_m)
+        Y_p = Y_p / float(samples)
+        # get the implied class labels
+        Y_c = np.argmax(Y_p, axis=1).reshape((Y_d.shape[0],1))
+        # compute the classification error for points with valid labels
+        err_rate = np.sum(((Y_d != Y_c) * Y_mask)) / np.sum(Y_mask)
+        return err_rate
+
+    def class_probs(self, X_d, samples=20):
+        """
+        Compute predicted class probabilities for a set of observations X_d
+        based on multiple samples from its continuous posterior (computed via
+        self.IN), passed through the categorical inferencer (i.e. self.IN).
+        """
+        # make a function for computing the raw output of the categorical
+        # inferencer (i.e. prior to any softmax)
+        func = theano.function([self.Xd, self.Xc, self.Xm], \
+            outputs=self.Yp_proto)
         X_c = 0.0 * X_d
         X_m = 0.0 * X_d
         # compute the expected output for X_d
@@ -601,11 +637,7 @@ class GIStack1(object):
             else:
                 Y_p += func(X_d, X_c, X_m)
         Y_p = Y_p / float(samples)
-        # get the implied class labels
-        Y_c = np.argmax(Y_p, axis=1).reshape((Y_d.shape[0],1))
-        # compute the classification error for points with valid labels
-        err_rate = np.sum(((Y_d != Y_c) * Y_mask)) / np.sum(Y_mask)
-        return err_rate
+        return Y_p
 
 def binarize_data(X):
     """
@@ -616,177 +648,24 @@ def binarize_data(X):
     X_binary = 1.0 * (probs < X)
     return X_binary.astype(theano.config.floatX)
 
+def mnist_prob_embed(X, Y):
+    """
+    Embed the predicted class probabilities in Y in the digits images in X.
+    """
+    obs_count = X.shape[0]
+    class_count = Y.shape[1]
+    Xy = np.zeros(X.shape)
+    for i in range(obs_count):
+        x_sq = X[i,:].reshape((28,28))
+        for j in range(class_count):
+            x_sq[(2*j):(2*j+2),0:2] = Y[i,j]
+            x_sq[(2*j):(2*j+2),3] = 0.33
+        x_sq[2*class_count,0:3] = 0.33
+        Xy[i,:] = x_sq.flatten()
+    return Xy
+
 if __name__=="__main__":
-    from load_data import load_udm, load_udm_ss, load_mnist
-    import utils as utils
-
-    # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
-
-    # Load some data to train/validate/test with
-    sup_count = 1000
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
-    Xtr_su = datasets[0][0].get_value(borrow=False)
-    Ytr_su = datasets[0][1].get_value(borrow=False)
-    Xtr_un = datasets[1][0].get_value(borrow=False)
-    Ytr_un = datasets[1][1].get_value(borrow=False)
-    # get the unlabeled data
-    Xtr_un = np.vstack([Xtr_su, Xtr_un]).astype(theano.config.floatX)
-    Ytr_un = np.vstack([Ytr_su[:,np.newaxis], Ytr_un[:,np.newaxis]]).astype(np.int32)
-    Ytr_un = 0 * Ytr_un
-    # get the labeled data
-    Xtr_su = Xtr_su.astype(theano.config.floatX)
-    Ytr_su = Ytr_su[:,np.newaxis].astype(np.int32)
-    # get observations and labels for the validation set
-    Xva = datasets[2][0].get_value(borrow=False).astype(theano.config.floatX)
-    Yva = datasets[2][1].get_value(borrow=False).astype(np.int32)
-    Yva = Yva[:,np.newaxis] # numpy is dumb
-    # get size information for the data
-    un_samples = Xtr_un.shape[0]
-    su_samples = Xtr_su.shape[0]
-    va_sample = Xva.shape[0]
-
-    # Construct a GenNet and an InfNet, then test constructor for GIPair.
-    # Do basic testing, to make sure classes aren't completely broken.
-    Xp = T.matrix('Xp_base')
-    Xd = T.matrix('Xd_base')
-    Xc = T.matrix('Xc_base')
-    Xm = T.matrix('Xm_base')
-    Yd = T.icol('Yd_base')
-    data_dim = Xtr_un.shape[1]
-    label_dim = 10
-    prior_dim = 100
-    prior_sigma = 2.0
-    batch_size = 100
-    # Choose some parameters for the generator network
-    gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
-    gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = softplus_actfun
-    gn_params['lam_l2a'] = 1e-3
-    gn_params['vis_drop'] = 0.0
-    gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.0
-    # choose some parameters for the continuous inferencer
-    in_params = {}
-    shared_config = [data_dim, (200, 4)]
-    top_config = [shared_config[-1], (200, 4), prior_dim]
-    in_params['shared_config'] = shared_config
-    in_params['mu_config'] = top_config
-    in_params['sigma_config'] = top_config
-    in_params['activation'] = relu_actfun
-    in_params['lam_l2a'] = 1e-3
-    in_params['vis_drop'] = 0.0
-    in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.1
-    in_params['input_noise'] = 0.0
-    # choose some parameters for the categorical inferencer
-    pn_params = {}
-    pc0 = [prior_dim, (200, 4), (200, 4), label_dim]
-    pn_params['proto_configs'] = [pc0]
-    # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.0, 'do_dropout': True}
-    pn_params['spawn_configs'] = [sc0, sc1]
-    pn_params['spawn_weights'] = [0.5, 0.5]
-    # Set remaining params
-    pn_params['activation'] = relu_actfun
-    pn_params['ear_type'] = 6
-    pn_params['lam_l2a'] = 1e-3
-    pn_params['vis_drop'] = 0.0
-    pn_params['hid_drop'] = 0.5
-
-    # Initialize the base networks for this GIPair
-    GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
-            params=gn_params, shared_param_dicts=None)
-    IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
-            params=in_params, shared_param_dicts=None)
-    PN = PeaNet(rng=rng, Xd=Xd, params=pn_params)
-    # Initialize biases in GN, IN, and PN
-    GN.init_biases(0.1)
-    IN.init_biases(0.1)
-    PN.init_biases(0.1)
-    # Initialize the GIStack1
-    GIS = GIStack1(rng=rng, \
-            Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
-            g_net=GN, i_net=IN, p_net=PN, \
-            data_dim=data_dim, prior_dim=prior_dim, \
-            label_dim=label_dim, batch_size=batch_size, \
-            params={}, shared_param_dicts=None)
-    # set weighting parameters for the various costs...
-    GIS.set_lam_nll(1.0)
-    GIS.set_lam_kld(1.0)
-    GIS.set_lam_cat(0.0)
-    GIS.set_lam_pea(0.0)
-    GIS.set_lam_ent(0.0)
-    GIS.set_lam_l2w(1e-3)
-    # Set initial learning rate and basic SGD hyper parameters
-    learn_rate = 0.005
-    GIS.set_all_sgd_params(learn_rate=learn_rate, momentum=0.95)
-
-    for i in range(750000):
-        scale = 1.0
-        if (i < 25000):
-            scale = float(i+1) / 25000.0
-        if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
-        # do a minibatch update using unlabeled data
-        if True:
-            # get some data to train with
-            un_idx = npr.randint(low=0,high=un_samples,size=(batch_size,))
-            Xd_un = binarize_data(Xtr_un.take(un_idx, axis=0))
-            Yd_un = Ytr_un.take(un_idx, axis=0)
-            Xc_un = 0.0 * Xd_un
-            Xm_un = 0.0 * Xd_un
-            # do a minibatch update of the model, and compute some costs
-            GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.95)
-            GIS.set_lam_nll(1.0)
-            GIS.set_lam_kld((scale**2.0) * 1.0)
-            GIS.set_lam_cat(0.0)
-            GIS.set_lam_pea((scale**2.0) * 1.0)
-            GIS.set_lam_ent(0.0)
-            outputs = GIS.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
-            joint_cost = 1.0 * outputs[0]
-            data_nll_cost = 1.0 * outputs[1]
-            post_kld_cost = 1.0 * outputs[2]
-            post_cat_cost = 1.0 * outputs[3]
-            post_pea_cost = 1.0 * outputs[4]
-            post_ent_cost = 1.0 * outputs[5]
-            other_reg_cost = 1.0 * outputs[6]
-        # do another minibatch update incorporating label information
-        if True:
-            # get some data to train with
-            su_idx = npr.randint(low=0,high=su_samples,size=(batch_size,))
-            Xd_su = binarize_data(Xtr_su.take(su_idx, axis=0))
-            Yd_su = Ytr_su.take(su_idx, axis=0)
-            Xc_su = 0.0 * Xd_su
-            Xm_su = 0.0 * Xd_su
-            # update only based on the label-based classification cost
-            GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.95)
-            GIS.set_lam_nll(0.0)
-            GIS.set_lam_kld(0.0)
-            GIS.set_lam_cat((scale**0.0) * 1.0)
-            GIS.set_lam_pea(0.0)
-            GIS.set_lam_ent(0.0)
-            outputs = GIS.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
-            post_cat_cost = 1.0 * outputs[3]
-        if ((i % 500) == 0):
-            print("batch: {0:d}, joint_cost: {1:.4f}, nll: {2:.4f}, kld: {3:.4f}, cat: {4:.4f}, pea: {5:.4f}, ent: {6:.4f}, other_reg: {7:.4f}".format( \
-                    i, joint_cost, data_nll_cost, post_kld_cost, post_cat_cost, post_pea_cost, post_ent_cost, other_reg_cost))
-            if ((i % 1000) == 0):
-                # check classification error on training and validation set
-                train_err = GIS.classification_error(Xtr_su, Ytr_su, samples=15)
-                va_err = GIS.classification_error(Xva, Yva, samples=15)
-                print("    tr_err: {0:.4f}, va_err: {1:.4f}".format(train_err, va_err))
-        if ((i % 5000) == 0):
-            file_name = "GIS_SAMPLES_b{0:d}.png".format(i)
-            Xd_samps = np.repeat(Xd_un[0:10,:], 3, axis=0)
-            sample_lists = GIS.sample_gis_from_data(Xd_samps, loop_iters=10)
-            Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name)
-
+    # TESTING CODE MOVED TO "MnistTests.py"
     print("TESTING COMPLETE!")
 
 

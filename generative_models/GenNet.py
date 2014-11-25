@@ -10,12 +10,11 @@ from collections import OrderedDict
 # theano business
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
 #from theano.tensor.shared_randomstreams import RandomStreams as RandStream
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun
+from NetLayers import HiddenLayer, DiscLayer, relu_actfun, safe_log
 
 #####################################
 # GENERATIVE NETWORK IMPLEMENTATION #

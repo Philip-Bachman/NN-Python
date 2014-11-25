@@ -10,12 +10,11 @@ from collections import OrderedDict
 # theano business
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
 import theano.tensor.shared_randomstreams
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer
+from NetLayers import HiddenLayer, DiscLayer, safe_log, softplus_actfun
 from GenNet import projected_moments
 
 #############################
@@ -30,7 +29,7 @@ def logreg_loss(Y, class_sign):
     is indicated by class_sign, which should be in {-1, +1}. Note: this does
     not "normalize" for the number of predictions in Y.
     """
-    loss = T.sum(T.log(1.0 + T.exp(-class_sign * Y)))
+    loss = T.sum(softplus_actfun(-class_sign * Y))
     return loss
 
 def lsq_loss(Yh, Yt=0.0):
@@ -48,7 +47,7 @@ def hinge_loss(Yh, Yt=0.0):
     loss = T.sum((residual * (residual > 0.0)))
     return loss
 
-def ulh_loss(Yh, Yt=0.0, delta=0.5):
+def ulh_loss(Yh, Yt=0.0, delta=1.0):
     """
     Unilateral Huberized least-squares loss for Yh, given target Yt.
     """
@@ -116,13 +115,13 @@ class GCPair(object):
         # shared var momentum parameters for generator and discriminator
         self.mo_gn = theano.shared(value=zero_ary, name='gcp_mo_gn')
         self.mo_dn = theano.shared(value=zero_ary, name='gcp_mo_dn')
-        # shared var weights for adversarial classification objective
+        # shared var weights for collaborative classification objective
         self.dw_gn = theano.shared(value=zero_ary, name='gcp_dw_gn')
         self.dw_dn = theano.shared(value=zero_ary, name='gcp_dw_dn')
         # init parameters for controlling learning dynamics
         self.set_gn_sgd_params() # init SGD rate/momentum for GN
         self.set_dn_sgd_params() # init SGD rate/momentum for DN
-        self.set_disc_weights()  # init adversarial cost weights for GN/DN
+        self.set_disc_weights()  # initcollaborative cost weights for GN/DN
         self.lam_l2d = theano.shared(value=(zero_ary + params['lam_l2d']), \
                 name='gcp_lam_l2d')
 
@@ -208,63 +207,73 @@ class GCPair(object):
                 T.sum([dl.act_l2_sum for dl in self.disc_layers])
 
         # Construct costs for the generator and discriminator networks based 
-        # on adversarial binary classification
+        # on collaborative binary classification
         self.disc_cost_dn, self.disc_cost_gn = self._construct_disc_costs()
 
-        # Cost w.r.t. discriminator parameters is only the adversarial binary
-        # classification cost. Cost w.r.t. comprises an adversarial binary
+        # Cost w.r.t. discriminator parameters is only the collaborative binary
+        # classification cost. Cost w.r.t. comprises a collaborative binary
         # classification cost and the (weighted) moment matching cost.
         self.dn_cost = self.disc_cost_dn + self.DN.act_reg_cost + self.disc_reg_cost
         self.gn_cost = self.disc_cost_gn + self.mom_match_cost + self.GN.act_reg_cost
+        self.joint_cost = self.dn_cost + self.gn_cost
 
         # Initialize momentums for mini-batch SGD updates. All parameters need
         # to be safely nestled in their lists by now.
         self.joint_moms = OrderedDict()
         self.dn_moms = OrderedDict()
         self.gn_moms = OrderedDict()
-        for p in self.dn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape)
-            self.dn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.dn_moms[p]
         for p in self.gn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape)
+            p_mo = np.zeros(p.get_value(borrow=True).shape) + 2.0
             self.gn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
             self.joint_moms[p] = self.gn_moms[p]
+        for p in self.dn_params:
+            p_mo = np.zeros(p.get_value(borrow=True).shape) + 2.0
+            self.dn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
+            self.joint_moms[p] = self.dn_moms[p]
 
         # Construct the updates for the generator and discriminator network
         self.joint_updates = OrderedDict()
         self.dn_updates = OrderedDict()
         self.gn_updates = OrderedDict()
+        ###########################################
+        # Construct updates for the discriminator #
+        ###########################################
         for var in self.dn_params:
-            # these updates are for trainable params in the discriminator net...
+            # these updates are for trainable params in the inferencer net...
             # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.dn_cost, var)
+            var_grad = T.grad(self.dn_cost, var, \
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
             # get the momentum for this var
             var_mom = self.dn_moms[var]
             # update the momentum for this var using its grad
             self.dn_updates[var_mom] = (self.mo_dn[0] * var_mom) + \
-                    ((1.0 - self.mo_dn[0]) * var_grad)
+                    ((1.0 - self.mo_dn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.dn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_dn[0] * var_mom)
+            var_new = var - (self.lr_dn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
+            # apply "norm clipping" if desired
             if ((var in self.DN.clip_params) and \
                     (var in self.DN.clip_norms) and \
                     (self.DN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.DN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.dn_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.dn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.dn_updates[var]
+        ########################################################
+        # Construct updates for the moment tracking parameters #
+        ########################################################
         for var in self.mom_updates:
             # these updates are for the generator distribution's running first
             # and second-order moment estimates
             self.gn_updates[var] = self.mom_updates[var]
             self.joint_updates[var] = self.gn_updates[var]
+        #######################################
+        # Construct updates for the generator #
+        #######################################
         for var in self.gn_params:
             # these updates are for trainable params in the generator net...
             # first, get gradient of cost w.r.t. var
@@ -274,20 +283,19 @@ class GCPair(object):
             var_mom = self.gn_moms[var]
             # update the momentum for this var using its grad
             self.gn_updates[var_mom] = (self.mo_gn[0] * var_mom) + \
-                    ((1.0 - self.mo_gn[0]) * var_grad)
+                    ((1.0 - self.mo_gn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.gn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_gn[0] * var_mom)
+            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
+            # apply "norm clipping" if desired
             if ((var in self.GN.clip_params) and \
                     (var in self.GN.clip_norms) and \
                     (self.GN.clip_params[var] == 1)):
-                # clip the basic updated var if it is set as clippable
                 clip_norm = self.GN.clip_norms[var]
                 var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
                 var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
                 self.gn_updates[var] = var_new * var_scale
             else:
-                # otherwise, just use the basic updated var
                 self.gn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.gn_updates[var]
@@ -306,7 +314,7 @@ class GCPair(object):
 
     def set_disc_weights(self, dweight_gn=1.0, dweight_dn=1.0):
         """
-        Set weights for the adversarial classification cost.
+        Set weights for the collaborative classification cost.
         """
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         new_dw_dn = zero_ary + dweight_dn
@@ -371,7 +379,7 @@ class GCPair(object):
 
     def _construct_disc_costs(self):
         """
-        Construct the generator and discriminator adversarial costs.
+        Construct the generator and discriminator collaborative costs.
         """
         gn_costs = []
         dn_costs = []
@@ -432,11 +440,13 @@ class GCPair(object):
         func = theano.function(inputs=[ self.Xd, self.Xp, self.Id, self.In ], \
                 outputs=outputs, \
                 updates=self.gn_updates)
+        COMMENT="""
         theano.printing.pydotprint(func, \
             outfile='gn_func_graph.png', compact=True, format='png', with_ids=False, \
             high_contrast=True, cond_highlight=None, colorCodes=None, \
             max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
             print_output_file=True, assert_nb_all_strings=-1)
+        """
         return func
 
     def _construct_train_dn(self):
@@ -447,11 +457,13 @@ class GCPair(object):
         func = theano.function(inputs=[ self.Xd, self.Xp, self.Id, self.In ], \
                 outputs=outputs, \
                 updates=self.dn_updates)
+        COMMENT="""
         theano.printing.pydotprint(func, \
             outfile='dn_func_graph.png', compact=True, format='png', with_ids=False, \
             high_contrast=True, cond_highlight=None, colorCodes=None, \
             max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
             print_output_file=True, assert_nb_all_strings=-1)
+        """
         return func
 
     def _construct_train_joint(self):

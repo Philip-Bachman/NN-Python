@@ -14,12 +14,12 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 def row_normalize(x):
     """Normalize rows of matrix x to unit (L2) norm."""
-    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1)+1e-6)
+    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1)+1e-8)
     return x_normed
 
 def col_normalize(x):
     """Normalize cols of matrix x to unit (L2) norm."""
-    x_normed = x / T.sqrt(T.sum(x**2.,axis=0,keepdims=1)+1e-6)
+    x_normed = x / T.sqrt(T.sum(x**2.,axis=0,keepdims=1)+1e-8)
     return x_normed
 
 def rehu_actfun(x):
@@ -36,7 +36,8 @@ def relu_actfun(x):
 
 def softplus_actfun(x):
     """Compute softplus activation for x."""
-    x_softplus = T.log(1.0 + T.exp(x))
+    #x_softplus = safe_log(1.0 + T.exp(x))
+    x_softplus = T.nnet.softplus(x)
     return x_softplus
 
 def maxout_actfun(input, pool_size, filt_count):
@@ -65,8 +66,9 @@ def noop_actfun(x):
 
 def safe_softmax(x):
     """Softmax that shouldn't overflow."""
-    e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
-    x_sm = e_x / T.sum(e_x, axis=1, keepdims=True)
+    #e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
+    #x_sm = e_x / T.sum(e_x, axis=1, keepdims=True)
+    x_sm = T.nnet.softmax(x)
     return x_sm
 
 def smooth_softmax(x):
@@ -77,14 +79,6 @@ def smooth_softmax(x):
     p_sm = p / T.sum(p, axis=1, keepdims=True)
     return p_sm
 
-def smooth_entropy(p):
-    """Measure the entropy of distribution p, after converting it from an
-    encoding in terms of relative log-likelihoods into an encoding as a
-    sum-to-one distribution."""
-    p_sm = smooth_softmax(p)
-    ent_sm = -T.sum((T.log(p_sm) * p_sm), axis=1, keepdims=True)
-    return ent_sm
-
 def smooth_kl_divergence(p, q):
     """Measure the KL-divergence from "approximate" distribution q to "true"
     distribution p. Use smoothed softmax to convert p and q from encodings
@@ -92,7 +86,7 @@ def smooth_kl_divergence(p, q):
     p_sm = smooth_softmax(p)
     q_sm = smooth_softmax(q)
     # This term is: cross_entropy(p, q) - entropy(p)
-    kl_sm = T.sum(((T.log(p_sm) - T.log(q_sm)) * p_sm), axis=1, keepdims=True)
+    kl_sm = T.sum(((safe_log(p_sm) - safe_log(q_sm)) * p_sm), axis=1, keepdims=True)
     return kl_sm
 
 def smooth_cross_entropy(p, q):
@@ -102,8 +96,15 @@ def smooth_cross_entropy(p, q):
     p_sm = smooth_softmax(p)
     q_sm = smooth_softmax(q)
     # This term is: entropy(p) + kl_divergence(p, q)
-    ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
+    ce_sm = -T.sum((p_sm * safe_log(q_sm)), axis=1, keepdims=True)
     return ce_sm
+
+def safe_log(x):
+    """
+    Log that doesn't NaN out for reasonably non-negative numbers.
+    """
+    safe_log_x = T.log(x + 1e-8)
+    return safe_log_x
 
 ######################################
 # BASIC FULLY-CONNECTED HIDDEN LAYER #
@@ -183,7 +184,7 @@ class HiddenLayer(object):
         self.b = b
 
         # Compute linear "pre-activation" for this layer
-        self.linear_output = T.dot(self.noisy_input, self.W) + self.b
+        self.linear_output = 20.0 * T.tanh((T.dot(self.noisy_input, self.W) + self.b) / 20.0)
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output + (self.bias_noise[0] * \
@@ -405,7 +406,7 @@ class DiscLayer(object):
         self.b = b
 
         # Compute linear "pre-activation" for this layer
-        self.linear_output = T.dot(self.input, self.W) + self.b
+        self.linear_output = 20.0 * T.tanh((T.dot(self.input, self.W) + self.b) / 20.0)
 
         # Apply activation function
         self.output = self.linear_output

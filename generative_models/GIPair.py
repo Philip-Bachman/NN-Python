@@ -14,7 +14,8 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun
+from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
+                      safe_log
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
@@ -25,8 +26,8 @@ def log_prob_bernoulli(p_true, p_approx):
     given by p_true, for probability estimates given by p_approx. We'll
     compute joint log probabilities over row-wise groups.
     """
-    log_prob_1 = p_true * T.log(p_approx)
-    log_prob_0 = (1.0 - p_true) * T.log(1.0 - p_approx)
+    log_prob_1 = p_true * safe_log(p_approx)
+    log_prob_0 = (1.0 - p_true) * safe_log(1.0 - p_approx)
     row_log_probs = T.sum((log_prob_1 + log_prob_0), axis=1, keepdims=True)
     return row_log_probs
 
