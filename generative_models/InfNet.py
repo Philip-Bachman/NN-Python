@@ -380,14 +380,14 @@ class InfNet(object):
         Initialize the biases in all hidden layers to some constant.
         """
         for layer in self.shared_layers:
-            b_init = (0.0 * layer.b.get_value(borrow=False)) + b_init
-            layer.b.set_value(b_init)
+            b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
+            layer.b.set_value(b_vec)
         for layer in self.mu_layers[:-1]:
-            b_init = (0.0 * layer.b.get_value(borrow=False)) + b_init
-            layer.b.set_value(b_init)
+            b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
+            layer.b.set_value(b_vec)
         for layer in self.sigma_layers[:-1]:
-            b_init = (0.0 * layer.b.get_value(borrow=False)) + b_init
-            layer.b.set_value(b_init)
+            b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
+            layer.b.set_value(b_vec)
         return
 
     def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None):

@@ -395,8 +395,8 @@ class PeaNet(object):
         Initialize the biases in all hidden layers to some constant.
         """
         for layer in self.proto_nets[0][:-1]:
-            b_init = (0.0 * layer.b.get_value(borrow=False)) + b_init
-            layer.b.set_value(b_init)
+            b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
+            layer.b.set_value(b_vec)
         return
 
     def shared_param_clone(self, rng=None, Xd=None):

@@ -12,8 +12,8 @@ from collections import OrderedDict
 # theano business
 import theano
 import theano.tensor as T
-import theano.tensor.shared_randomstreams
-from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
+#from theano.tensor.shared_randomstreams import RandomStreams as RandStream
+from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, safe_log, softplus_actfun
@@ -145,8 +145,7 @@ class VCGPrep(object):
     def __init__(self, rng=None, Xd=None, Xp=None, d_net=None, g_net=None, \
                  i_net=None, data_dim=None, prior_dim=None, params=None):
         # Do some stuff!
-        self.rng = theano.tensor.shared_randomstreams.RandomStreams( \
-                rng.randint(100000))
+        self.rng = RandStream(rng.randint(100000))
         self.data_dim = data_dim
         self.prior_dim = prior_dim
 
@@ -305,6 +304,7 @@ class VCGPrep(object):
         self.other_reg_cost = self._construct_other_reg_cost()
         self.gin_cost = self.disc_cost_gn + self.mom_match_cost + \
                 self.data_nll_cost + self.post_kld_cost + self.other_reg_cost
+        #self.gin_cost = self.disc_cost_gn + self.mom_match_cost + self.GN.act_reg_cost + self.IN.act_reg_cost
         # compute total cost on the discriminator and VB generator/inferencer
         self.dgi_cost = self.dn_cost + self.gin_cost
 
@@ -347,7 +347,7 @@ class VCGPrep(object):
             # these updates are for trainable params in the inferencer net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.dn_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-0.1,0.1)
             # get the momentum for this var
             var_mom = self.dn_moms[var]
             # update the momentum for this var using its grad
@@ -375,7 +375,7 @@ class VCGPrep(object):
             # these updates are for trainable params in the generator net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.gin_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-0.1,0.1)
             # get the momentum for this var
             var_mom = self.gn_moms[var]
             # update the momentum for this var using its grad
@@ -403,7 +403,7 @@ class VCGPrep(object):
             # these updates are for trainable params in the generator net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.gin_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-0.1,0.1)
             # get the momentum for this var
             var_mom = self.in_moms[var]
             # update the momentum for this var using its grad
@@ -658,6 +658,11 @@ class VCGPrep(object):
         func = theano.function(inputs=[ self.Xd, self.Xp, self.Id, self.In ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
+        #theano.printing.pydotprint(func, \
+        #    outfile='VCG_train_joint.png', compact=True, format='png', with_ids=False, \
+        #    high_contrast=True, cond_highlight=None, colorCodes=None, \
+        #    max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
+        #    print_output_file=True, assert_nb_all_strings=-1)
         return func
 
 if __name__=="__main__":
@@ -667,6 +672,7 @@ if __name__=="__main__":
     from PeaNet import PeaNet
     from InfNet import InfNet
     from GenNet import GenNet
+    from GIPair import GIPair
     from NetLayers import relu_actfun, softplus_actfun, \
                           safe_softmax, safe_log
 
@@ -684,7 +690,7 @@ if __name__=="__main__":
     # get and set some basic dataset information
     tr_samples = Xtr.get_value(borrow=True).shape[0]
     data_dim = Xtr.get_value(borrow=True).shape[1]
-    prior_dim = 100
+    prior_dim = 150
     prior_sigma = 5.0
     
     # Do moment matching in some transformed space
@@ -708,7 +714,7 @@ if __name__=="__main__":
     # Set some reasonable mlp parameters
     dn_params = {}
     # Set up some proto-networks
-    pc0 = [data_dim, (200, 4), (200, 4), 10]
+    pc0 = [data_dim, (250, 4), (250, 4), 10]
     dn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -718,73 +724,87 @@ if __name__=="__main__":
     # Set remaining params
     dn_params['ear_type'] = 2
     dn_params['ear_lam'] = 0.0
-    dn_params['lam_l2a'] = 1e-3
+    dn_params['lam_l2a'] = 1e-1
     dn_params['vis_drop'] = 0.2
     dn_params['hid_drop'] = 0.5
     # Initialize a network object to use as the discriminator
     DN = PeaNet(rng=rng, Xd=Xd_sym, params=dn_params)
+    DN.init_biases(0.0)
 
     ###########################
     # Setup generator network #
     ###########################
     # Choose some parameters for the generative network
     gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
+    gn_config = [prior_dim, 1000, 1000, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['lam_l2a'] = 1e-3
+    gn_params['lam_l2a'] = 1e-1
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
     gn_params['out_noise'] = 0.1
-    gn_params['activation'] = softplus_actfun
+    gn_params['activation'] = relu_actfun
     # Initialize a generator network object
     GN = GenNet(rng=rng, Xp=Xp_sym, prior_sigma=prior_sigma, params=gn_params)
+    GN.init_biases(0.1)
 
     ############################
     # Setup inferencer network #
     ############################
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 600, 600]
-    top_config = [shared_config[-1], prior_dim]
+    shared_config = [data_dim, 1000, 1000]
+    top_config = [shared_config[-1], 500, prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
-    in_params['activation'] = softplus_actfun
-    in_params['lam_l2a'] = 1e-3
+    in_params['activation'] = relu_actfun
+    in_params['lam_l2a'] = 1e-1
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     IN = InfNet(rng=rng, Xd=Xd_sym, Xc=Xc_sym, Xm=Xm_sym, \
             prior_sigma=prior_sigma, params=in_params)
+    IN.init_biases(0.1)
 
     ########################################################################
     # Initialize the joint controller for the generator/discriminator pair #
     ########################################################################
     vcg_params = {}
     vcg_params['lam_l2d'] = 1e-2
-    vcg_params['mom_mix_rate'] = 0.02
+    vcg_params['mom_mix_rate'] = 0.05
     vcg_params['mom_match_weight'] = 0.05
     vcg_params['mom_match_proj'] = P
     vcg_params['target_mean'] = target_mean
     vcg_params['target_cov'] = target_cov
 
-    # Initialize a VCGair instance using the previously constructed generator and
-    # discriminator networks.
-    VCG = VCGPrep(rng=rng, Xd=Xd_sym, Xp=Xp_sym, d_net=DN, g_net=GN, i_net=IN, \
-            data_dim=data_dim, prior_dim=prior_dim, params=vcg_params)    
-    # Init generator's mean and covariance estimates with many samples
-    VCG.init_moments(10000)
-
-    # initialize sgd parameters
-    learn_rate = 0.04
-    VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
-
     batch_idx = T.lvector('batch_idx')
     batch_sample = theano.function(inputs=[ batch_idx ], \
             outputs=Xtr.take(batch_idx, axis=0))
+
+    ##############################################################
+    # Train via collaborative approach, using samples from prior #
+    ##############################################################
+    # Initialize a GIPair for training variationally from data samples
+    GIP = GIPair(rng=rng, Xd=Xd_sym, Xc=Xc_sym, Xm=Xm_sym, g_net=GN, i_net=IN, \
+            data_dim=data_dim, prior_dim=prior_dim)
+    GIP.set_lam_l2w(1e-4)
+    # Initialize a VCGPrep instance for training a variational collaborative
+    # system comprising a discriminator, generator, and inferencer.
+    VCG = VCGPrep(rng=rng, Xd=Xd_sym, Xp=Xp_sym, d_net=DN, g_net=GN, i_net=IN, \
+            data_dim=data_dim, prior_dim=prior_dim, params=vcg_params)
+    VCG.set_lam_l2w(1e-4)
+    # Init generator's mean and covariance estimates with many samples
+    VCG.init_moments(10000)
+    # initialize sgd parameters
+    learn_rate = 0.02
+    VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
+    VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
     for i in range(500000):
+        ##############################################################
+        # do an update using the collaborative variational objective #
+        ##############################################################
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,)).astype(np.int32)
         Xn_np = GN.sample_from_prior(100)
         Xd_batch = batch_sample(tr_idx)
@@ -794,14 +814,13 @@ if __name__=="__main__":
         data_idx = all_idx[:100]
         noise_idx = all_idx[100:]
         # set up learning rate stuff
-        scale = 1.0 * min(1.0, float(i+1)/50000.0)
-        VCG.set_all_sgd_params(learn_rate=scale*learn_rate, momentum=0.98)
-        if(i < 5000):
-            VCG.set_lam_nll(0.0)
-            VCG.set_lam_kld(0.0)
-        else:
-            VCG.set_lam_nll(scale / 20.0)
-            VCG.set_lam_kld((scale**2.0 / 20.0))
+        scale_1 = min(1.0, float(i+1)/20000.0)
+        scale_2 = min(1.0, float(i+1)/100000.0)
+        VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
+        VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
+        VCG.set_disc_weights(dweight_gn=scale_1, dweight_dn=scale_1)
+        VCG.set_lam_nll(scale_2*0.01)
+        VCG.set_lam_kld(scale_2*0.01)
         # do a minibatch update
         outputs = VCG.train_joint(Xd_batch, Xn_batch, data_idx, noise_idx)
         mom_match_cost = 1.0 * outputs[0]
@@ -809,19 +828,38 @@ if __name__=="__main__":
         disc_dn = 1.0 * outputs[2]
         nll_cost = 1.0 * outputs[3]
         kld_cost = 1.0 * outputs[4]
+        #########################################################
+        # do occasional updates using the variational objective #
+        #########################################################
+        if (((i + 1) % 2) == 0):
+            GIP.set_all_sgd_params(learn_rate, momentum=0.95)
+            GIP.set_lam_nll(scale_2*0.02)
+            GIP.set_lam_kld(scale_2*0.02)
+            # get some data to train with
+            tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
+            Xd_batch = batch_sample(tr_idx)
+            Xc_batch = 0.0 * Xd_batch
+            Xm_batch = 0.0 * Xd_batch
+            # do a minibatch update of the model, and compute some costs
+            outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
-            VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
+            learn_rate = learn_rate * 0.8
         if ((i % 1000) == 0):
-            print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_dn: {2:.4f}, disc_gn: {3:.4f}, nll: {4:.4f}, kld: {5:.4f}".format( \
+            print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_dn: {2:.6f}, disc_gn: {3:.6f}, nll: {4:.4f}, kld: {5:.4f}".format( \
                     i, mom_match_cost, disc_dn, disc_gn, nll_cost, kld_cost))
         if ((i % 1000) == 0):
+            # draw independent samples from generative model's prior
             file_name = "VCG_SAMPLES_b{0:d}.png".format(i)
             Xs = VCG.sample_from_gn(200)
             utils.visualize_samples(Xs, file_name)
             file_name = "VCG_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize(VCG.DN, 0, 0, file_name)
-
+            # draw "markov chain" samples initiated from training data
+            file_name = "VCG_SAMPLES_a{0:d}.png".format(i)
+            Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
+            sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=10)
+            Xs = np.vstack(sample_lists["data samples"])
+            utils.visualize_samples(Xs, file_name)
     print("TESTING COMPLETE!")
 
 

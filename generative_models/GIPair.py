@@ -86,10 +86,14 @@ class GIPair(object):
         self.Xd = Xd
         self.Xc = Xc
         self.Xm = Xm
-        # create "shared-parameter" clones of the inferencer and generator
-        # that this GIPair will be built on.
+        # create a "shared-parameter" clone of the inferencer, set up to
+        # receive input from the appropriate symbolic variables.
         self.IN = i_net.shared_param_clone(rng=rng, \
                 Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
+        # capture a handle for samples from the variational posterior
+        self.Xp = self.IN.output
+        # create a "shared-parameter" clone of the generator, set up to
+        # receive input from samples from the variational posterior
         self.GN = g_net.shared_param_clone(rng=rng, Xp=self.IN.output)
         # capture a handle for sampled reconstructions from the generator
         self.Xg = self.GN.output
@@ -129,9 +133,12 @@ class GIPair(object):
             self.mo_in = theano.shared(value=zero_ary, name='gil_mo_in')
             # init parameters for controlling learning dynamics
             self.set_all_sgd_params()
+            # init shared var for weighting nll of data given posterior sample
+            self.lam_nll = theano.shared(value=zero_ary, name='gis_lam_nll')
+            self.set_lam_nll(lam_nll=1.0)
             # init shared var for weighting prior kld against reconstruction
             self.lam_kld = theano.shared(value=zero_ary, name='gil_lam_kld')
-            self.set_lam_kld()
+            self.set_lam_kld(lam_kld=1.0)
             # init shared var for controlling l2 regularization on params
             self.lam_l2w = theano.shared(value=zero_ary, name='gil_lam_l2w')
             self.set_lam_l2w(1e-4)
@@ -140,6 +147,7 @@ class GIPair(object):
             self.shared_param_dicts['gil_lr_in'] = self.lr_in
             self.shared_param_dicts['gil_mo_gn'] = self.mo_gn
             self.shared_param_dicts['gil_mo_in'] = self.mo_in
+            self.shared_param_dicts['gis_lam_nll'] = self.lam_nll
             self.shared_param_dicts['gil_lam_kld'] = self.lam_kld
             self.shared_param_dicts['gil_lam_l2w'] = self.lam_l2w
         else:
@@ -149,6 +157,7 @@ class GIPair(object):
             self.lr_in = self.shared_param_dicts['gil_lr_in']
             self.mo_gn = self.shared_param_dicts['gil_mo_gn']
             self.mo_in = self.shared_param_dicts['gil_mo_in']
+            self.lam_nll = self.shared_param_dicts['gis_lam_nll']
             self.lam_kld = self.shared_param_dicts['gil_lam_kld']
             self.lam_l2w = self.shared_param_dicts['gil_lam_l2w']
 
@@ -160,7 +169,7 @@ class GIPair(object):
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
-        self.data_nll_cost = self._construct_data_nll_cost()
+        self.data_nll_cost = self.lam_nll[0] * self._construct_data_nll_cost()
         self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
         self.other_reg_cost = self._construct_other_reg_cost()
         self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
@@ -191,7 +200,7 @@ class GIPair(object):
             # these updates are for trainable params in the generator net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
             # get the momentum for this var
             var_mom = self.gn_moms[var]
             # update the momentum for this var using its grad
@@ -219,7 +228,7 @@ class GIPair(object):
             # these updates are for trainable params in the inferencer net...
             # first, get gradient of cost w.r.t. var
             var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov])
+                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
             # get the momentum for this var
             var_mom = self.in_moms[var]
             # update the momentum for this var using its grad
@@ -288,6 +297,15 @@ class GIPair(object):
         new_mo = zero_ary + momentum
         self.mo_gn.set_value(new_mo.astype(theano.config.floatX))
         self.mo_in.set_value(new_mo.astype(theano.config.floatX))
+        return
+
+    def set_lam_nll(self, lam_nll=1.0):
+        """
+        Set weight for controlling the influence of the data likelihood.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_nll
+        self.lam_nll.set_value(new_lam.astype(theano.config.floatX))
         return
 
     def set_lam_kld(self, lam_kld=1.0):

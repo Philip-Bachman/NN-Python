@@ -565,7 +565,7 @@ def test_gc_pair():
     gcp_params['d_net'] = DN
     gcp_params['g_net'] = GN
     gcp_params['lam_l2d'] = 1e-2
-    gcp_params['mom_mix_rate'] = 0.02
+    gcp_params['mom_mix_rate'] = 0.05
     gcp_params['mom_match_weight'] = 0.05
     gcp_params['mom_match_proj'] = P
     gcp_params['target_mean'] = target_mean
@@ -596,8 +596,8 @@ def test_gc_pair():
         all_idx = np.arange(200)
         data_idx = all_idx[:100]
         noise_idx = all_idx[100:]
-        d_weight = 0.4 * min(1.0, float(i+1)/100000.0)
-        GCP.set_disc_weights(dweight_gn=d_weight, dweight_dn=d_weight)
+        scale = min(1.0, float(i+1)/10000.0)
+        GCP.set_disc_weights(dweight_gn=scale, dweight_dn=scale)
         outputs = GCP.train_joint(Xd_batch, Xn_batch, data_idx, noise_idx)
         mom_match_cost = 1.0 * outputs[0]
         disc_cost_gn = 1.0 * outputs[1]
@@ -607,10 +607,10 @@ def test_gc_pair():
             dn_learn_rate = dn_learn_rate * 0.7
             GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.98)
             GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.98)
-        if ((i % 1000) == 0):
+        if ((i % 500) == 0):
             print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_cost_gn: {2:.4f}, disc_cost_dn: {3:.4f}".format( \
                     i, mom_match_cost, disc_cost_gn, disc_cost_dn))
-        if ((i % 10000) == 0):
+        if ((i % 500) == 0):
             file_name = "GCP_SAMPLES_b{0:d}.png".format(i)
             Xs = GCP.sample_from_gn(200)
             utils.visualize_samples(Xs, file_name)
@@ -712,7 +712,6 @@ def test_gi_pair():
             sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=10)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name)
-
     print("TESTING COMPLETE!")
     return
 
@@ -726,7 +725,7 @@ def multitest_gi_trip():
     lam_pea = [1.0, 2.0, 4.0]
     lam_ent = [-0.1, 0.0, 0.1]
     lam_l2w = [1e-4]
-    for t_num in range(100):
+    for t_num in range(5,100):
         # shuffle all the parameter lists in-place
         npr.shuffle(learn_rate)
         npr.shuffle(lam_cat)
@@ -756,7 +755,7 @@ def multitest_gi_stack_1():
     lam_pea = [1.0, 2.0, 4.0]
     lam_ent = [-0.1, 0.0, 0.1]
     lam_l2w = [1e-4]
-    for t_num in range(100):
+    for t_num in range(10,100):
         # shuffle all the parameter lists in-place
         npr.shuffle(learn_rate)
         npr.shuffle(lam_cat)
@@ -784,5 +783,5 @@ def multitest_gi_stack_1():
 if __name__=="__main__":
     #test_gc_pair()
     #test_gi_pair()
-    multitest_gi_trip()
-    #multitest_gi_stack_1()
+    #multitest_gi_trip()
+    multitest_gi_stack_1()
