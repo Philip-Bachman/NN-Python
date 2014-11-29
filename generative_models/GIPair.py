@@ -20,27 +20,6 @@ from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
 
-def log_prob_bernoulli(p_true, p_approx):
-    """
-    Compute log probability of some binary variables with probabilities
-    given by p_true, for probability estimates given by p_approx. We'll
-    compute joint log probabilities over row-wise groups.
-    """
-    log_prob_1 = p_true * safe_log(p_approx)
-    log_prob_0 = (1.0 - p_true) * safe_log(1.0 - p_approx)
-    row_log_probs = T.sum((log_prob_1 + log_prob_0), axis=1, keepdims=True)
-    return row_log_probs
-
-def log_prob_gaussian(mu_true, mu_approx, le_sigma=1.0):
-    """
-    Compute log probability of some continuous variables with values given
-    by mu_true, w.r.t. gaussian distributions with means given by mu_approx
-    and standard deviations given by le_sigma. We assume isotropy.
-    """
-    ind_log_probs = -( (mu_approx - mu_true)**2.0 / (2.0 * le_sigma**2.0) )
-    row_log_probs = T.sum(ind_log_probs, axis=1, keepdims=True)
-    return row_log_probs
-
 #
 #
 # Important symbolic variables:
@@ -326,16 +305,11 @@ class GIPair(object):
         self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
-    def _construct_data_nll_cost(self, prob_type='bernoulli'):
+    def _construct_data_nll_cost(self):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
-        assert((prob_type == 'bernoulli') or (prob_type == 'gaussian'))
-        if (prob_type == 'bernoulli'):
-            log_prob_cost = log_prob_bernoulli(self.Xd, self.GN.output)
-        else:
-            log_prob_cost = log_prob_gaussian(self.Xd, self.GN.output, \
-                    le_sigma=1.0)
+        log_prob_cost = self.GN.compute_log_prob(self.Xd)
         nll_cost = -T.sum(log_prob_cost) / self.Xd.shape[0]
         return nll_cost
 

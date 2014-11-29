@@ -23,31 +23,10 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import relu_actfun, softplus_actfun, \
-                      safe_softmax, safe_log
+                      safe_softmax, safe_log        
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
-
-def log_prob_bernoulli(p_true, p_approx):
-    """
-    Compute log probability of some binary variables with probabilities
-    given by p_true, for probability estimates given by p_approx. We'll
-    compute joint log probabilities over row-wise groups.
-    """
-    log_prob_1 = p_true * safe_log(p_approx)
-    log_prob_0 = (1.0 - p_true) * safe_log(1.0 - p_approx)
-    row_log_probs = T.sum((log_prob_1 + log_prob_0), axis=1, keepdims=True)
-    return row_log_probs
-
-def log_prob_gaussian(mu_true, mu_approx, le_sigma=1.0):
-    """
-    Compute log probability of some continuous variables with values given
-    by mu_true, w.r.t. gaussian distributions with means given by mu_approx
-    and standard deviations given by le_sigma. We assume isotropy.
-    """
-    ind_log_probs = -( (mu_approx - mu_true)**2.0 / (2.0 * le_sigma**2.0) )
-    row_log_probs = T.sum(ind_log_probs, axis=1, keepdims=True)
-    return row_log_probs
 
 def cat_entropy(p):
     """
@@ -514,13 +493,8 @@ class GITrip(object):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
-        assert((prob_type == 'bernoulli') or (prob_type == 'gaussian'))
         Xd_rep = T.repeat(self.Xd, self.label_dim, axis=0)
-        if (prob_type == 'bernoulli'):
-            log_prob_cost = log_prob_bernoulli(Xd_rep, self.GN.output)
-        else:
-            log_prob_cost = log_prob_gaussian(Xd_rep, self.GN.output, \
-                    le_sigma=1.0)
+        log_prob_cost = self.GN.compute_log_prob(Xd_rep)
         cat_probs = T.flatten(self.Yp).dimshuffle(0, 'x')
         nll_cost = -T.sum((cat_probs * log_prob_cost)) / self.Xd.shape[0]
         return nll_cost

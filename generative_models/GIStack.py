@@ -25,27 +25,6 @@ from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
 
-def log_prob_bernoulli(p_true, p_approx):
-    """
-    Compute log probability of some binary variables with probabilities
-    given by p_true, for probability estimates given by p_approx. We'll
-    compute joint log probabilities over row-wise groups.
-    """
-    log_prob_1 = p_true * safe_log(p_approx)
-    log_prob_0 = (1.0 - p_true) * safe_log(1.0 - p_approx)
-    row_log_probs = T.sum((log_prob_1 + log_prob_0), axis=1, keepdims=True)
-    return row_log_probs
-
-def log_prob_gaussian(mu_true, mu_approx, le_sigma=1.0):
-    """
-    Compute log probability of some continuous variables with values given
-    by mu_true, w.r.t. gaussian distributions with means given by mu_approx
-    and standard deviations given by le_sigma. We assume isotropy.
-    """
-    ind_log_probs = -( (mu_approx - mu_true)**2.0 / (2.0 * le_sigma**2.0) )
-    row_log_probs = T.sum(ind_log_probs, axis=1, keepdims=True)
-    return row_log_probs
-
 def cat_entropy(row_dists):
     """
     Compute the entropy of (row-wise) categorical distributions in p.
@@ -72,7 +51,7 @@ def binarize_data(X):
 #
 #
 
-class GIStack1(object):
+class GIStack(object):
     """
     Controller for training a variational autoencoder.
 
@@ -110,15 +89,15 @@ class GIStack1(object):
             data_dim=None, prior_dim=None, label_dim=None, \
             batch_size=None, \
             params=None, shared_param_dicts=None):
-        # setup a rng for this GIStack1
+        # setup a rng for this GIStack
         self.rng = RandStream(rng.randint(100000))
         # record the symbolic variables that will provide inputs to the
-        # computation graph created to describe this GIStack1
+        # computation graph created to describe this GIStack
         self.Xd = Xd
         self.Yd = Yd
         self.Xc = Xc
         self.Xm = Xm
-        # record the dimensionality of the data handled by this GIStack1
+        # record the dimensionality of the data handled by this GIStack
         self.data_dim = data_dim
         self.label_dim = label_dim
         self.prior_dim = prior_dim
@@ -158,7 +137,7 @@ class GIStack1(object):
         assert(self.prior_dim == self.PN.proto_nets[0][0].in_dim)
         assert(self.label_dim == self.PN.proto_nets[0][-1].out_dim)
 
-        # determine whether this GIStack1 is a clone or an original
+        # determine whether this GIStack is a clone or an original
         if shared_param_dicts is None:
             # This is not a clone, and we will need to make a dict for
             # referring to some important shared parameters.
@@ -216,7 +195,7 @@ class GIStack1(object):
             self.shared_param_dicts['gis_lam_l2w'] = self.lam_l2w
         else:
             # use some shared parameters that are shared among all clones of
-            # some "base" GIStack1
+            # some "base" GIStack
             self.lr_gn = self.shared_param_dicts['gis_lr_gn']
             self.lr_in = self.shared_param_dicts['gis_lr_in']
             self.lr_pn = self.shared_param_dicts['gis_lr_pn']
@@ -470,16 +449,11 @@ class GIStack1(object):
         self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
-    def _construct_data_nll_cost(self, prob_type='bernoulli'):
+    def _construct_data_nll_cost(self):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
-        assert((prob_type == 'bernoulli') or (prob_type == 'gaussian'))
-        if (prob_type == 'bernoulli'):
-            log_prob_cost = log_prob_bernoulli(self.Xd, self.GN.output)
-        else:
-            log_prob_cost = log_prob_gaussian(self.Xd, self.GN.output, \
-                    le_sigma=1.0)
+        log_prob_cost = self.GN.compute_log_prob(self.Xd)
         nll_cost = -T.sum(log_prob_cost) / self.Xd.shape[0]
         return nll_cost
 
@@ -542,7 +516,7 @@ class GIStack1(object):
                 updates=self.joint_updates)
         COMMENT="""
         theano.printing.pydotprint(func, \
-            outfile='GIStack1_train_joint.svg', compact=True, format='svg', with_ids=False, \
+            outfile='GIStack_train_joint.svg', compact=True, format='svg', with_ids=False, \
             high_contrast=True, cond_highlight=None, colorCodes=None, \
             max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
             print_output_file=True, assert_nb_all_strings=-1)
@@ -551,11 +525,11 @@ class GIStack1(object):
 
     def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None, Yd=None):
         """
-        Create a "shared-parameter" clone of this GIStack1.
+        Create a "shared-parameter" clone of this GIStack.
 
         This can be used for chaining VAEs for BPTT. (and other stuff too)
         """
-        clone_gis = GIStack1(rng=rng, Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
+        clone_gis = GIStack(rng=rng, Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
             g_net=self.GN, i_net=self.IN, p_net=self.PN, \
             data_dim=self.data_dim, prior_dim=self.prior_dim, label_dim=self.label_dim, \
             batch_size=self.batch_size, params=self.params, \

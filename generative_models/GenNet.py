@@ -15,6 +15,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, safe_log
+from LogPDFs import log_prob_bernoulli, log_prob_gaussian2
 
 #####################################
 # GENERATIVE NETWORK IMPLEMENTATION #
@@ -38,7 +39,11 @@ class GenNet(object):
             bias_noise: standard dev for noise on the biases of hidden layers
             out_noise: standard dev for noise on the output of this net
             mlp_config: list of "layer descriptions"
+            out_type: set this to "bernoulli" for generating outputs to match
+                      bernoulli-valued observations and set it to "gaussian" to
+                      match general real-valued observations.
             activation: "function handle" for the desired non-linearity
+            init_scale: scaling factor for hidden layer weights (__ * 0.01)
         shared_param_dicts: parameters for the MLP controlled by this GenNet
     """
     def __init__(self, \
@@ -78,6 +83,18 @@ class GenNet(object):
             self.out_noise = self.params['out_noise']
         else:
             self.out_noise = 0.0
+        if 'init_scale' in params:
+            self.init_scale = params['init_scale']
+        else:
+            self.init_scale = 1.0
+        if 'out_type' in params:
+            # check which type of output distribution to generate
+            self.out_type = params['out_type']
+            assert((self.out_type == 'bernoulli') or \
+                    (self.out_type == 'gaussian'))
+        else:
+            # default to bernoulli-valued outputs
+            self.out_type = 'bernoulli'
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of a generative network, with all
         # of the network parameters shared between clones.
@@ -108,6 +125,7 @@ class GenNet(object):
         ##########################
         self.clip_params = {}
         self.mlp_layers = []
+        self.logvar_layer = None
         layer_def_pairs = zip(self.mlp_config[:-1],self.mlp_config[1:])
         layer_num = 0
         next_input = self.Xp
@@ -146,9 +164,19 @@ class GenNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name, W_scale=1.0)
+                        name=l_name, W_scale=self.init_scale)
                 self.mlp_layers.append(new_layer)
                 self.shared_param_dicts.append({'W': new_layer.W, 'b': new_layer.b})
+                if (last_layer and (self.out_type == 'gaussian')):
+                    # add an extra layer/transform for encoding log-variance
+                    lv_layer = HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
+                        drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
+                        in_dim=in_dim, out_dim=out_dim, \
+                        name=l_name+'_logvar', W_scale=self.init_scale)
+                    self.logvar_layer = lv_layer
+                    self.mlp_layers.append(lv_layer)
+                    self.shared_param_dicts.append({'W': lv_layer.W, 'b': lv_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -159,7 +187,15 @@ class GenNet(object):
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=1.0))
+                        name=l_name, W_scale=self.init_scale))
+                if (last_layer and (self.out_type == 'gaussian')):
+                    init_params = self.shared_param_dicts[layer_num+1]
+                    self.mlp_layers.append(HiddenLayer(rng=rng, input=next_input, \
+                        activation=self.activation, pool_size=pool_size, \
+                        drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
+                        in_dim=in_dim, out_dim=out_dim, \
+                        W=init_params['W'], b=init_params['b'], \
+                        name=l_name, W_scale=self.init_scale))
             next_input = self.mlp_layers[-1].output
             # Set the non-bias parameters of this layer to be clipped
             self.clip_params[self.mlp_layers[-1].W] = 1
@@ -180,8 +216,16 @@ class GenNet(object):
         # latent noise source with its deep non-linear transform. These will
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
-        #self.output = self.mlp_layers[-1].linear_output
-        self.output = T.nnet.sigmoid(self.mlp_layers[-1].linear_output)
+        if self.out_type == 'bernoulli':
+            self.output = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear)
+            self.output_mu = self.output
+            self.output_logvar = self.output
+            self.output_sigma = self.output
+        else:
+            self.output_mu = self.mlp_layers[-2].noisy_linear
+            self.output_logvar = self.mlp_layers[-1].noisy_linear
+            self.output_sigma = T.sqrt(T.exp(self.output_logvar))
+            self.output = self._construct_post_samples()
         self.out_dim = self.mlp_layers[-1].out_dim
         C_init = np.zeros((self.out_dim,self.out_dim)).astype(theano.config.floatX)
         m_init = np.zeros((self.out_dim,)).astype(theano.config.floatX)
@@ -207,6 +251,16 @@ class GenNet(object):
             act_sq_sums.append(layer.act_l2_sum)
         full_act_sq_sum = T.sum(act_sq_sums)
         return full_act_sq_sum
+
+    def _construct_post_samples(self):
+        """
+        Draw a single sample from each of the approximate posteriors encoded
+        in self.output_mu and self.output_sigma.
+        """
+        post_samples = self.output_mu + (self.output_sigma * \
+                self.rng.normal(size=self.output_sigma.shape, avg=0.0, std=1.0, \
+                dtype=theano.config.floatX))
+        return post_samples
 
     def _construct_prior_sampler(self):
         """
@@ -274,6 +328,18 @@ class GenNet(object):
         self.dist_cov.set_value(sigma.astype(theano.config.floatX))
         self.dist_mean.set_value(mu.astype(theano.config.floatX))
         return
+
+    def compute_log_prob(self, Xd=None):
+        """
+        Compute negative log likelihood of the data in Xd, with respect to the
+        output distributions currently at self.output_....
+        """
+        if (self.out_type == 'bernoulli'):
+            log_prob_cost = log_prob_bernoulli(Xd, self.output)
+        else:
+            log_prob_cost = log_prob_gaussian2(Xd, self.output_mu, \
+                    les_logvars=self.output_logvar)
+        return log_prob_cost
 
     def shared_param_clone(self, rng=None, Xp=None):
         """

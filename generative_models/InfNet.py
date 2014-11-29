@@ -42,12 +42,14 @@ class InfNet(object):
             vis_drop: drop rate to use on observable variables
             hid_drop: drop rate to use on hidden layer activations
                 -- note: vis_drop/hid_drop are optional, with defaults 0.0/0.0
+            input_noise: standard dev for noise on the input of this net
             bias_noise: standard dev for noise on the biases of hidden layers
             out_noise: standard dev for noise on the output of this net
             shared_config: list of "layer descriptions" for shared part
             mu_config: list of "layer descriptions" for mu part
             sigma_config: list of "layer descriptions" for sigma part
             activation: "function handle" for the desired non-linearity
+            init_scale: scaling factor for hidden layer weights (__ * 0.01)
         shared_param_dicts: parameters for the MLP controlled by this InfNet
     """
     def __init__(self, \
@@ -78,14 +80,23 @@ class InfNet(object):
             self.hid_drop = params['hid_drop']
         else:
             self.hid_drop = 0.0
-        if 'bias_noise' in params:
-            self.bias_noise = params['bias_noise']
-        else:
-            self.bias_noise = 0.0
         if 'input_noise' in params:
             self.input_noise = params['input_noise']
         else:
             self.input_noise = 0.0
+        if 'bias_noise' in params:
+            self.bias_noise = params['bias_noise']
+        else:
+            self.bias_noise = 0.0
+        if 'out_noise' in self.params:
+            # noise sigma for the output/observable layer
+            self.out_noise = self.params['out_noise']
+        else:
+            self.out_noise = 0.0
+        if 'init_scale' in params:
+            self.init_scale = params['init_scale']
+        else:
+            self.init_scale = 1.0
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
@@ -150,6 +161,8 @@ class InfNet(object):
             else:
                 i_noise = 0.0
                 b_noise = self.bias_noise
+                if last_layer:
+                    b_noise = self.out_noise
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -158,7 +171,7 @@ class InfNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name, W_scale=1.0)
+                        name=l_name, W_scale=self.init_scale)
                 self.shared_layers.append(new_layer)
                 self.shared_param_dicts['shared'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
@@ -171,7 +184,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=1.0)
+                        name=l_name, W_scale=self.init_scale)
                 self.shared_layers.append(new_layer)
             next_input = self.shared_layers[-1].output
             # Set the non-bias parameters of this layer to be clipped
@@ -216,7 +229,7 @@ class InfNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name, W_scale=1.0)
+                        name=l_name, W_scale=self.init_scale)
                 self.mu_layers.append(new_layer)
                 self.shared_param_dicts['mu'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
@@ -229,7 +242,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=1.0)
+                        name=l_name, W_scale=self.init_scale)
                 self.mu_layers.append(new_layer)
             next_input = self.mu_layers[-1].output
             # Set the non-bias parameters of this layer to be clipped
@@ -274,7 +287,7 @@ class InfNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name, W_scale=1.0)
+                        name=l_name, W_scale=self.init_scale)
                 self.sigma_layers.append(new_layer)
                 self.shared_param_dicts['sigma'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
@@ -287,7 +300,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=1.0)
+                        name=l_name, W_scale=self.init_scale)
                 self.sigma_layers.append(new_layer)
             next_input = self.sigma_layers[-1].output
             # Set the non-bias parameters of this layer to be clipped
@@ -309,8 +322,8 @@ class InfNet(object):
 
         # The output of this inference network is given by the noisy output
         # of the final layers of its mu and sigma networks.
-        self.output_mu = self.mu_layers[-1].linear_output
-        self.output_logvar = self.sigma_layers[-1].linear_output
+        self.output_mu = self.mu_layers[-1].noisy_linear
+        self.output_logvar = self.sigma_layers[-1].noisy_linear
         self.output_sigma = T.sqrt(T.exp(self.output_logvar))
         # We'll also construct an output containing a single samples from each
         # of the distributions represented by the rows of self.output_mu and

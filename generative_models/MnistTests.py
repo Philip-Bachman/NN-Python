@@ -9,7 +9,7 @@ from PeaNet import PeaNet
 from InfNet import InfNet
 from GenNet import GenNet, projected_moments
 from GCPair import GCPair
-from GIStack1 import GIStack1
+from GIStack import GIStack
 from GITrip import GITrip
 from NetLayers import relu_actfun, softplus_actfun, \
                       safe_softmax, safe_log
@@ -280,11 +280,11 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
 
 ##########################
 ##########################
-## TESTING FOR GIStack1 ##
+## TESTING FOR GIStack ##
 ##########################
 ##########################
 
-def test_gi_stack_1(hyper_params=None, rng_seed=1234):
+def test_gi_stack(hyper_params=None, rng_seed=1234):
     assert(not (hyper_params is None))
     # Initialize a source of randomness
     rng = np.random.RandomState(rng_seed)
@@ -374,8 +374,8 @@ def test_gi_stack_1(hyper_params=None, rng_seed=1234):
     GN.init_biases(0.0)
     IN.init_biases(0.0)
     PN.init_biases(0.1)
-    # Initialize the GIStack1
-    GIS = GIStack1(rng=rng, \
+    # Initialize the GIStack
+    GIS = GIStack(rng=rng, \
             Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
             g_net=GN, i_net=IN, p_net=PN, \
             data_dim=data_dim, prior_dim=prior_dim, \
@@ -745,7 +745,7 @@ def multitest_gi_trip():
         test_gi_trip(hyper_params=hyper_params, rng_seed=t_num)
     return
 
-def multitest_gi_stack_1():
+def multitest_gi_stack():
     """
     Do random hyperparameter optimization.
     """
@@ -755,7 +755,7 @@ def multitest_gi_stack_1():
     lam_pea = [1.0, 2.0, 4.0]
     lam_ent = [-0.1, 0.0, 0.1]
     lam_l2w = [1e-4]
-    for t_num in range(10,100):
+    for t_num in range(12,100):
         # shuffle all the parameter lists in-place
         npr.shuffle(learn_rate)
         npr.shuffle(lam_cat)
@@ -772,7 +772,7 @@ def multitest_gi_stack_1():
         hyper_params['lam_ent'] = lam_ent[0]
         hyper_params['lam_l2w'] = lam_l2w[0]
         # run the test and record results
-        test_gi_stack_1(hyper_params=hyper_params, rng_seed=t_num)
+        test_gi_stack(hyper_params=hyper_params, rng_seed=t_num)
     return
 
 
@@ -784,4 +784,4 @@ if __name__=="__main__":
     #test_gc_pair()
     #test_gi_pair()
     #multitest_gi_trip()
-    multitest_gi_stack_1()
+    multitest_gi_stack()

@@ -72,6 +72,7 @@ class PeaNet(object):
             ear_type: type of Ensemble Agreement Regularization (EAR) to use
                 -- note: defns of _ear_cost() and _ear_loss() give more info
             activation: non-linearity to apply in hidden layers
+            init_scale: scaling factor for hidden layer weights (__ * 0.01)
             proto_configs: list of lists, where each sublist gives the number
                            of neurons to put in each hidden layer one of the
                            proto-networks underlying this ensemble. Sub-lists
@@ -116,6 +117,10 @@ class PeaNet(object):
             self.activation = params['activation']
         else:
             self.activation = relu_actfun
+        if 'init_scale' in params:
+            self.init_scale = params['init_scale']
+        else:
+            self.init_scale = 1.0
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
         self.ear_type = params['ear_type']
@@ -173,7 +178,7 @@ class PeaNet(object):
                             activation=None, pool_size=pool_size, \
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
-                            name=pnl_name, W_scale=1.0)
+                            name=pnl_name, W_scale=self.init_scale)
                     proto_net.append(new_layer)
                     self.shared_param_dicts.append( \
                             {'W': new_layer.W, 'b': new_layer.b})
@@ -187,7 +192,7 @@ class PeaNet(object):
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
                             W=init_params['W'], b=init_params['b'], \
-                            name=pnl_name, W_scale=1.0)
+                            name=pnl_name, W_scale=self.init_scale)
                     proto_net.append(new_layer)
                 next_input = proto_net[-1].output
                 # Set the non-bias parameters of this layer to be clipped

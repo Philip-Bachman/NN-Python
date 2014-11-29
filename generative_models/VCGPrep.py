@@ -64,27 +64,6 @@ def ulh_loss(Yh, Yt=0.0, delta=1.0):
     loss = T.sum((quad_loss * quad_mask) + (line_loss * line_mask))
     return loss
 
-def log_prob_bernoulli(p_true, p_approx):
-    """
-    Compute log probability of some binary variables with probabilities
-    given by p_true, for probability estimates given by p_approx. We'll
-    compute joint log probabilities over row-wise groups.
-    """
-    log_prob_1 = p_true * safe_log(p_approx)
-    log_prob_0 = (1.0 - p_true) * safe_log(1.0 - p_approx)
-    row_log_probs = T.sum((log_prob_1 + log_prob_0), axis=1, keepdims=True)
-    return row_log_probs
-
-def log_prob_gaussian(mu_true, mu_approx, le_sigma=1.0):
-    """
-    Compute log probability of some continuous variables with values given
-    by mu_true, w.r.t. gaussian distributions with means given by mu_approx
-    and standard deviations given by le_sigma. We assume isotropy.
-    """
-    ind_log_probs = -( (mu_approx - mu_true)**2.0 / (2.0 * le_sigma**2.0) )
-    row_log_probs = T.sum(ind_log_probs, axis=1, keepdims=True)
-    return row_log_probs
-
 def cat_entropy(p):
     """
     Compute the entropy of (row-wise) categorical distributions in p.
@@ -587,16 +566,12 @@ class VCGPrep(object):
         gn_cost = self.dw_gn[0] * T.sum(gn_costs)
         return [dn_cost, gn_cost]
 
-    def _construct_data_nll_cost(self, prob_type='bernoulli'):
+    def _construct_data_nll_cost(self):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
-        assert((prob_type == 'bernoulli') or (prob_type == 'gaussian'))
-        if (prob_type == 'bernoulli'):
-            log_prob_cost = log_prob_bernoulli(self.Xg, self.Xg2)
-        else:
-            log_prob_cost = log_prob_gaussian(self.Xg, self.Xg2, le_sigma=1.0)
-        nll_cost = -T.sum(log_prob_cost) / self.Xd.shape[0]
+        log_prob_cost = self.GN2.compute_log_prob(self.Xg)
+        nll_cost = -T.sum(log_prob_cost) / self.Xg.shape[0]
         return nll_cost
 
     def _construct_post_kld_cost(self):
@@ -691,7 +666,7 @@ if __name__=="__main__":
     tr_samples = Xtr.get_value(borrow=True).shape[0]
     data_dim = Xtr.get_value(borrow=True).shape[1]
     prior_dim = 150
-    prior_sigma = 5.0
+    prior_sigma = 2.0
     
     # Do moment matching in some transformed space
     mm_proj_dim = 250
@@ -714,7 +689,7 @@ if __name__=="__main__":
     # Set some reasonable mlp parameters
     dn_params = {}
     # Set up some proto-networks
-    pc0 = [data_dim, (250, 4), (250, 4), 10]
+    pc0 = [data_dim, (300, 4), (300, 4), 10]
     dn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -724,7 +699,7 @@ if __name__=="__main__":
     # Set remaining params
     dn_params['ear_type'] = 2
     dn_params['ear_lam'] = 0.0
-    dn_params['lam_l2a'] = 1e-1
+    dn_params['lam_l2a'] = 1e-2
     dn_params['vis_drop'] = 0.2
     dn_params['hid_drop'] = 0.5
     # Initialize a network object to use as the discriminator
@@ -736,9 +711,9 @@ if __name__=="__main__":
     ###########################
     # Choose some parameters for the generative network
     gn_params = {}
-    gn_config = [prior_dim, 1000, 1000, data_dim]
+    gn_config = [prior_dim, (300, 4), (300, 4), data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['lam_l2a'] = 1e-1
+    gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
@@ -753,16 +728,18 @@ if __name__=="__main__":
     ############################
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 1000, 1000]
-    top_config = [shared_config[-1], 500, prior_dim]
+    shared_config = [data_dim, (300, 4), (300, 4)]
+    top_config = [shared_config[-1], (150, 4), prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['lam_l2a'] = 1e-1
+    in_params['init_scale'] = 2.0
+    in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
+    in_params['out_noise'] = 0.1
     in_params['input_noise'] = 0.0
     IN = InfNet(rng=rng, Xd=Xd_sym, Xc=Xc_sym, Xm=Xm_sym, \
             prior_sigma=prior_sigma, params=in_params)
@@ -789,12 +766,12 @@ if __name__=="__main__":
     # Initialize a GIPair for training variationally from data samples
     GIP = GIPair(rng=rng, Xd=Xd_sym, Xc=Xc_sym, Xm=Xm_sym, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim)
-    GIP.set_lam_l2w(1e-4)
+    GIP.set_lam_l2w(1e-5)
     # Initialize a VCGPrep instance for training a variational collaborative
     # system comprising a discriminator, generator, and inferencer.
     VCG = VCGPrep(rng=rng, Xd=Xd_sym, Xp=Xp_sym, d_net=DN, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=vcg_params)
-    VCG.set_lam_l2w(1e-4)
+    VCG.set_lam_l2w(1e-5)
     # Init generator's mean and covariance estimates with many samples
     VCG.init_moments(10000)
     # initialize sgd parameters
@@ -805,14 +782,14 @@ if __name__=="__main__":
         ##############################################################
         # do an update using the collaborative variational objective #
         ##############################################################
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(100,)).astype(np.int32)
-        Xn_np = GN.sample_from_prior(100)
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(150,)).astype(np.int32)
+        Xn_np = GN.sample_from_prior(150)
         Xd_batch = batch_sample(tr_idx)
         Xd_batch = Xd_batch.astype(theano.config.floatX)
         Xn_batch = Xn_np.astype(theano.config.floatX)
-        all_idx = np.arange(200)
-        data_idx = all_idx[:100]
-        noise_idx = all_idx[100:]
+        all_idx = np.arange(300)
+        data_idx = all_idx[:150]
+        noise_idx = all_idx[150:]
         # set up learning rate stuff
         scale_1 = min(1.0, float(i+1)/20000.0)
         scale_2 = min(1.0, float(i+1)/100000.0)
@@ -820,7 +797,7 @@ if __name__=="__main__":
         VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
         VCG.set_disc_weights(dweight_gn=scale_1, dweight_dn=scale_1)
         VCG.set_lam_nll(scale_2*0.01)
-        VCG.set_lam_kld(scale_2*0.01)
+        VCG.set_lam_kld((scale_2**2.0)*0.01)
         # do a minibatch update
         outputs = VCG.train_joint(Xd_batch, Xn_batch, data_idx, noise_idx)
         mom_match_cost = 1.0 * outputs[0]
@@ -831,23 +808,28 @@ if __name__=="__main__":
         #########################################################
         # do occasional updates using the variational objective #
         #########################################################
-        if (((i + 1) % 2) == 0):
+        if ((i + 1) % 2 == 0):
             GIP.set_all_sgd_params(learn_rate, momentum=0.95)
             GIP.set_lam_nll(scale_2*0.02)
-            GIP.set_lam_kld(scale_2*0.02)
+            GIP.set_lam_kld((scale_2**2.0)*0.02)
             # get some data to train with
-            tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
+            tr_idx = npr.randint(low=0,high=tr_samples,size=(150,))
             Xd_batch = batch_sample(tr_idx)
             Xc_batch = 0.0 * Xd_batch
             Xm_batch = 0.0 * Xd_batch
             # do a minibatch update of the model, and compute some costs
             outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
-        if ((i+1 % 100000) == 0):
+            nll_data = 1.0 * outputs[1]
+            kld_data = 1.0 * outputs[2]
+            if ((i + 1) % 5000 == 0):
+                print("     nll_data: {0:.4f}, kld_data: {1:.4f}".format( \
+                    nll_data, kld_data))
+        if ((i+1) % 100000 == 0):
             learn_rate = learn_rate * 0.8
-        if ((i % 1000) == 0):
+        if (i % 1000 == 0):
             print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_dn: {2:.6f}, disc_gn: {3:.6f}, nll: {4:.4f}, kld: {5:.4f}".format( \
                     i, mom_match_cost, disc_dn, disc_gn, nll_cost, kld_cost))
-        if ((i % 1000) == 0):
+        if (i % 2000 == 0):
             # draw independent samples from generative model's prior
             file_name = "VCG_SAMPLES_b{0:d}.png".format(i)
             Xs = VCG.sample_from_gn(200)
