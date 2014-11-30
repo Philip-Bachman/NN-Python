@@ -59,7 +59,8 @@ class GIPair(object):
             params=None, shared_param_dicts=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
-        self.params = params
+        self.params = {}
+        
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this GIPair
         self.Xd = Xd
@@ -229,10 +230,7 @@ class GIPair(object):
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.in_updates[var]
 
-        # Construct batch-based training functions for the generator and
-        # inferer networks, as well as a joint training function.
-        #self.train_gn = self._construct_train_gn()
-        #self.train_in = self._construct_train_in()
+        # Construct a function for jointly training the generator/inferencer
         self.train_joint = self._construct_train_joint()
 
         # Construct a function for computing the outputs of the generator

@@ -665,8 +665,8 @@ if __name__=="__main__":
     # get and set some basic dataset information
     tr_samples = Xtr.get_value(borrow=True).shape[0]
     data_dim = Xtr.get_value(borrow=True).shape[1]
-    prior_dim = 150
-    prior_sigma = 2.0
+    prior_dim = 100
+    prior_sigma = 1.0
     
     # Do moment matching in some transformed space
     mm_proj_dim = 250
@@ -721,7 +721,7 @@ if __name__=="__main__":
     gn_params['activation'] = relu_actfun
     # Initialize a generator network object
     GN = GenNet(rng=rng, Xp=Xp_sym, prior_sigma=prior_sigma, params=gn_params)
-    GN.init_biases(0.1)
+    GN.init_biases(0.0)
 
     ############################
     # Setup inferencer network #
@@ -743,7 +743,7 @@ if __name__=="__main__":
     in_params['input_noise'] = 0.0
     IN = InfNet(rng=rng, Xd=Xd_sym, Xc=Xc_sym, Xm=Xm_sym, \
             prior_sigma=prior_sigma, params=in_params)
-    IN.init_biases(0.1)
+    IN.init_biases(0.0)
 
     ########################################################################
     # Initialize the joint controller for the generator/discriminator pair #
@@ -777,7 +777,7 @@ if __name__=="__main__":
     # initialize sgd parameters
     learn_rate = 0.02
     VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
-    VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
+    #VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
     for i in range(500000):
         ##############################################################
         # do an update using the collaborative variational objective #
@@ -791,10 +791,10 @@ if __name__=="__main__":
         data_idx = all_idx[:150]
         noise_idx = all_idx[150:]
         # set up learning rate stuff
-        scale_1 = min(1.0, float(i+1)/20000.0)
+        scale_1 = min(1.0, float(i+1)/25000.0)
         scale_2 = min(1.0, float(i+1)/100000.0)
         VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
-        VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
+        #VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
         VCG.set_disc_weights(dweight_gn=scale_1, dweight_dn=scale_1)
         VCG.set_lam_nll(scale_2*0.01)
         VCG.set_lam_kld((scale_2**2.0)*0.01)
@@ -829,7 +829,7 @@ if __name__=="__main__":
         if (i % 1000 == 0):
             print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_dn: {2:.6f}, disc_gn: {3:.6f}, nll: {4:.4f}, kld: {5:.4f}".format( \
                     i, mom_match_cost, disc_dn, disc_gn, nll_cost, kld_cost))
-        if (i % 2000 == 0):
+        if (i % 5000 == 0):
             # draw independent samples from generative model's prior
             file_name = "VCG_SAMPLES_b{0:d}.png".format(i)
             Xs = VCG.sample_from_gn(200)

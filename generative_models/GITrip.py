@@ -109,6 +109,8 @@ class GITrip(object):
             params=None, shared_param_dicts=None):
         # setup a rng for this GITrip
         self.rng = RandStream(rng.randint(100000))
+        self.params = {}
+
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this GITrip
         self.Xd = Xd
@@ -300,7 +302,7 @@ class GITrip(object):
                     ((1.0 - self.mo_gn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.gn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
             # apply "norm clipping" if desired
             if ((var in self.GN.clip_params) and \
                     (var in self.GN.clip_norms) and \
@@ -330,7 +332,7 @@ class GITrip(object):
                     ((1.0 - self.mo_in[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.in_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
             # apply "norm clipping" if desired
             if ((var in self.IN.clip_params) and \
                     (var in self.IN.clip_norms) and \
@@ -360,7 +362,7 @@ class GITrip(object):
                     ((1.0 - self.mo_pn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.pn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_pn[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            var_new = var - (self.lr_pn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
             # apply "norm clipping" if desired
             if ((var in self.PN.clip_params) and \
                     (var in self.PN.clip_norms) and \
@@ -559,8 +561,7 @@ class GITrip(object):
                 #self.other_reg_costs[2], self.other_reg_costs[3], self.other_reg_costs[4], \
                 #out_mu_sum, out_sigma_sum]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Yd ], \
-                outputs=outputs, updates=self.joint_updates, \
-                mode=theano.Mode(linker='vm'))
+                outputs=outputs, updates=self.joint_updates)
         COMMENT="""
         theano.printing.pydotprint(func, \
             outfile='GITrip_train_joint.svg', compact=True, format='svg', with_ids=False, \

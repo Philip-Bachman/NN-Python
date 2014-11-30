@@ -266,7 +266,7 @@ class GIStack(object):
                     ((1.0 - self.mo_gn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.gn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
             # apply "norm clipping" if desired
             if ((var in self.GN.clip_params) and \
                     (var in self.GN.clip_norms) and \
@@ -294,7 +294,7 @@ class GIStack(object):
                     ((1.0 - self.mo_in[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.in_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
             # apply "norm clipping" if desired
             if ((var in self.IN.clip_params) and \
                     (var in self.IN.clip_norms) and \
@@ -322,7 +322,7 @@ class GIStack(object):
                     ((1.0 - self.mo_pn[0]) * (var_grad**2.0))
             self.joint_updates[var_mom] = self.pn_updates[var_mom]
             # make basic update to the var
-            var_new = var - (self.lr_pn[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
+            var_new = var - (self.lr_pn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
             # apply "norm clipping" if desired
             if ((var in self.PN.clip_params) and \
                     (var in self.PN.clip_norms) and \

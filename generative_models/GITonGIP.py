@@ -27,6 +27,8 @@ from LogPDFs import log_prob_bernoulli, log_prob_gaussian
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
+from GIPair import GIPair
+from GITrip import GITrip
 
 def cat_entropy(p):
     """
@@ -102,8 +104,8 @@ class GITonGIP(object):
     def __init__(self, rng=None, \
             Xd=None, Yd=None, Xc=None, Xm=None, \
             gip_vae=None, git_vae=None, \
-            data_dim=None, prior_dim=None, label_dim=None, \
-            batch_size=None, \
+            data_dim=None, prior_1_dim=None, prior_2_dim=None, \
+            label_dim=None, batch_size=None, \
             params=None, shared_param_dicts=None):
         # setup a rng for this GITrip
         self.rng = RandStream(rng.randint(100000))
@@ -126,6 +128,7 @@ class GITonGIP(object):
         # grab a symbolic handle for samples from the approximate posteriors
         # inferred by self.GIP
         self.Xp1 = self.GIP.Xp
+        self.Xg1 = self.GIP.Xg
         # construct symbolic "dummy" control and mask inputs for the upper VAE
         self.Xc1 = T.zeros_like(self.Xp1)
         self.Xm1 = T.zeros_like(self.Xp1)
@@ -138,19 +141,25 @@ class GITonGIP(object):
         # posterior variable.
         self.Xp2 = self.GIT.Xp
         self.Yp2 = self.GIT.Yp
-        self.Yp_proto = self.GIT.Yp_proto
+        self.Ypp2 = self.GIT.Yp_proto
+        self.Xg2 = self.GIT.Xg
 
         # verify that the symbolic inputs/outputs are consistently-dimensioned
-        assert(self.data_dim == self.GN.mlp_layers[-1].out_dim)
-        assert(self.data_dim == self.IN.shared_layers[0].in_dim)
-        assert(self.data_dim == self.PN.proto_nets[0][0].in_dim)
-        # mu/sigma outputs of self.IN should be equal to prior_dim, output of
-        # self.PN should be equal to label_dim, and input of self.GN should be
-        # equal to prior_dim + label_dim
-        assert(self.prior_dim == self.IN.mu_layers[-1].out_dim)
-        assert(self.prior_dim == self.IN.sigma_layers[-1].out_dim)
-        assert(self.label_dim == self.PN.proto_nets[0][-1].out_dim)
-        assert((self.prior_dim + self.label_dim) == self.GN.mlp_layers[0].in_dim)
+        assert(self.data_dim == self.GIP.IN.shared_layers[0].in_dim)
+        assert(self.data_dim == self.GIP.GN.mlp_layers[-1].out_dim)
+        # inputs or outputs via self.Xp1
+        assert(self.prior_1_dim == self.GIP.IN.mu_layers[-1].out_dim)
+        assert(self.prior_1_dim == self.GIP.IN.sigma_layers[-1].out_dim)
+        assert(self.prior_1_dim == self.GIP.GN.mlp_layers[0].in_dim)
+        assert(self.prior_1_dim == self.GIT.IN.shared_layers[0].in_dim)
+        assert(self.prior_1_dim == self.GIT.PN.proto_nets[0][0].in_dim)
+        assert(self.prior_1_dim == self.GIT.GN.mlp_layers[-1].out_dim)
+        # check input/output dimensions on the GITrip's latent space.
+        assert(self.prior_2_dim == self.GIT.IN.mu_layers[-1].out_dim)
+        assert(self.prior_2_dim == self.GIT.IN.sigma_layers[-1].out_dim)
+        assert(self.label_dim == self.GIT.PN.proto_nets[0][-1].out_dim)
+        assert((self.prior_2_dim + self.label_dim) == \
+                self.GIT.GN.mlp_layers[0].in_dim)
 
         # determine whether this GITrip is a clone or an original
         if shared_param_dicts is None:
@@ -167,205 +176,74 @@ class GITonGIP(object):
         if not self.is_clone:
             # shared var learning rate for generator and inferencer
             zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-            self.lr_gn = theano.shared(value=zero_ary, name='git_lr_gn')
-            self.lr_in = theano.shared(value=zero_ary, name='git_lr_in')
-            self.lr_pn = theano.shared(value=zero_ary, name='git_lr_pn')
+            self.lr_gn = theano.shared(value=zero_ary, name='gog_lr_gn')
+            self.lr_in = theano.shared(value=zero_ary, name='gog_lr_in')
+            self.lr_pn = theano.shared(value=zero_ary, name='gog_lr_pn')
             # shared var momentum parameters for generator and inferencer
-            self.mo_gn = theano.shared(value=zero_ary, name='git_mo_gn')
-            self.mo_in = theano.shared(value=zero_ary, name='git_mo_in')
-            self.mo_pn = theano.shared(value=zero_ary, name='git_mo_pn')
+            self.mo_gn = theano.shared(value=zero_ary, name='gog_mo_gn')
+            self.mo_in = theano.shared(value=zero_ary, name='gog_mo_in')
+            self.mo_pn = theano.shared(value=zero_ary, name='gog_mo_pn')
             # init parameters for controlling learning dynamics
             self.set_all_sgd_params()
             # init shared var for weighting nll of data given posterior sample
-            self.lam_nll = theano.shared(value=zero_ary, name='git_lam_nll')
+            self.lam_nll = theano.shared(value=zero_ary, name='gog_lam_nll')
             self.set_lam_nll(lam_nll=1.0)
             # init shared var for weighting posterior KL-div from prior
-            self.lam_kld = theano.shared(value=zero_ary, name='git_lam_kld')
+            self.lam_kld = theano.shared(value=zero_ary, name='gog_lam_kld')
             self.set_lam_kld(lam_kld=1.0)
             # init shared var for weighting semi-supervised classification
-            self.lam_cat = theano.shared(value=zero_ary, name='git_lam_cat')
+            self.lam_cat = theano.shared(value=zero_ary, name='gog_lam_cat')
             self.set_lam_cat(lam_cat=0.0)
             # init shared var for weighting ensemble agreement regularization
-            self.lam_pea = theano.shared(value=zero_ary, name='git_lam_pea')
+            self.lam_pea = theano.shared(value=zero_ary, name='gog_lam_pea')
             self.set_lam_pea(lam_pea=0.0)
             # init shared var for weighting entropy regularization on the
             # inferred posteriors over the categorical variable of interest
-            self.lam_ent = theano.shared(value=zero_ary, name='git_lam_ent')
+            self.lam_ent = theano.shared(value=zero_ary, name='gog_lam_ent')
             self.set_lam_ent(lam_ent=0.0)
             # init shared var for controlling l2 regularization on params
-            self.lam_l2w = theano.shared(value=zero_ary, name='git_lam_l2w')
+            self.lam_l2w = theano.shared(value=zero_ary, name='gog_lam_l2w')
             self.set_lam_l2w(lam_l2w=1e-3)
             # record shared parameters that are to be shared among clones
-            self.shared_param_dicts['git_lr_gn'] = self.lr_gn
-            self.shared_param_dicts['git_lr_in'] = self.lr_in
-            self.shared_param_dicts['git_lr_pn'] = self.lr_pn
-            self.shared_param_dicts['git_mo_gn'] = self.mo_gn
-            self.shared_param_dicts['git_mo_in'] = self.mo_in
-            self.shared_param_dicts['git_mo_pn'] = self.mo_pn
-            self.shared_param_dicts['git_lam_nll'] = self.lam_nll
-            self.shared_param_dicts['git_lam_kld'] = self.lam_kld
-            self.shared_param_dicts['git_lam_cat'] = self.lam_cat
-            self.shared_param_dicts['git_lam_pea'] = self.lam_pea
-            self.shared_param_dicts['git_lam_ent'] = self.lam_ent
-            self.shared_param_dicts['git_lam_l2w'] = self.lam_l2w
+            self.shared_param_dicts['gog_lr_gn'] = self.lr_gn
+            self.shared_param_dicts['gog_lr_in'] = self.lr_in
+            self.shared_param_dicts['gog_lr_pn'] = self.lr_pn
+            self.shared_param_dicts['gog_mo_gn'] = self.mo_gn
+            self.shared_param_dicts['gog_mo_in'] = self.mo_in
+            self.shared_param_dicts['gog_mo_pn'] = self.mo_pn
+            self.shared_param_dicts['gog_lam_nll'] = self.lam_nll
+            self.shared_param_dicts['gog_lam_kld'] = self.lam_kld
+            self.shared_param_dicts['gog_lam_cat'] = self.lam_cat
+            self.shared_param_dicts['gog_lam_pea'] = self.lam_pea
+            self.shared_param_dicts['gog_lam_ent'] = self.lam_ent
+            self.shared_param_dicts['gog_lam_l2w'] = self.lam_l2w
         else:
             # use some shared parameters that are shared among all clones of
             # some "base" GITrip
-            self.lr_gn = self.shared_param_dicts['git_lr_gn']
-            self.lr_in = self.shared_param_dicts['git_lr_in']
-            self.lr_pn = self.shared_param_dicts['git_lr_pn']
-            self.mo_gn = self.shared_param_dicts['git_mo_gn']
-            self.mo_in = self.shared_param_dicts['git_mo_in']
-            self.mo_pn = self.shared_param_dicts['git_mo_pn']
-            self.lam_nll = self.shared_param_dicts['git_lam_nll']
-            self.lam_kld = self.shared_param_dicts['git_lam_kld']
-            self.lam_cat = self.shared_param_dicts['git_lam_cat']
-            self.lam_pea = self.shared_param_dicts['git_lam_pea']
-            self.lam_ent = self.shared_param_dicts['git_lam_ent']
-            self.lam_l2w = self.shared_param_dicts['git_lam_l2w']
-
-        # Grab the full set of "optimizable" parameters from the generator
-        # and inferencer networks that we'll be working with.
-        self.gn_params = [p for p in self.GN.mlp_params]
-        self.in_params = [p for p in self.IN.mlp_params]
-        self.pn_params = [p for p in self.PN.proto_params]
+            self.lr_gn = self.shared_param_dicts['gog_lr_gn']
+            self.lr_in = self.shared_param_dicts['gog_lr_in']
+            self.lr_pn = self.shared_param_dicts['gog_lr_pn']
+            self.mo_gn = self.shared_param_dicts['gog_mo_gn']
+            self.mo_in = self.shared_param_dicts['gog_mo_in']
+            self.mo_pn = self.shared_param_dicts['gog_mo_pn']
+            self.lam_nll = self.shared_param_dicts['gog_lam_nll']
+            self.lam_kld = self.shared_param_dicts['gog_lam_kld']
+            self.lam_cat = self.shared_param_dicts['gog_lam_cat']
+            self.lam_pea = self.shared_param_dicts['gog_lam_pea']
+            self.lam_ent = self.shared_param_dicts['gog_lam_ent']
+            self.lam_l2w = self.shared_param_dicts['gog_lam_l2w']
 
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
-        self.data_nll_cost = self.lam_nll[0] * self._construct_data_nll_cost()
-        self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
-        self.post_cat_cost = self.lam_cat[0] * self._construct_post_cat_cost()
-        self.post_pea_cost = self.lam_pea[0] * self._construct_post_pea_cost()
-        self.post_ent_cost = self.lam_ent[0] * self._construct_post_ent_cost()
-        self.other_reg_costs = self._construct_other_reg_cost()
-        self.other_reg_cost = self.other_reg_costs[0]
-        self.joint_cost = self.data_nll_cost + self.post_kld_cost + self.post_cat_cost + \
-                self.post_pea_cost + self.post_ent_cost + self.other_reg_cost
 
-        # Initialize momentums for mini-batch SGD updates. All parameters need
-        # to be safely nestled in their lists by now.
-        self.joint_moms = OrderedDict()
-        self.gn_moms = OrderedDict()
-        self.in_moms = OrderedDict()
-        self.pn_moms = OrderedDict()
-        for p in self.gn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.gn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.gn_moms[p]
-        for p in self.in_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.in_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.in_moms[p]
-        for p in self.pn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.pn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.pn_moms[p]
-
-        # Now, we need to construct updates for inferencers and the generator
-        self.joint_updates = OrderedDict()
-        self.gn_updates = OrderedDict()
-        self.in_updates = OrderedDict()
-        self.pn_updates = OrderedDict()
-        self.grad_sq_sums = []
-        #######################################
-        # Construct updates for the generator #
-        #######################################
-        for var in self.gn_params:
-            # these updates are for trainable params in the generator net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
-            #var_grad = ifelse(T.any(T.isnan(nan_grad)), T.zeros_like(nan_grad), nan_grad)
-            #self.grad_sq_sums.append(T.sum(var_grad**2.0))
-            # get the momentum for this var
-            var_mom = self.gn_moms[var]
-            # update the momentum for this var using its grad
-            self.gn_updates[var_mom] = (self.mo_gn[0] * var_mom) + \
-                    ((1.0 - self.mo_gn[0]) * (var_grad**2.0))
-            self.joint_updates[var_mom] = self.gn_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
-            # apply "norm clipping" if desired
-            if ((var in self.GN.clip_params) and \
-                    (var in self.GN.clip_norms) and \
-                    (self.GN.clip_params[var] == 1)):
-                clip_norm = self.GN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True) + 1e-4
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.gn_updates[var] = var_new * var_scale
-            else:
-                self.gn_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.gn_updates[var]
-        ###################################################
-        # Construct updates for the continuous inferencer #
-        ###################################################
-        for var in self.in_params:
-            # these updates are for trainable params in the inferencer net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
-            #var_grad = ifelse(T.any(T.isnan(nan_grad)), T.zeros_like(nan_grad), nan_grad)
-            #self.grad_sq_sums.append(T.sum(var_grad**2.0))
-            # get the momentum for this var
-            var_mom = self.in_moms[var]
-            # update the momentum for this var using its grad
-            self.in_updates[var_mom] = (self.mo_in[0] * var_mom) + \
-                    ((1.0 - self.mo_in[0]) * (var_grad**2.0))
-            self.joint_updates[var_mom] = self.in_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
-            # apply "norm clipping" if desired
-            if ((var in self.IN.clip_params) and \
-                    (var in self.IN.clip_norms) and \
-                    (self.IN.clip_params[var] == 1)):
-                clip_norm = self.IN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True) + 1e-4
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.in_updates[var] = var_new * var_scale
-            else:
-                self.in_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.in_updates[var]
-        ####################################################
-        # Construct updates for the categorical inferencer #
-        ####################################################
-        for var in self.pn_params:
-            # these updates are for trainable params in the inferencer net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
-            #var_grad = ifelse(T.any(T.isnan(nan_grad)), T.zeros_like(nan_grad), nan_grad)
-            #self.grad_sq_sums.append(T.sum(var_grad**2.0))
-            # get the momentum for this var
-            var_mom = self.pn_moms[var]
-            # update the momentum for this var using its grad
-            self.pn_updates[var_mom] = (self.mo_pn[0] * var_mom) + \
-                    ((1.0 - self.mo_pn[0]) * (var_grad**2.0))
-            self.joint_updates[var_mom] = self.pn_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_pn[0] * (var_grad / T.sqrt(var_mom + 1e-1)))
-            # apply "norm clipping" if desired
-            if ((var in self.PN.clip_params) and \
-                    (var in self.PN.clip_norms) and \
-                    (self.PN.clip_params[var] == 1)):
-                clip_norm = self.PN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True) + 1e-4
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.pn_updates[var] = var_new * var_scale
-            else:
-                self.pn_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.pn_updates[var]
-        # Record the sum of squared gradients (for NaN checking)
-        self.grad_sq_sum = T.sum(self.grad_sq_sums)
-
-        # Construct batch-based training functions for the generator and
-        # inferer networks, as well as a joint training function.
-        #self.train_gn = self._construct_train_gn()
-        #self.train_in = self._construct_train_in()
-        self.train_joint = self._construct_train_joint()
+        # Construct training functions to update:
+        #   1: just the "lower" GIPair on its own
+        #   2: just the "upper" GITrip on its own
+        #   3: both the "lower" and "upper" VAEs simultaneously
+        self.train_gip = self._construct_train_gip()
+        self.train_git = self._construct_train_git()
+        #self.train_joint = self._construct_train_joint()
         return
 
     def set_gn_sgd_params(self, learn_rate=0.02, momentum=0.9):
@@ -474,109 +352,32 @@ class GITonGIP(object):
         self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
-    def _construct_data_nll_cost(self, prob_type='bernoulli'):
-        """
-        Construct the negative log-likelihood part of cost to minimize.
-        """
-        assert((prob_type == 'bernoulli') or (prob_type == 'gaussian'))
-        Xd_rep = T.repeat(self.Xd, self.label_dim, axis=0)
-        if (prob_type == 'bernoulli'):
-            log_prob_cost = log_prob_bernoulli(Xd_rep, self.GN.output)
-        else:
-            log_prob_cost = log_prob_gaussian(Xd_rep, self.GN.output, \
-                    le_sigma=1.0)
-        cat_probs = T.flatten(self.Yp).dimshuffle(0, 'x')
-        nll_cost = -T.sum((cat_probs * log_prob_cost)) / self.Xd.shape[0]
-        return nll_cost
-
-    def _construct_post_kld_cost(self):
-        """
-        Construct the posterior KL-d from prior part of cost to minimize.
-        """
-        kld_cost = T.sum(self.IN.kld_cost) / self.Xd.shape[0]
-        return kld_cost
-
-    def _construct_post_cat_cost(self):
-        """
-        Construct the label-based semi-supervised cost.
-        """
-        row_idx = T.arange(self.Yd.shape[0])
-        row_mask = T.neq(self.Yd, 0).reshape((self.Yd.shape[0], 1))
-        wacky_mat = (self.Yp * row_mask) + (1. - row_mask)
-        cat_cost = -T.sum(safe_log(wacky_mat[row_idx,(self.Yd.flatten()-1)])) \
-                / (T.sum(row_mask) + 1e-4)
-        return cat_cost
-
-    def _construct_post_pea_cost(self):
-        """
-        Construct the pseudo-ensemble agreement cost on the approximate
-        posteriors over the categorical latent variable.
-        """
-        pea_cost = T.sum(self.PN.pea_reg_cost) / self.Xd.shape[0]
-        return pea_cost
-
-    def _construct_post_ent_cost(self):
-        """
-        Construct the entropy cost on the categorical posterior.
-        """
-        ent_cost = T.sum(cat_entropy(self.Yp)) / self.Xd.shape[0]
-        return ent_cost
-
-    def _construct_other_reg_cost(self):
-        """
-        Construct the cost for low-level basic regularization. E.g. for
-        applying l2 regularization to the network activations and parameters.
-        """
-        act_reg_cost = self.IN.act_reg_cost + self.GN.act_reg_cost + \
-                self.PN.act_reg_cost
-        gp_cost = sum([T.sum(par**2.0) for par in self.gn_params])
-        ip_cost = sum([T.sum(par**2.0) for par in self.in_params])
-        pp_cost = sum([T.sum(par**2.0) for par in self.pn_params])
-        param_reg_cost = self.lam_l2w[0] * (gp_cost + ip_cost + pp_cost)
-        other_reg_cost = (act_reg_cost /self.Xd.shape[0]) + param_reg_cost
-        return [other_reg_cost, gp_cost, ip_cost, pp_cost, act_reg_cost]
-
-    def _construct_train_joint(self):
+    def _construct_train_gip(self):
         """
         Construct theano function to train inferencer and generator jointly.
         """
-        #out_mu_sum = T.sum(self.IN.output_mu**2.0)
-        #out_sigma_sum = T.sum(self.IN.output_sigma**2.0)
-        outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
-                self.post_cat_cost, self.post_pea_cost, self.post_ent_cost, \
-                self.other_reg_cost]
-                #, self.grad_sq_sum, self.other_reg_costs[1], \
-                #self.other_reg_costs[2], self.other_reg_costs[3], self.other_reg_costs[4], \
-                #out_mu_sum, out_sigma_sum]
-        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Yd ], \
-                outputs=outputs, updates=self.joint_updates, \
-                mode=theano.Mode(linker='vm'))
-        COMMENT="""
-        theano.printing.pydotprint(func, \
-            outfile='GITrip_train_joint.svg', compact=True, format='svg', with_ids=False, \
-            high_contrast=True, cond_highlight=None, colorCodes=None, \
-            max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
-            print_output_file=True, assert_nb_all_strings=-1)
-        """
+        outputs = [self.GIP.joint_cost, self.GIP.data_nll_cost, \
+                self.GIP.post_kld_cost, self.GIP.other_reg_cost]
+        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+                outputs=outputs, updates=self.GIP.joint_updates)
         return func
 
-    def shared_param_clone(self, rng=None, Xd=None, Yd=None, Xc=None, Xm=None):
+    def _construct_train_git(self):
         """
-        Create a "shared-parameter" clone of this GITrip.
-
-        This can be used for chaining VAEs for BPTT. (and other stuff too)
+        Construct theano function to train the "upper" GITrip VAE.
         """
-        clone_git = GITrip(rng=rng, Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
-            g_net=self.GN, i_net=self.IN, p_net=self.PN, \
-            data_dim=self.data_dim, prior_dim=self.prior_dim, label_dim=self.label_dim, \
-            batch_size=self.batch_size, params=self.params, \
-            shared_param_dicts=self.shared_param_dicts)
-        return clone_git
+        outputs = [self.GIT.joint_cost, self.GIT.data_nll_cost, \
+                self.GIT.post_kld_cost, self.GIT.post_cat_cost, \
+                self.GIT.post_pea_cost, self.GIT.post_ent_cost, \
+                self.GIT.other_reg_cost]
+        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Yd ], \
+                outputs=outputs, updates=self.GIT.joint_updates)
+        return func
 
     def sample_git_from_data(self, X_d, loop_iters=5):
         """
-        Sample for several rounds through the I<->G loop, initialized with the
-        the "data variable" samples in X_d.
+        Sample for several rounds through the stacked VAE loop, initialized
+        with the "data-space" samples in X_d.
         """
         data_samples = []
         prior_samples = []
@@ -585,54 +386,71 @@ class GITonGIP(object):
         for i in range(loop_iters):
             # record the data samples for this iteration
             data_samples.append(1.0 * X_d)
-            # sample from their inferred posteriors
-            X_p = self.IN.sample_posterior(X_d, X_c, X_m)
-            Y_p = self.PN.sample_posterior(X_d)
-            XY_p = np.hstack([Y_p, X_p]).astype(theano.config.floatX)
-            # record the sampled points (in the "prior space")
-            prior_samples.append(1.0 * XY_p)
-            # get next data samples by transforming the prior-space points
-            X_d = self.GN.transform_prior(XY_p)
+            # sample from the inferred posterior of the GIP
+            X_p_1 = self.GIP.IN.sample_posterior(X_d, X_c, X_m)
+            X_c_1 = 0.0 * X_p_1
+            X_m_1 = 0.0 * X_p_1
+            # samples subsequently from the inferred posterior of the GIT
+            X_p_2 = self.GIT.IN.sample_posterior(X_p_1, X_c_1, X_m_1)
+            Y_p_2 = self.GIT.PN.sample_posterior(X_p_1)
+            XY_p_2 = np.hstack([Y_p_2, X_p_2]).astype(theano.config.floatX)
+            # record the sampled points (in the "prior-space" of the GIT)
+            prior_samples.append(1.0 * XY_p_2)
+            # pass back down from the GIT prior to the original "data-space"
+            X_g_2 = self.GIT.GN.transform_prior(XY_p_2)
+            X_d = self.GIP.GN.transform_prior(X_g_2)
         result = {"data samples": data_samples, "prior samples": prior_samples}
         return result
 
-    def classification_error(self, X_d, Y_d, samples=20):
+    def classification_error(self, X_d, Y_d, samples=20, binarize=True):
         """
         Compute classification error for a set of observations X_d with known
-        labels Y_d, based on passing X_d through the categorical inferencer
-        (i.e. self.PN). We average over multiple "binarizations" of X_d.
+        labels Y_d, based on passing X_d through stacked VAE loop several times
+        and looking at the expected categorical posterior off the GIT.
         """
         # first, convert labels to account for semi-supervised labeling
         Y_mask = 1.0 * (Y_d != 0)
         Y_d = Y_d - 1
-        # make a function for computing self.Yp
-        func = theano.function([self.Xd], outputs=self.Yp_proto)
-        # compute self.Yp for the observations in X_d
-        Y_p = None
-        for i in range(samples):
-            if Y_p == None:
-                Y_p = func(binarize_data(X_d))
-            else:
-                Y_p += func(binarize_data(X_d))
-        Y_p = Y_p / float(samples)
+        # get expected predicted class probabilities
+        Y_p = self.class_probs(X_d, samples=samples, binarize=binarize)
         # get the implied class labels
         Y_c = np.argmax(Y_p, axis=1).reshape((Y_d.shape[0],1))
         # compute the classification error for points with valid labels
         err_rate = np.sum(((Y_d != Y_c) * Y_mask)) / np.sum(Y_mask)
         return err_rate
 
-    def class_probs(self, X_d):
+    def class_probs(self, X_d, samples=20, binarize=True):
         """
-        Compute predicted class probabilities for the observations in X_d.
+        Compute predicted class probabilities for the observations in X_d by
+        passing X_d through the stacked VAE several times and looking at the
+        expectation of the categorical posterior of the GIT.
         """
-        # make a function for computing self.Yp
-        func = theano.function([self.Xd], outputs=self.Yp_proto)
-        # compute self.Yp for the observations in X_d
-        Y_p = func(X_d)
+        # make dummy inputs for some symbolic variables
+        X_m = 0.0 * X_d
+        X_c = 0.0 * X_d
+        # make a function for computing self.Ypp2
+        func = theano.function([self.Xd, self.Xc, self.Xm], outputs=self.Ypp2)
+        # compute several samples of self.Ypp2 for the inputs in X_d
+        Y_p = None
+        for i in range(samples):
+            if Y_p == None:
+                if binarize:
+                    Y_p = func(binarize_data(X_d), X_c, X_m)
+                else:
+                    Y_p = func(X_d, X_c, X_m)
+            else:
+                if binarize:
+                    Y_p += func(binarize_data(X_d), X_c, X_m)
+                else:
+                    Y_p += func(X_d, X_c, X_m)
+        Y_p = Y_p / float(samples)
         return Y_p
 
+
 if __name__=="__main__":
-    # TESTING CODE MOVED TO "MnistTests.py"
+    #######################################
+    # Testing code moved to MnistTests.py #
+    #######################################
     print("TESTING COMPLETE!")
 
 
