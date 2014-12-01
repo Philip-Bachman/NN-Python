@@ -302,8 +302,8 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
         scale = 1.0
         if (i < 25000):
             scale = float(i+1) / 25000.0
-        if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
+        if ((i+1 % 50000) == 0):
+            learn_rate = learn_rate * 0.7
         # do a minibatch update using unlabeled data
         if True:
             # get some data to train with
@@ -423,30 +423,31 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
     batch_size = 100
     # set parameters for the generator network
     gn_params = {}
-    gn_config = [(prior_dim + label_dim), 600, 600, data_dim]
+    gn_config = [(prior_dim + label_dim), 800, 800, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = softplus_actfun
+    gn_params['activation'] = relu_actfun
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.0
+    gn_params['out_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 600, 600]
+    shared_config = [data_dim, 800, 800]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
-    in_params['activation'] = softplus_actfun
+    in_params['activation'] = relu_actfun
     in_params['lam_l2a'] = 1e-3
-    in_params['vis_drop'] = 0.0
+    in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
-    in_params['input_noise'] = 0.0
+    in_params['input_noise'] = 0.1
+    in_params['out_noise'] = 0.1
     # choose some parameters for the categorical inferencer
     pn_params = {}
-    pc0 = [data_dim, 500, 500, label_dim]
+    pc0 = [data_dim, 800, 800, label_dim]
     pn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -467,8 +468,8 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
             params=in_params, shared_param_dicts=None)
     PN = PeaNet(rng=rng, Xd=Xd, params=pn_params)
     # Initialize biases in GN, IN, and PN
-    GN.init_biases(0.0)
-    IN.init_biases(0.0)
+    GN.init_biases(0.1)
+    IN.init_biases(0.1)
     PN.init_biases(0.1)
 
     # Initialize the GITrip
@@ -643,32 +644,33 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     Yd = T.icol('Yd_base')
     data_dim = Xtr_un.shape[1]
     label_dim = 10
-    prior_dim = 50
+    prior_dim = 100
     prior_sigma = 2.0
     batch_size = 100
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 600, 600, data_dim]
+    gn_config = [prior_dim, 800, 800, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = softplus_actfun
+    gn_params['activation'] = relu_actfun
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.0
-    gn_params['out_noise'] = 0.0
+    gn_params['bias_noise'] = 0.1
+    gn_params['out_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 600, 600]
+    shared_config = [data_dim, 800, 800]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
-    in_params['activation'] = softplus_actfun
+    in_params['activation'] = relu_actfun
     in_params['lam_l2a'] = 1e-3
-    in_params['vis_drop'] = 0.0
-    in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.0
-    in_params['input_noise'] = 0.0
+    in_params['vis_drop'] = 0.2
+    in_params['hid_drop'] = 0.5
+    in_params['bias_noise'] = 0.1
+    in_params['input_noise'] = 0.1
+    in_params['out_noise'] = 0.1
     # choose some parameters for the categorical inferencer
     pn_params = {}
     pc0 = [prior_dim, 500, 500, label_dim]
@@ -682,7 +684,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     pn_params['activation'] = relu_actfun
     pn_params['ear_type'] = 6
     pn_params['lam_l2a'] = 1e-3
-    pn_params['vis_drop'] = 0.0
+    pn_params['vis_drop'] = 0.5
     pn_params['hid_drop'] = 0.5
 
     # Initialize the base networks for this GIPair

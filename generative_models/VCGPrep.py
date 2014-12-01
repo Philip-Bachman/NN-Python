@@ -766,16 +766,16 @@ if __name__=="__main__":
     # Initialize a GIPair for training variationally from data samples
     GIP = GIPair(rng=rng, Xd=Xd_sym, Xc=Xc_sym, Xm=Xm_sym, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim)
-    GIP.set_lam_l2w(1e-5)
+    GIP.set_lam_l2w(1e-4)
     # Initialize a VCGPrep instance for training a variational collaborative
     # system comprising a discriminator, generator, and inferencer.
     VCG = VCGPrep(rng=rng, Xd=Xd_sym, Xp=Xp_sym, d_net=DN, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=vcg_params)
-    VCG.set_lam_l2w(1e-5)
+    VCG.set_lam_l2w(1e-4)
     # Init generator's mean and covariance estimates with many samples
     VCG.init_moments(10000)
     # initialize sgd parameters
-    learn_rate = 0.02
+    learn_rate = 0.01
     VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
     #VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
     for i in range(500000):
