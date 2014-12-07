@@ -76,7 +76,7 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     rng = np.random.RandomState(rng_seed)
 
     # Load some data to train/validate/test with
-    sup_count = 1000
+    sup_count = 100
     dataset = 'data/mnist.pkl.gz'
     datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
     Xtr_su = datasets[0][0].get_value(borrow=False)
@@ -162,7 +162,7 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     ##################
     # set parameters for the generator network
     gn2_params = {}
-    gn2_config = [(prior_2_dim + label_dim), 600, 600, prior_1_dim]
+    gn2_config = [(prior_2_dim + label_dim), 300, prior_1_dim]
     gn2_params['mlp_config'] = gn2_config
     gn2_params['activation'] = softplus_actfun
     gn2_params['out_type'] = 'gaussian'
@@ -173,7 +173,7 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     gn2_params['out_noise'] = 0.0
     # choose some parameters for the continuous inferencer
     in2_params = {}
-    shared_config = [prior_1_dim, 600, 600]
+    shared_config = [prior_1_dim, 300]
     top_config = [shared_config[-1], prior_2_dim]
     in2_params['shared_config'] = shared_config
     in2_params['mu_config'] = top_config
@@ -186,19 +186,19 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     in2_params['input_noise'] = 0.0
     # choose some parameters for the categorical inferencer
     pn2_params = {}
-    pc0 = [prior_1_dim, (150, 4), (150, 4), label_dim]
+    pc0 = [prior_1_dim, 300, label_dim]
     pn2_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    pn2_params['spawn_configs'] = [sc0, sc1]
-    pn2_params['spawn_weights'] = [0.5, 0.5]
+    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': False}
+    #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    pn2_params['spawn_configs'] = [sc0] #[sc0, sc1]
+    pn2_params['spawn_weights'] = [1.0] #[0.5, 0.5]
     # Set remaining params
-    pn2_params['activation'] = relu_actfun
+    pn2_params['activation'] = softplus_actfun
     pn2_params['ear_type'] = 6
     pn2_params['lam_l2a'] = 1e-3
     pn2_params['vis_drop'] = 0.0
-    pn2_params['hid_drop'] = 0.5
+    pn2_params['hid_drop'] = 0.0
 
     # Initialize the base networks for this GITrip
     GN2 = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
@@ -209,7 +209,7 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     # Initialize biases in GN, IN, and PN
     GN2.init_biases(0.0)
     IN2.init_biases(0.0)
-    PN2.init_biases(0.1)
+    PN2.init_biases(0.0)
 
     # Initialize the GITrip
     GIT = GITrip(rng=rng, \
@@ -303,7 +303,7 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
         if (i < 25000):
             scale = float(i+1) / 25000.0
         if ((i+1 % 50000) == 0):
-            learn_rate = learn_rate * 0.7
+            learn_rate = learn_rate * 0.8
         # do a minibatch update using unlabeled data
         if True:
             # get some data to train with
@@ -386,7 +386,7 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
     rng = np.random.RandomState(rng_seed)
 
     # Load some data to train/validate/test with
-    sup_count = 1000
+    sup_count = 600
     dataset = 'data/mnist.pkl.gz'
     datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
     Xtr_su = datasets[0][0].get_value(borrow=False)
@@ -419,13 +419,13 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
     data_dim = Xtr_un.shape[1]
     label_dim = 10
     prior_dim = 50
-    prior_sigma = 2.0
+    prior_sigma = 1.0
     batch_size = 100
     # set parameters for the generator network
     gn_params = {}
-    gn_config = [(prior_dim + label_dim), 800, 800, data_dim]
+    gn_config = [(prior_dim + label_dim), 600, 600, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = relu_actfun
+    gn_params['activation'] = softplus_actfun
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -433,12 +433,12 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
     gn_params['out_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 800, 800]
+    shared_config = [data_dim, 600, 600]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
-    in_params['activation'] = relu_actfun
+    in_params['activation'] = softplus_actfun
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
@@ -468,8 +468,8 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
             params=in_params, shared_param_dicts=None)
     PN = PeaNet(rng=rng, Xd=Xd, params=pn_params)
     # Initialize biases in GN, IN, and PN
-    GN.init_biases(0.1)
-    IN.init_biases(0.1)
+    GN.init_biases(0.0)
+    IN.init_biases(0.0)
     PN.init_biases(0.1)
 
     # Initialize the GITrip
@@ -612,7 +612,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     rng = np.random.RandomState(rng_seed)
 
     # Load some data to train/validate/test with
-    sup_count = 1000
+    sup_count = 600
     dataset = 'data/mnist.pkl.gz'
     datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
     Xtr_su = datasets[0][0].get_value(borrow=False)
@@ -644,8 +644,8 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     Yd = T.icol('Yd_base')
     data_dim = Xtr_un.shape[1]
     label_dim = 10
-    prior_dim = 100
-    prior_sigma = 2.0
+    prior_dim = 50
+    prior_sigma = 1.0
     batch_size = 100
     # Choose some parameters for the generator network
     gn_params = {}
@@ -654,7 +654,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     gn_params['activation'] = relu_actfun
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
-    gn_params['hid_drop'] = 0.0
+    gn_params['hid_drop'] = 0.5
     gn_params['bias_noise'] = 0.1
     gn_params['out_noise'] = 0.1
     # choose some parameters for the continuous inferencer
@@ -673,18 +673,18 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     in_params['out_noise'] = 0.1
     # choose some parameters for the categorical inferencer
     pn_params = {}
-    pc0 = [prior_dim, 500, 500, label_dim]
+    pc0 = [prior_dim, 512, 512, label_dim]
     pn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': True}
-    sc1 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': True}
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
     pn_params['spawn_configs'] = [sc0, sc1]
     pn_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
     pn_params['activation'] = relu_actfun
     pn_params['ear_type'] = 6
     pn_params['lam_l2a'] = 1e-3
-    pn_params['vis_drop'] = 0.5
+    pn_params['vis_drop'] = 0.0
     pn_params['hid_drop'] = 0.5
 
     # Initialize the base networks for this GIPair
@@ -694,8 +694,8 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             params=in_params, shared_param_dicts=None)
     PN = PeaNet(rng=rng, Xd=Xd, params=pn_params)
     # Initialize biases in GN, IN, and PN
-    GN.init_biases(0.0)
-    IN.init_biases(0.0)
+    GN.init_biases(0.1)
+    IN.init_biases(0.1)
     PN.init_biases(0.1)
     # Initialize the GIStack
     GIS = GIStack(rng=rng, \
@@ -747,6 +747,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             Xm_un = 0.0 * Xd_un
             # do a minibatch update of the model, and compute some costs
             GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
+            GIS.set_pn_sgd_params(learn_rate=(5*scale*learn_rate), momentum=0.98)
             GIS.set_lam_nll(1.0)
             GIS.set_lam_kld((scale**2.0) * 1.0)
             GIS.set_lam_cat(0.0)
@@ -770,6 +771,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             Xm_su = 0.0 * Xd_su
             # update only based on the label-based classification cost
             GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
+            GIS.set_pn_sgd_params(learn_rate=(5*scale*learn_rate), momentum=0.98)
             GIS.set_lam_nll(0.0)
             GIS.set_lam_kld(0.0)
             GIS.set_lam_cat(scale * lam_cat)
@@ -1042,10 +1044,10 @@ def multitest_git_on_gip():
     """
     Do random hyperparameter optimization.
     """
-    learn_rate_git = [0.005, 0.01, 0.02]
-    lam_cat_git = [1.0, 2.0]
-    lam_pea_git = [1.0, 2.0, 4.0]
-    lam_ent_git = [-0.1, 0.0, 0.1]
+    learn_rate_git = [0.002, 0.004]
+    lam_cat_git = [2.0, 4.0]
+    lam_pea_git = [2.0, 4.0, 8.0]
+    lam_ent_git = [-0.2, 0.0, 0.2]
     lam_l2w_git = [1e-4]
     for t_num in range(100):
         # select the hyperparameters for this test uniformly at random
@@ -1064,13 +1066,13 @@ def multitest_gi_trip():
     """
     Do random hyperparameter optimization.
     """
-    num_updates = 150000
-    learn_rate = [0.005, 0.01, 0.02]
-    lam_cat = [1.0, 2.0]
-    lam_pea = [1.0, 2.0, 4.0]
-    lam_ent = [-0.1, 0.0, 0.1]
+    num_updates = 200000
+    learn_rate = [0.002, 0.004]
+    lam_cat = [2.0, 4.0]
+    lam_pea = [2.0, 4.0, 8.0]
+    lam_ent = [-0.2, 0.0, 0.2]
     lam_l2w = [1e-4]
-    for t_num in range(5,100):
+    for t_num in range(100):
         # select the hyperparameters for this test uniformly at random
         hyper_params = {}
         hyper_params['out_name'] = "GIT_TEST_{0:d}.txt".format(t_num)
@@ -1088,13 +1090,13 @@ def multitest_gi_stack():
     """
     Do random hyperparameter optimization.
     """
-    num_updates = 150000
-    learn_rate = [0.01, 0.02]
+    num_updates = 200000
+    learn_rate = [0.001, 0.002]
     lam_cat = [1.0, 2.0]
     lam_pea = [1.0, 2.0, 4.0]
     lam_ent = [-0.1, 0.0, 0.1]
     lam_l2w = [1e-4]
-    for t_num in range(14,100):
+    for t_num in range(100):
         # select the hyperparameters for this test uniformly at random
         hyper_params = {}
         hyper_params['out_name'] = "GIS_TEST_{0:d}.txt".format(t_num)
@@ -1117,5 +1119,5 @@ if __name__=="__main__":
     #test_gc_pair()
     #test_gi_pair()
     #multitest_git_on_gip()
-    #multitest_gi_trip()
-    multitest_gi_stack()
+    multitest_gi_trip()
+    #multitest_gi_stack()

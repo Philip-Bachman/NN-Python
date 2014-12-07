@@ -391,6 +391,7 @@ class PeaNet(object):
                 for col in range(y_bin.shape[1]):
                     if y_cumsum[row,col] > rand_vals[row]:
                         y_bin[row,col] = 1.0
+                        break
             y_bin = y_bin.astype(theano.config.floatX)
             return y_bin
         return sampler

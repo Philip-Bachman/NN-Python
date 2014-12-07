@@ -792,7 +792,7 @@ if __name__=="__main__":
         noise_idx = all_idx[150:]
         # set up learning rate stuff
         scale_1 = min(1.0, float(i+1)/25000.0)
-        scale_2 = min(1.0, float(i+1)/100000.0)
+        scale_2 = min(1.0, float(i+1)/50000.0)
         VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
         #VCG.set_dn_sgd_params(learn_rate=(learn_rate/2.0), momentum=0.98)
         VCG.set_disc_weights(dweight_gn=scale_1, dweight_dn=scale_1)
@@ -808,7 +808,7 @@ if __name__=="__main__":
         #########################################################
         # do occasional updates using the variational objective #
         #########################################################
-        if ((i + 1) % 2 == 0):
+        if ((i + 1) % 1 == 0):
             GIP.set_all_sgd_params(learn_rate, momentum=0.95)
             GIP.set_lam_nll(scale_2*0.02)
             GIP.set_lam_kld((scale_2**2.0)*0.02)

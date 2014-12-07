@@ -58,6 +58,20 @@ def binarize_data(X):
     X_binary = 1.0 * (probs < X)
     return X_binary.astype(theano.config.floatX)
 
+def one_hot(Yc, cat_dim=None):
+    """
+    given a tensor Yc of dimension d with integer values from range(cat_dim),
+    return new tensor of dimension d + 1 with values 0/1, where the last
+    dimension gives a one-hot representation of the values in Yc.
+    
+    if cat_dim is not given, cat_dim is set to max(Yc) + 1
+    """
+    if cat_dim is None:
+        cat_dim = T.max(cat_dim) + 1
+    ranges = T.shape_padleft(T.arange(cat_dim), Yc.ndim)
+    Yoh = T.eq(ranges, T.shape_padright(Yc, 1))
+    return Yoh
+
 
 #
 #
@@ -495,9 +509,22 @@ class GITrip(object):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
+        # make a one-hot matrix for the labeled/unlabeled points, in which the
+        # first column is 1 if and only if that input is unlabeled
+        Yoh_extra_col = one_hot(T.flatten(self.Yd), cat_dim=(self.label_dim+1))
+        Yoh = Yoh_extra_col[:,1:]
+        # make a mask that keeps "labeled" rows and drops "unlabeled" rows
+        row_mask_numpy_bs = (1.0 - Yoh_extra_col[:,0])
+        row_mask = row_mask_numpy_bs.reshape((Yoh.shape[0],1))
+        # make a matrix that is one-hot using known labels for labeled points
+        # and is some-warm using values from self.Yp for unlabeled points
+        Yoh_and_Yp = (row_mask * Yoh) + ((1.0 - row_mask) * self.Yp)
+        # repeat inputs, for easy "marginalization" over categorical values
         Xd_rep = T.repeat(self.Xd, self.label_dim, axis=0)
+        # compute log-probability of inputs for each categorical value 
         log_prob_cost = self.GN.compute_log_prob(Xd_rep)
-        cat_probs = T.flatten(self.Yp).dimshuffle(0, 'x')
+        # marginalize (err, well, lower-bound via Jensen's inequality)
+        cat_probs = T.flatten(Yoh_and_Yp).dimshuffle(0, 'x')
         nll_cost = -T.sum((cat_probs * log_prob_cost)) / self.Xd.shape[0]
         return nll_cost
 
