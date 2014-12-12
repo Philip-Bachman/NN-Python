@@ -60,7 +60,7 @@ class GIPair(object):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
         self.params = {}
-        
+
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this GIPair
         self.Xd = Xd
@@ -308,14 +308,14 @@ class GIPair(object):
         Construct the negative log-likelihood part of cost to minimize.
         """
         log_prob_cost = self.GN.compute_log_prob(self.Xd)
-        nll_cost = -T.sum(log_prob_cost) / self.Xd.shape[0]
+        nll_cost = -T.sum(log_prob_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return nll_cost
 
     def _construct_post_kld_cost(self):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
-        kld_cost = T.sum(self.IN.kld_cost) / self.Xd.shape[0]
+        kld_cost = T.sum(self.IN.kld_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return kld_cost
 
     def _construct_other_reg_cost(self):
@@ -327,7 +327,8 @@ class GIPair(object):
         gp_cost = sum([T.sum(par**2.0) for par in self.gn_params])
         ip_cost = sum([T.sum(par**2.0) for par in self.in_params])
         param_reg_cost = self.lam_l2w[0] * (gp_cost + ip_cost)
-        other_reg_cost = (act_reg_cost /self.Xd.shape[0]) + param_reg_cost
+        other_reg_cost = (act_reg_cost / T.cast(self.Xd.shape[0], 'floatX')) + \
+                param_reg_cost
         return other_reg_cost
 
     def _construct_train_joint(self):

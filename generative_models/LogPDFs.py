@@ -36,37 +36,44 @@ def studentt(x, v):
 # Funcs for temporary backwards compatibilit while refactoring #
 ################################################################
 
-def log_prob_bernoulli(p_true, p_approx):
+def log_prob_bernoulli(p_true, p_approx, mask=None):
     """
     Compute log probability of some binary variables with probabilities
     given by p_true, for probability estimates given by p_approx. We'll
     compute joint log probabilities over row-wise groups.
     """
+    if mask is None:
+        mask = T.ones((1, mu_approx.shape[1]))
     log_prob_1 = p_true * safe_log(p_approx)
     log_prob_0 = (1.0 - p_true) * safe_log(1.0 - p_approx)
-    row_log_probs = T.sum((log_prob_1 + log_prob_0), axis=1, keepdims=True)
+    log_prob_01 = log_prob_1 + log_prob_0
+    row_log_probs = T.sum((log_prob_01 * mask), axis=1, keepdims=True)
     return row_log_probs
 
-def log_prob_gaussian(mu_true, mu_approx, les_sigmas=1.0):
+def log_prob_gaussian(mu_true, mu_approx, les_sigmas=1.0, mask=None):
     """
     Compute log probability of some continuous variables with values given
     by mu_true, w.r.t. gaussian distributions with means given by mu_approx
     and standard deviations given by le_sigma. We assume isotropy.
     """
+    if mask is None:
+        mask = T.ones((1, mu_approx.shape[1]))
     ind_log_probs = C - T.log(T.abs_(les_sigmas)) - \
             ((mu_true - mu_approx)**2.0 / (2.0 * les_sigmas**2.0))
-    row_log_probs = T.sum(ind_log_probs, axis=1, keepdims=True)
+    row_log_probs = T.sum((ind_log_probs * mask), axis=1, keepdims=True)
     return row_log_probs
 
-def log_prob_gaussian2(mu_true, mu_approx, les_logvars=1.0):
+def log_prob_gaussian2(mu_true, mu_approx, les_logvars=1.0, mask=None):
     """
     Compute log probability of some continuous variables with values given
     by mu_true, w.r.t. gaussian distributions with means given by mu_approx
     and standard deviations given by le_sigma. We assume isotropy.
     """
+    if mask is None:
+        mask = T.ones((1, mu_approx.shape[1]))
     ind_log_probs = C - (les_logvars/2.0)  - \
             ((mu_true-mu_approx)**2.0 / (2.0 * T.exp(les_logvars)))
-    row_log_probs = T.sum(ind_log_probs, axis=1, keepdims=True)
+    row_log_probs = T.sum((ind_log_probs * mask), axis=1, keepdims=True)
     return row_log_probs
 
 #################################

@@ -125,17 +125,23 @@ class GITrip(object):
         self.rng = RandStream(rng.randint(100000))
         self.params = {}
 
-        # record the symbolic variables that will provide inputs to the
-        # computation graph created to describe this GITrip
-        self.Xd = Xd
-        self.Yd = Yd
-        self.Xc = Xc
-        self.Xm = Xm
         # record the dimensionality of the data handled by this GITrip
         self.data_dim = data_dim
         self.label_dim = label_dim
         self.prior_dim = prior_dim
         self.batch_size = batch_size
+
+        # create a mask for disabling and/or reweighting input dimensions
+        row_mask = np.ones((self.data_dim,)).astype(theano.config.floatX)
+        self.input_mask = theano.shared(value=row_mask, name='git_input_mask')
+        
+        # record the symbolic variables that will provide inputs to the
+        # computation graph created to describe this GITrip
+        self.Xd = self.input_mask * Xd
+        self.Yd = Yd
+        self.Xc = Xc
+        self.Xm = Xm
+        
         # construct a vertically-repeated identity matrix for marginalizing
         # over possible values of the categorical latent variable.
         Ic = np.vstack([np.identity(label_dim) for i in range(batch_size)])
@@ -239,6 +245,7 @@ class GITrip(object):
             self.shared_param_dicts['git_lam_pea'] = self.lam_pea
             self.shared_param_dicts['git_lam_ent'] = self.lam_ent
             self.shared_param_dicts['git_lam_l2w'] = self.lam_l2w
+            self.shared_param_dicts['git_input_mask'] = self.input_mask
         else:
             # use some shared parameters that are shared among all clones of
             # some "base" GITrip
@@ -254,6 +261,7 @@ class GITrip(object):
             self.lam_pea = self.shared_param_dicts['git_lam_pea']
             self.lam_ent = self.shared_param_dicts['git_lam_ent']
             self.lam_l2w = self.shared_param_dicts['git_lam_l2w']
+            self.input_mask = self.shared_param_dicts['git_input_mask']
 
         # Grab the full set of "optimizable" parameters from the generator
         # and inferencer networks that we'll be working with.
@@ -505,6 +513,16 @@ class GITrip(object):
         self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
+    def set_input_mask(self, input_mask=None):
+        """
+        Set a (probably) binary mask on the input dimensions.
+        """
+        assert(input_mask.size == self.data_dim)
+        input_mask = input_mask.reshape((self.data_dim,))
+        self.input_mask.set_value(input_mask.astype(theano.config.floatX))
+        self.GN.set_output_mask(input_mask)
+        return
+
     def _construct_data_nll_cost(self, prob_type='bernoulli'):
         """
         Construct the negative log-likelihood part of cost to minimize.
@@ -525,14 +543,14 @@ class GITrip(object):
         log_prob_cost = self.GN.compute_log_prob(Xd_rep)
         # marginalize (err, well, lower-bound via Jensen's inequality)
         cat_probs = T.flatten(Yoh_and_Yp).dimshuffle(0, 'x')
-        nll_cost = -T.sum((cat_probs * log_prob_cost)) / self.Xd.shape[0]
+        nll_cost = -T.sum((cat_probs * log_prob_cost)) / T.cast(self.Xd.shape[0], 'floatX')
         return nll_cost
 
     def _construct_post_kld_cost(self):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
-        kld_cost = T.sum(self.IN.kld_cost) / self.Xd.shape[0]
+        kld_cost = T.sum(self.IN.kld_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return kld_cost
 
     def _construct_post_cat_cost(self):
@@ -551,14 +569,14 @@ class GITrip(object):
         Construct the pseudo-ensemble agreement cost on the approximate
         posteriors over the categorical latent variable.
         """
-        pea_cost = T.sum(self.PN.pea_reg_cost) / self.Xd.shape[0]
+        pea_cost = T.sum(self.PN.pea_reg_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return pea_cost
 
     def _construct_post_ent_cost(self):
         """
         Construct the entropy cost on the categorical posterior.
         """
-        ent_cost = T.sum(cat_entropy(self.Yp)) / self.Xd.shape[0]
+        ent_cost = T.sum(cat_entropy(self.Yp)) / T.cast(self.Xd.shape[0], 'floatX')
         return ent_cost
 
     def _construct_other_reg_cost(self):
@@ -572,7 +590,8 @@ class GITrip(object):
         ip_cost = sum([T.sum(par**2.0) for par in self.in_params])
         pp_cost = sum([T.sum(par**2.0) for par in self.pn_params])
         param_reg_cost = self.lam_l2w[0] * (gp_cost + ip_cost + pp_cost)
-        other_reg_cost = (act_reg_cost /self.Xd.shape[0]) + param_reg_cost
+        other_reg_cost = (act_reg_cost / T.cast(self.Xd.shape[0], 'floatX')) + \
+                param_reg_cost
         return [other_reg_cost, gp_cost, ip_cost, pp_cost, act_reg_cost]
 
     def _construct_train_joint(self):

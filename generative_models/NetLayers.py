@@ -184,7 +184,7 @@ class HiddenLayer(object):
         self.b = b
 
         # Compute linear "pre-activation" for this layer
-        self.linear_output = 20.0 * T.tanh((T.dot(self.noisy_input, self.W) + self.b) / 20.0)
+        self.linear_output = 10.0 * T.tanh((T.dot(self.noisy_input, self.W) + self.b) / 10.0)
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output + (self.bias_noise[0] * \

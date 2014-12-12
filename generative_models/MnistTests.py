@@ -260,9 +260,9 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     # TRAIN THE GIPair FOR SOME NUMBER OF ITERATIONS #
     ##################################################
     learn_rate = 0.002
-    for i in range(200000):
+    for i in range(500000):
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
+            learn_rate = learn_rate * 0.8
         scale = min(1.0, (float(i+1) / 50000.0))
         GIP.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
         GIP.set_lam_nll(lam_nll=1.0)
@@ -291,6 +291,16 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name)
 
+    ########################################################
+    # REMOVE (SORT OF) UNUSED DIMENSIONS FROM LATENT SPACE #
+    ########################################################
+    tr_idx = npr.randint(low=0,high=un_samples,size=(10000,))
+    Xd_batch = binarize_data(Xtr_un.take(tr_idx, axis=0))
+    Xp_batch = GIP.IN.mean_posterior(Xd_batch, 0.0*Xd_batch, 0.0*Xd_batch)
+    Xp_std = np.std(Xp_batch, axis=0, keepdims=True)
+    dim_mask = 1.0 * (Xp_std > 0.1)
+    GIT.set_input_mask(dim_mask)
+    print("MASK NNZ: {0:.4f}".format(np.sum(dim_mask)))
 
     ##################################################
     # TRAIN THE GITrip FOR SOME NUMBER OF ITERATIONS #
@@ -649,25 +659,25 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     batch_size = 100
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
+    gn_config = [prior_dim, 600, 600, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = relu_actfun
+    gn_params['activation'] = softplus_actfun
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
-    gn_params['hid_drop'] = 0.5
+    gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
     gn_params['out_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 800, 800]
+    shared_config = [data_dim, 600, 600]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
-    in_params['activation'] = relu_actfun
+    in_params['activation'] = softplus_actfun
     in_params['lam_l2a'] = 1e-3
-    in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.5
+    in_params['vis_drop'] = 0.0
+    in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.1
     in_params['out_noise'] = 0.1
@@ -733,8 +743,8 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     GIS.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
     for i in range(num_updates):
         scale = 1.0
-        if (i < 20000):
-            scale = float(i+1) / 20000.0
+        if (i < 50000):
+            scale = float(i+1) / 50000.0
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.75
         # do a minibatch update using unlabeled data
@@ -747,11 +757,10 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             Xm_un = 0.0 * Xd_un
             # do a minibatch update of the model, and compute some costs
             GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
-            GIS.set_pn_sgd_params(learn_rate=(5*scale*learn_rate), momentum=0.98)
             GIS.set_lam_nll(1.0)
-            GIS.set_lam_kld((scale**2.0) * 1.0)
+            GIS.set_lam_kld(scale * 1.0)
             GIS.set_lam_cat(0.0)
-            GIS.set_lam_pea(scale * lam_pea)
+            GIS.set_lam_pea((scale**2.0) * lam_pea)
             GIS.set_lam_ent((scale**2.0) * lam_ent)
             outputs = GIS.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
             joint_cost = 1.0 * outputs[0]
@@ -771,11 +780,10 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             Xm_su = 0.0 * Xd_su
             # update only based on the label-based classification cost
             GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
-            GIS.set_pn_sgd_params(learn_rate=(5*scale*learn_rate), momentum=0.98)
             GIS.set_lam_nll(0.0)
             GIS.set_lam_kld(0.0)
-            GIS.set_lam_cat(scale * lam_cat)
-            GIS.set_lam_pea(scale * lam_pea)
+            GIS.set_lam_cat((scale**2.0) * lam_cat)
+            GIS.set_lam_pea((scale**2.0) * lam_pea)
             GIS.set_lam_ent((scale**2.0) * lam_ent)
             outputs = GIS.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
             post_cat_cost = 1.0 * outputs[3]
@@ -1049,7 +1057,7 @@ def multitest_git_on_gip():
     lam_pea_git = [2.0, 4.0, 8.0]
     lam_ent_git = [-0.2, 0.0, 0.2]
     lam_l2w_git = [1e-4]
-    for t_num in range(100):
+    for t_num in range(6, 100):
         # select the hyperparameters for this test uniformly at random
         hyper_params = {}
         hyper_params['out_name'] = "GOG_TEST_{0:d}.txt".format(t_num)
@@ -1066,11 +1074,11 @@ def multitest_gi_trip():
     """
     Do random hyperparameter optimization.
     """
-    num_updates = 200000
-    learn_rate = [0.002, 0.004]
-    lam_cat = [2.0, 4.0]
-    lam_pea = [2.0, 4.0, 8.0]
-    lam_ent = [-0.2, 0.0, 0.2]
+    num_updates = 500000
+    learn_rate = [ 0.004 ]
+    lam_cat = [ 4.0 ]
+    lam_pea = [ 4.0 ]
+    lam_ent = [-0.5, 0.0, 0.5 ]
     lam_l2w = [1e-4]
     for t_num in range(100):
         # select the hyperparameters for this test uniformly at random
@@ -1090,11 +1098,11 @@ def multitest_gi_stack():
     """
     Do random hyperparameter optimization.
     """
-    num_updates = 200000
-    learn_rate = [0.001, 0.002]
-    lam_cat = [1.0, 2.0]
-    lam_pea = [1.0, 2.0, 4.0]
-    lam_ent = [-0.1, 0.0, 0.1]
+    num_updates = 500000
+    learn_rate = [ 0.002 ]
+    lam_cat = [ 2.0 ]
+    lam_pea = [ 4.0 ]
+    lam_ent = [ -0.5, 0.0, 0.5 ]
     lam_l2w = [1e-4]
     for t_num in range(100):
         # select the hyperparameters for this test uniformly at random

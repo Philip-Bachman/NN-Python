@@ -324,7 +324,7 @@ class InfNet(object):
         # of the final layers of its mu and sigma networks.
         self.output_mu = self.mu_layers[-1].noisy_linear
         self.output_logvar = self.sigma_layers[-1].noisy_linear
-        self.output_sigma = T.sqrt(T.exp(self.output_logvar))
+        self.output_sigma = T.exp(0.5 * self.output_logvar)
         # We'll also construct an output containing a single samples from each
         # of the distributions represented by the rows of self.output_mu and
         # self.output_sigma.
@@ -340,6 +340,8 @@ class InfNet(object):
         # posteriors inferred by this model for some collection of points
         # in the "data space".
         self.sample_posterior = self._construct_sample_posterior()
+        self.mean_posterior = theano.function([self.Xd, self.Xc, self.Xm], \
+                outputs=self.output_mu)
         return
 
     def _act_reg_cost(self):

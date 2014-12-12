@@ -454,14 +454,14 @@ class GIStack(object):
         Construct the negative log-likelihood part of cost to minimize.
         """
         log_prob_cost = self.GN.compute_log_prob(self.Xd)
-        nll_cost = -T.sum(log_prob_cost) / self.Xd.shape[0]
+        nll_cost = -T.sum(log_prob_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return nll_cost
 
     def _construct_post_kld_cost(self):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
-        kld_cost = T.sum(self.IN.kld_cost) / self.Xd.shape[0]
+        kld_cost = T.sum(self.IN.kld_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return kld_cost
 
     def _construct_post_cat_cost(self):
@@ -480,14 +480,14 @@ class GIStack(object):
         Construct the pseudo-ensemble agreement cost on the approximate
         posteriors over the categorical latent variable.
         """
-        pea_cost = T.sum(self.PN.pea_reg_cost) / self.Xd.shape[0]
+        pea_cost = T.sum(self.PN.pea_reg_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return pea_cost
 
     def _construct_post_ent_cost(self):
         """
         Construct the entropy cost on the categorical posterior.
         """
-        ent_cost = T.sum(cat_entropy(self.Yp)) / self.Xd.shape[0]
+        ent_cost = T.sum(cat_entropy(self.Yp)) / T.cast(self.Xd.shape[0], 'floatX')
         return ent_cost
 
     def _construct_other_reg_cost(self):
@@ -501,7 +501,8 @@ class GIStack(object):
         ip_cost = sum([T.sum(par**2.0) for par in self.in_params])
         pp_cost = sum([T.sum(par**2.0) for par in self.pn_params])
         param_reg_cost = self.lam_l2w[0] * (gp_cost + ip_cost + pp_cost)
-        other_reg_cost = (act_reg_cost /self.Xd.shape[0]) + param_reg_cost
+        other_reg_cost = (act_reg_cost / T.cast(self.Xd.shape[0], 'floatX')) + \
+                param_reg_cost
         return other_reg_cost
 
     def _construct_train_joint(self):

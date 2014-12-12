@@ -54,6 +54,7 @@ class GenNet(object):
             shared_param_dicts=None):
         # First, setup a shared random number generator for this layer
         self.rng = RandStream(rng.randint(1000000))
+
         # Grab the symbolic input matrix
         self.Xp = Xp
         self.prior_sigma = prior_sigma
@@ -120,6 +121,11 @@ class GenNet(object):
         self.mlp_depth = len(self.mlp_config) - 1
         self.latent_dim = self.mlp_config[0]
         self.data_dim = self.mlp_config[-1]
+
+        # construct a mask for deciding which output dimensions to keep/ignore
+        row_mask = np.ones((self.data_dim,)).astype(theano.config.floatX)
+        self.output_mask = theano.shared(value=row_mask, name='gn_output_mask')
+
         ##########################
         # Initialize the network #
         ##########################
@@ -217,7 +223,8 @@ class GenNet(object):
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
         if self.out_type == 'bernoulli':
-            self.output = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear)
+            self.output = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear) * \
+                    self.output_mask
             self.output_mu = self.output
             self.output_logvar = self.output
             self.output_sigma = self.output
@@ -225,7 +232,7 @@ class GenNet(object):
             self.output_mu = self.mlp_layers[-2].noisy_linear
             self.output_logvar = self.mlp_layers[-1].noisy_linear
             self.output_sigma = T.sqrt(T.exp(self.output_logvar))
-            self.output = self._construct_post_samples()
+            self.output = self._construct_post_samples() * self.output_mask
         self.out_dim = self.mlp_layers[-1].out_dim
         C_init = np.zeros((self.out_dim,self.out_dim)).astype(theano.config.floatX)
         m_init = np.zeros((self.out_dim,)).astype(theano.config.floatX)
@@ -329,16 +336,25 @@ class GenNet(object):
         self.dist_mean.set_value(mu.astype(theano.config.floatX))
         return
 
+    def set_output_mask(self, output_mask):
+        """
+        Set a (probably) binary mask on the output dimensions.
+        """
+        assert(output_mask.size == self.data_dim)
+        output_mask = output_mask.reshape((self.data_dim,))
+        self.output_mask.set_value(output_mask.astype(theano.config.floatX))
+        return
+
     def compute_log_prob(self, Xd=None):
         """
         Compute negative log likelihood of the data in Xd, with respect to the
         output distributions currently at self.output_....
         """
         if (self.out_type == 'bernoulli'):
-            log_prob_cost = log_prob_bernoulli(Xd, self.output)
+            log_prob_cost = log_prob_bernoulli(Xd, self.output, mask=self.output_mask)
         else:
             log_prob_cost = log_prob_gaussian2(Xd, self.output_mu, \
-                    les_logvars=self.output_logvar)
+                    les_logvars=self.output_logvar, mask=self.output_mask)
         return log_prob_cost
 
     def shared_param_clone(self, rng=None, Xp=None):
@@ -373,7 +389,7 @@ def projected_moments(X, P, ary_type=None):
         Xp = T.dot(X, P)
         Xp_mean = T.mean(Xp, axis=0)
         Xp_centered = Xp - Xp_mean
-        Xp_cov = T.dot(Xp_centered.T, Xp_centered) / Xp.shape[0]
+        Xp_cov = T.dot(Xp_centered.T, Xp_centered) / T.cast(Xp.shape[0], 'floatX')
         proj_mean = Xp_mean.eval()
         proj_cov = Xp_cov.eval()
     else:
