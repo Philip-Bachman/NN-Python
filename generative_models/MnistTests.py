@@ -260,7 +260,7 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     # TRAIN THE GIPair FOR SOME NUMBER OF ITERATIONS #
     ##################################################
     learn_rate = 0.002
-    for i in range(500000):
+    for i in range(250000):
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.8
         scale = min(1.0, (float(i+1) / 50000.0))
@@ -294,13 +294,13 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     ########################################################
     # REMOVE (SORT OF) UNUSED DIMENSIONS FROM LATENT SPACE #
     ########################################################
-    tr_idx = npr.randint(low=0,high=un_samples,size=(10000,))
-    Xd_batch = binarize_data(Xtr_un.take(tr_idx, axis=0))
-    Xp_batch = GIP.IN.mean_posterior(Xd_batch, 0.0*Xd_batch, 0.0*Xd_batch)
-    Xp_std = np.std(Xp_batch, axis=0, keepdims=True)
-    dim_mask = 1.0 * (Xp_std > 0.1)
-    GIT.set_input_mask(dim_mask)
-    print("MASK NNZ: {0:.4f}".format(np.sum(dim_mask)))
+    #tr_idx = npr.randint(low=0,high=un_samples,size=(10000,))
+    #Xd_batch = binarize_data(Xtr_un.take(tr_idx, axis=0))
+    #Xp_batch = GIP.IN.mean_posterior(Xd_batch, 0.0*Xd_batch, 0.0*Xd_batch)
+    #Xp_std = np.std(Xp_batch, axis=0, keepdims=True)
+    #dim_mask = 1.0 * (Xp_std > 0.1)
+    #GIT.set_input_mask(dim_mask)
+    #print("MASK NNZ: {0:.4f}".format(np.sum(dim_mask)))
 
     ##################################################
     # TRAIN THE GITrip FOR SOME NUMBER OF ITERATIONS #
@@ -308,7 +308,7 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     GIT.set_lam_l2w(lam_l2w=lam_l2w_git)
     learn_rate = learn_rate_git
     GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
-    for i in range(200000):
+    for i in range(250000):
         scale = 1.0
         if (i < 25000):
             scale = float(i+1) / 25000.0
@@ -390,13 +390,12 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
 ########################
 ########################
 
-def test_gi_trip(hyper_params=None, rng_seed=1234):
+def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     assert(not (hyper_params is None))
     # Initialize a source of randomness
     rng = np.random.RandomState(rng_seed)
 
     # Load some data to train/validate/test with
-    sup_count = 600
     dataset = 'data/mnist.pkl.gz'
     datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
     Xtr_su = datasets[0][0].get_value(borrow=False)
@@ -430,7 +429,7 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
     label_dim = 10
     prior_dim = 50
     prior_sigma = 1.0
-    batch_size = 100
+    batch_size = 150
     # set parameters for the generator network
     gn_params = {}
     gn_config = [(prior_dim + label_dim), 600, 600, data_dim]
@@ -507,6 +506,7 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
 
     out_file = open(out_name, 'wb')
     out_file.write("**TODO: More informative output, and maybe a real log**\n")
+    out_file.write("sup_count: {0:d}\n".format(sup_count))
     out_file.write("learn_rate: {0:.4f}\n".format(learn_rate))
     out_file.write("lam_pea: {0:.4f}\n".format(lam_pea))
     out_file.write("lam_cat: {0:.4f}\n".format(lam_cat))
@@ -517,11 +517,14 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
     GIT.set_lam_l2w(lam_l2w)
     GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
     for i in range(num_updates):
-        scale = 1.0
-        if (i < 25000):
-            scale = float(i+1) / 25000.0
+        if (i < 75000):
+            scale = float(i+1) / 75000.0
+            lam_ent = -1.0
+        else:
+            scale = 1.0
+            lam_ent = hyper_params['lam_ent']
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
+            learn_rate = learn_rate * 0.8
         # do a minibatch update using unlabeled data
         if True:
             # get some data to train with
@@ -533,10 +536,10 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
             # do a minibatch update of the model, and compute some costs
             GIT.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
             GIT.set_lam_nll(1.0)
-            GIT.set_lam_kld((scale**2.0) * 1.0)
+            GIT.set_lam_kld(scale * 1.0)
             GIT.set_lam_cat(0.0)
             GIT.set_lam_pea(scale * lam_pea)
-            GIT.set_lam_ent((scale**2.0) * lam_ent)
+            GIT.set_lam_ent(scale * lam_ent)
             outputs = GIT.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
             joint_cost = nan_debug_print(1.0 * outputs[0], 'NaN in joint 1')
             data_nll_cost = nan_debug_print(1.0 * outputs[1], 'NaN in nll 1')
@@ -566,7 +569,7 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
             GIT.set_lam_kld(0.0)
             GIT.set_lam_cat(scale * lam_cat)
             GIT.set_lam_pea(scale * lam_pea)
-            GIT.set_lam_ent((scale**2.0) * lam_ent)
+            GIT.set_lam_ent(0.0)
             outputs = GIT.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
             joint_2 = nan_debug_print(1.0 * outputs[0], 'NaN in joint 2')
             data_nll_2 = nan_debug_print(1.0 * outputs[1], 'NaN in nll 2')
@@ -616,13 +619,12 @@ def test_gi_trip(hyper_params=None, rng_seed=1234):
 ##########################
 ##########################
 
-def test_gi_stack(hyper_params=None, rng_seed=1234):
+def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
     assert(not (hyper_params is None))
     # Initialize a source of randomness
     rng = np.random.RandomState(rng_seed)
 
     # Load some data to train/validate/test with
-    sup_count = 600
     dataset = 'data/mnist.pkl.gz'
     datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
     Xtr_su = datasets[0][0].get_value(borrow=False)
@@ -656,7 +658,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     label_dim = 10
     prior_dim = 50
     prior_sigma = 1.0
-    batch_size = 100
+    batch_size = 150
     # Choose some parameters for the generator network
     gn_params = {}
     gn_config = [prior_dim, 600, 600, data_dim]
@@ -683,7 +685,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     in_params['out_noise'] = 0.1
     # choose some parameters for the categorical inferencer
     pn_params = {}
-    pc0 = [prior_dim, 512, 512, label_dim]
+    pc0 = [prior_dim, 800, 800, label_dim]
     pn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -692,6 +694,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     pn_params['spawn_weights'] = [0.5, 0.5]
     # Set remaining params
     pn_params['activation'] = relu_actfun
+    pn_params['init_scale'] = 2.0
     pn_params['ear_type'] = 6
     pn_params['lam_l2a'] = 1e-3
     pn_params['vis_drop'] = 0.0
@@ -704,8 +707,8 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             params=in_params, shared_param_dicts=None)
     PN = PeaNet(rng=rng, Xd=Xd, params=pn_params)
     # Initialize biases in GN, IN, and PN
-    GN.init_biases(0.1)
-    IN.init_biases(0.1)
+    GN.init_biases(0.0)
+    IN.init_biases(0.0)
     PN.init_biases(0.1)
     # Initialize the GIStack
     GIS = GIStack(rng=rng, \
@@ -732,6 +735,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
 
     out_file = open(out_name, 'wb')
     out_file.write("**TODO: More informative output, and maybe a real log**\n")
+    out_file.write("sup_count: {0:d}\n".format(sup_count))
     out_file.write("learn_rate: {0:.4f}\n".format(learn_rate))
     out_file.write("lam_pea: {0:.4f}\n".format(lam_pea))
     out_file.write("lam_cat: {0:.4f}\n".format(lam_cat))
@@ -742,11 +746,22 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
     GIS.set_lam_l2w(lam_l2w)
     GIS.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
     for i in range(num_updates):
-        scale = 1.0
-        if (i < 50000):
-            scale = float(i+1) / 50000.0
+        if (i < 100000):
+            # start with some updates only for the VAE (InfNet and GenNet)
+            scale = float(i+1) / 100000.0
+            lam_cat = 0.0
+            lam_pea = 0.0
+            lam_ent = 0.0
+            learn_rate_pn = 0.0
+        else:
+            # move on to updates that include loss from the PeaNet
+            scale = 1.0
+            lam_cat = hyper_params['lam_cat']
+            lam_pea = hyper_params['lam_pea']
+            lam_ent = hyper_params['lam_ent']
+            learn_rate_pn = learn_rate
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
+            learn_rate = learn_rate * 0.8
         # do a minibatch update using unlabeled data
         if True:
             # get some data to train with
@@ -757,11 +772,12 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             Xm_un = 0.0 * Xd_un
             # do a minibatch update of the model, and compute some costs
             GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
+            GIS.set_pn_sgd_params(learn_rate=(scale*learn_rate_pn), momentum=0.98)
             GIS.set_lam_nll(1.0)
             GIS.set_lam_kld(scale * 1.0)
             GIS.set_lam_cat(0.0)
-            GIS.set_lam_pea((scale**2.0) * lam_pea)
-            GIS.set_lam_ent((scale**2.0) * lam_ent)
+            GIS.set_lam_pea(scale * lam_pea)
+            GIS.set_lam_ent(0.0)
             outputs = GIS.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
             joint_cost = 1.0 * outputs[0]
             data_nll_cost = 1.0 * outputs[1]
@@ -771,7 +787,7 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             post_ent_cost = 1.0 * outputs[5]
             other_reg_cost = 1.0 * outputs[6]
         # do another minibatch update incorporating label information
-        if True:
+        if (i >= 100000):
             # get some data to train with
             su_idx = npr.randint(low=0,high=su_samples,size=(batch_size,))
             Xd_su = binarize_data(Xtr_su.take(su_idx, axis=0))
@@ -780,11 +796,12 @@ def test_gi_stack(hyper_params=None, rng_seed=1234):
             Xm_su = 0.0 * Xd_su
             # update only based on the label-based classification cost
             GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
+            GIS.set_pn_sgd_params(learn_rate=(scale*learn_rate_pn), momentum=0.98)
             GIS.set_lam_nll(0.0)
             GIS.set_lam_kld(0.0)
-            GIS.set_lam_cat((scale**2.0) * lam_cat)
-            GIS.set_lam_pea((scale**2.0) * lam_pea)
-            GIS.set_lam_ent((scale**2.0) * lam_ent)
+            GIS.set_lam_cat(scale * lam_cat)
+            GIS.set_lam_pea(scale * lam_pea)
+            GIS.set_lam_ent(scale * lam_ent)
             outputs = GIS.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
             post_cat_cost = 1.0 * outputs[3]
         assert(not (np.isnan(joint_cost)))
@@ -1057,7 +1074,7 @@ def multitest_git_on_gip():
     lam_pea_git = [2.0, 4.0, 8.0]
     lam_ent_git = [-0.2, 0.0, 0.2]
     lam_l2w_git = [1e-4]
-    for t_num in range(6, 100):
+    for t_num in range(100):
         # select the hyperparameters for this test uniformly at random
         hyper_params = {}
         hyper_params['out_name'] = "GOG_TEST_{0:d}.txt".format(t_num)
@@ -1074,48 +1091,56 @@ def multitest_gi_trip():
     """
     Do random hyperparameter optimization.
     """
-    num_updates = 500000
+    num_updates = 600000
     learn_rate = [ 0.004 ]
     lam_cat = [ 4.0 ]
     lam_pea = [ 4.0 ]
-    lam_ent = [-0.5, 0.0, 0.5 ]
+    lam_ent = [ -1.0, 0.0, 1.0 ]
+    sup_count = [600, 1000, 3000, 100]
     lam_l2w = [1e-4]
-    for t_num in range(100):
-        # select the hyperparameters for this test uniformly at random
-        hyper_params = {}
-        hyper_params['out_name'] = "GIT_TEST_{0:d}.txt".format(t_num)
-        hyper_params['num_updates'] = num_updates
-        hyper_params['learn_rate'] = rand_sample(learn_rate)
-        hyper_params['lam_cat'] = rand_sample(lam_cat)
-        hyper_params['lam_pea'] = rand_sample(lam_pea)
-        hyper_params['lam_ent'] = rand_sample(lam_ent)
-        hyper_params['lam_l2w'] = rand_sample(lam_l2w)
-        # run the test and record results
-        test_gi_trip(hyper_params=hyper_params, rng_seed=t_num)
+    t_num = 0
+    for sc in sup_count:
+        for le in lam_ent:
+            # select the hyperparameters for this test uniformly at random
+            hyper_params = {}
+            hyper_params['out_name'] = "GIT_TEST_{0:d}.txt".format(t_num)
+            hyper_params['num_updates'] = num_updates
+            hyper_params['learn_rate'] = rand_sample(learn_rate)
+            hyper_params['lam_cat'] = rand_sample(lam_cat)
+            hyper_params['lam_pea'] = rand_sample(lam_pea)
+            hyper_params['lam_ent'] = le
+            hyper_params['lam_l2w'] = rand_sample(lam_l2w)
+            # run the test and record results
+            test_gi_trip(hyper_params=hyper_params, sup_count=sc, rng_seed=t_num)
+            t_num += 1
     return
 
 def multitest_gi_stack():
     """
     Do random hyperparameter optimization.
     """
-    num_updates = 500000
-    learn_rate = [ 0.002 ]
-    lam_cat = [ 2.0 ]
+    num_updates = 600000
+    learn_rate = [ 0.004 ]
+    lam_cat = [ 4.0 ]
     lam_pea = [ 4.0 ]
-    lam_ent = [ -0.5, 0.0, 0.5 ]
+    lam_ent = [ -1.0, 0.0, 1.0 ]
+    sup_count = [600, 1000, 3000, 100]
     lam_l2w = [1e-4]
-    for t_num in range(100):
-        # select the hyperparameters for this test uniformly at random
-        hyper_params = {}
-        hyper_params['out_name'] = "GIS_TEST_{0:d}.txt".format(t_num)
-        hyper_params['num_updates'] = num_updates
-        hyper_params['learn_rate'] = rand_sample(learn_rate)
-        hyper_params['lam_cat'] = rand_sample(lam_cat)
-        hyper_params['lam_pea'] = rand_sample(lam_pea)
-        hyper_params['lam_ent'] = rand_sample(lam_ent)
-        hyper_params['lam_l2w'] = rand_sample(lam_l2w)
-        # run the test and record results
-        test_gi_stack(hyper_params=hyper_params, rng_seed=t_num)
+    t_num = 0
+    for sc in sup_count:
+        for le in lam_ent:
+            # select the hyperparameters for this test uniformly at random
+            hyper_params = {}
+            hyper_params['out_name'] = "GIS_TEST_{0:d}.txt".format(t_num)
+            hyper_params['num_updates'] = num_updates
+            hyper_params['learn_rate'] = rand_sample(learn_rate)
+            hyper_params['lam_cat'] = rand_sample(lam_cat)
+            hyper_params['lam_pea'] = rand_sample(lam_pea)
+            hyper_params['lam_ent'] = le
+            hyper_params['lam_l2w'] = rand_sample(lam_l2w)
+            # run the test and record results
+            test_gi_stack(hyper_params=hyper_params, sup_count=sc, rng_seed=t_num)
+            t_num += 1
     return
 
 

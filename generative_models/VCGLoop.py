@@ -34,6 +34,20 @@ def logreg_loss(Y, class_sign):
     loss = T.sum(softplus_actfun(-class_sign * Y))
     return loss
 
+def ns_nce_pos(f, k=1.0):
+    """
+    Negative-sampling noise contrastive estimation, for target distribution.
+    """
+    loss = T.sum(T.log(1.0 + k*T.exp(-f)))
+    return loss
+
+def ns_nce_neg(f, k=1.0):
+    """
+    Negative-sampling noise contrastive estimation, for base distribution.
+    """
+    loss = T.sum(f + T.log(1.0 + k*T.exp(-f)))
+    return loss
+
 def lsq_loss(Yh, Yt=0.0):
     """
     Least-squares loss for predictions in Yh, given target Yt.
@@ -49,7 +63,7 @@ def hinge_loss(Yh, Yt=0.0):
     loss = T.sum((residual * (residual > 0.0)))
     return loss
 
-def ulh_loss(Yh, Yt=0.0, delta=1.0):
+def ulh_loss(Yh, Yt=0.0, delta=0.5):
     """
     Unilateral Huberized least-squares loss for Yh, given target Yt.
     """
@@ -110,6 +124,7 @@ class VCGChain(object):
         i_net: The InfNet instance that will serve as the inferencer
         g_net: The GenNet instance that will serve as the generator
         d_net: The PeaNet instance that will serve as the discriminator
+        chain_len: number of steps to unroll the VAE Markov Chain
         data_dim: dimension of the generated data
         prior_dim: dimension of the model prior
         params: a dict of parameters for controlling various costs
@@ -237,8 +252,10 @@ class VCGChain(object):
                 self.disc_reg_cost
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
-        self.data_nll_cost = self.lam_nll[0] * self._construct_data_nll_cost()
-        self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
+        self.data_nll_cost = self.lam_nll[0] * \
+                self._construct_data_nll_cost(data_weight=0.5)
+        self.post_kld_cost = self.lam_kld[0] * \
+                self._construct_post_kld_cost(data_weight=0.5)
         self.other_reg_cost = self._construct_other_reg_cost()
         self.gip_cost = self.disc_cost_gn + self.data_nll_cost + \
                 self.post_kld_cost + self.other_reg_cost
@@ -458,42 +475,59 @@ class VCGChain(object):
             noise_preds = dl_output.take(self.Id, axis=0)
             # compute the cost with respect to which we will be optimizing
             # the parameters of the discriminator network
-            dn_pred_count = self.It.size + self.Id.size
-            dnl_dn_cost = (logreg_loss(data_preds, 1.0) + \
-                    logreg_loss(noise_preds, -1.0)) / dn_pred_count
+            data_size = T.cast(self.It.size, 'floatX')
+            noise_size = T.cast(self.Id.size, 'floatX')
+            k_ns_nce = noise_size / data_size
+            #dnl_dn_cost = (ns_nce_pos(data_preds, k=k_ns_nce) + \
+            #               ns_nce_neg(noise_preds, k=k_ns_nce)) / \
+            #               (data_size + noise_size)
+            dnl_dn_cost = (logreg_loss(data_preds, 1.0) / data_size) + \
+                          (logreg_loss(noise_preds, -1.0) / noise_size)
             # compute the cost with respect to which we will be optimizing
             # the parameters of the generative model
-            noise_pred_count = self.Id.size
-            dnl_gn_cost = ulh_loss(noise_preds, 0.0) / noise_pred_count
+            dnl_gn_cost = ulh_loss(noise_preds, 0.0) / noise_size
             dn_costs.append(dnl_dn_cost)
             gn_costs.append(dnl_gn_cost)
         dn_cost = self.dw_dn[0] * T.sum(dn_costs)
         gn_cost = self.dw_gn[0] * T.sum(gn_costs)
         return [dn_cost, gn_cost]
 
-    def _construct_data_nll_cost(self):
+    def _construct_data_nll_cost(self, data_weight=0.5):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
+        assert((data_weight > 0.0) and (data_weight < 1.0))
         nll_costs = []
+        cost_0 = data_weight
+        cost_1 = (1.0 - data_weight) * (1.0 / (self.chain_len - 1))
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
             GN_i = self.GN_chain[i]
-            nll_costs.append(-T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd)) \
-                    / T.cast(IN_i.Xd.shape[0], 'floatX'))
-        nll_cost = sum(nll_costs) / float(self.chain_len)
+            c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd)) \
+                    / T.cast(IN_i.Xd.shape[0], 'floatX')
+            if (i == 0):
+                nll_costs.append(cost_0 * c)
+            else:
+                nll_costs.append(cost_1 * c)
+        nll_cost = sum(nll_costs)
         return nll_cost
 
-    def _construct_post_kld_cost(self):
+    def _construct_post_kld_cost(self, data_weight=0.5):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
+        assert((data_weight > 0.0) and (data_weight < 1.0))
         kld_costs = []
+        cost_0 = data_weight
+        cost_1 = (1.0 - data_weight) * (1.0 / (self.chain_len - 1))
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
-            kld_costs.append(T.sum(IN_i.kld_cost) / \
-                    T.cast(IN_i.Xd.shape[0], 'floatX'))
-        kld_cost = sum(kld_costs) / float(self.chain_len)
+            c = T.sum(IN_i.kld_cost) / T.cast(IN_i.Xd.shape[0], 'floatX')
+            if (i == 0):
+                kld_costs.append(cost_0 * c)
+            else:
+                kld_costs.append(cost_1 * c)
+        kld_cost = sum(kld_costs)
         return kld_cost
 
     def _construct_other_reg_cost(self):
@@ -533,6 +567,10 @@ if __name__=="__main__":
     from NetLayers import relu_actfun, softplus_actfun, \
                           safe_softmax, safe_log
 
+    import sys, resource
+    resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
+    sys.setrecursionlimit(10**6)
+
     # Simple test code, to check that everything is basically functional.
     print("TESTING...")
 
@@ -564,7 +602,7 @@ if __name__=="__main__":
     # Set some reasonable mlp parameters
     dn_params = {}
     # Set up some proto-networks
-    pc0 = [data_dim, (300, 4), (300, 4), 10]
+    pc0 = [data_dim, (200, 4), (200, 4), 10]
     dn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -577,6 +615,7 @@ if __name__=="__main__":
     dn_params['lam_l2a'] = 1e-2
     dn_params['vis_drop'] = 0.2
     dn_params['hid_drop'] = 0.5
+    dn_params['init_scale'] = 2.0
     # Initialize a network object to use as the discriminator
     DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
     DN.init_biases(0.0)
@@ -586,13 +625,13 @@ if __name__=="__main__":
     ############################
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 800, 800]
-    top_config = [shared_config[-1], 400, prior_dim]
+    shared_config = [data_dim, 600, 600]
+    top_config = [shared_config[-1], 100, prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
-    in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 2.0
+    in_params['activation'] = softplus_actfun
+    in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
@@ -601,14 +640,14 @@ if __name__=="__main__":
     in_params['input_noise'] = 0.0
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
             prior_sigma=prior_sigma, params=in_params)
-    IN.init_biases(0.1)
+    IN.init_biases(0.0)
 
     ###########################
     # Setup generator network #
     ###########################
     # Choose some parameters for the generative network
     gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
+    gn_config = [prior_dim, 600, 600, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
@@ -616,10 +655,11 @@ if __name__=="__main__":
     gn_params['bias_noise'] = 0.1
     gn_params['out_noise'] = 0.1
     gn_params['out_type'] = 'bernoulli'
-    gn_params['activation'] = relu_actfun
+    gn_params['activation'] = softplus_actfun
+    gn_params['init_scale'] = 1.0
     # Initialize a generator network object
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, params=gn_params)
-    GN.init_biases(0.1)
+    GN.init_biases(0.0)
 
 
 
@@ -627,7 +667,7 @@ if __name__=="__main__":
     # Initialize the main GIPair and VCGChain #
     ###########################################
     VCG = VCGChain(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
-                 g_net=GN, d_net=DN, chain_len=5, data_dim=784, \
+                 g_net=GN, d_net=DN, chain_len=6, data_dim=784, \
                  prior_dim=50, params={'lam_l2d': 1e-2})
     VCG.set_lam_l2w(1e-3)
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
@@ -638,8 +678,8 @@ if __name__=="__main__":
     # PRETRAIN AS ONE-STEP VAE #
     ############################
     learn_rate = 0.001
-    for i in range(25000):
-        scale = float(min((i+1), 20000)) / 20000.0
+    for i in range(30000):
+        scale = float(min((i+1), 10000)) / 10000.0
         GIP.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.9)
         GIP.set_lam_kld(lam_kld=scale)
         # get some data to train with
@@ -656,7 +696,7 @@ if __name__=="__main__":
         if ((i % 1000) == 0):
             print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
                     i, joint_cost, data_nll_cost, post_kld_cost, other_reg_cost))
-        if ((i % 2500) == 0):
+        if ((i % 5000) == 0):
             file_name = "VCG_SAMPLES_a{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
             sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=10)
@@ -669,17 +709,17 @@ if __name__=="__main__":
     for i in range(750000):
         scale = float(min((i+1), 5000)) / 5000.0
         VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.95)
-        VCG.set_disc_weights(dweight_gn=50.0, dweight_dn=10.0)
-        VCG.set_lam_kld(lam_kld=(0.5+scale))
+        VCG.set_disc_weights(dweight_gn=10.0, dweight_dn=10.0)
+        VCG.set_lam_kld(1.0)
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.8
             VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.95)
         # get some data to train with
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(200,))
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
         Xc_batch = 0.0 * Xd_batch
         Xm_batch = 0.0 * Xd_batch
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(200,))
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xt_batch = Xtr.take(tr_idx, axis=0)
         # do a minibatch update of the model, and compute some costs
         outputs = VCG.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
