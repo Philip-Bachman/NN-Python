@@ -448,6 +448,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = softplus_actfun
+    in_params['init_scale'] = 2.0
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
@@ -482,12 +483,14 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     PN.init_biases(0.1)
 
     # Initialize the GITrip
+    git_params = {}
+    git_params['cat_prior'] = hyper_params['cat_prior']
     GIT = GITrip(rng=rng, \
             Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
             g_net=GN, i_net=IN, p_net=PN, \
             data_dim=data_dim, prior_dim=prior_dim, \
             label_dim=label_dim, batch_size=batch_size, \
-            params={}, shared_param_dicts=None)
+            params=git_params, shared_param_dicts=None)
     # set weighting parameters for the various costs...
     GIT.set_lam_nll(1.0)
     GIT.set_lam_kld(1.0)
@@ -498,8 +501,8 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     # Set initial learning rate and basic SGD hyper parameters
     num_updates = hyper_params['num_updates']
     learn_rate = hyper_params['learn_rate']
-    lam_pea = hyper_params['lam_pea']
     lam_cat = hyper_params['lam_cat']
+    lam_pea = hyper_params['lam_pea']
     lam_ent = hyper_params['lam_ent']
     lam_l2w = hyper_params['lam_l2w']
     out_name = hyper_params['out_name']
@@ -512,19 +515,15 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     out_file.write("lam_cat: {0:.4f}\n".format(lam_cat))
     out_file.write("lam_ent: {0:.4f}\n".format(lam_ent))
     out_file.write("lam_l2w: {0:.4f}\n".format(lam_l2w))
+    out_file.write("git_params: {0:s}\n".format(str(git_params)))
     out_file.flush()
 
     GIT.set_lam_l2w(lam_l2w)
     GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
     for i in range(num_updates):
-        if (i < 75000):
-            scale = float(i+1) / 75000.0
-            lam_ent = -1.0
-        else:
-            scale = 1.0
-            lam_ent = hyper_params['lam_ent']
+        scale = float(min(i+1, 75000)) / 75000.0
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.8
+            learn_rate = learn_rate * 0.75
         # do a minibatch update using unlabeled data
         if True:
             # get some data to train with
@@ -541,20 +540,13 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             GIT.set_lam_pea(scale * lam_pea)
             GIT.set_lam_ent(scale * lam_ent)
             outputs = GIT.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
-            joint_cost = nan_debug_print(1.0 * outputs[0], 'NaN in joint 1')
-            data_nll_cost = nan_debug_print(1.0 * outputs[1], 'NaN in nll 1')
-            post_kld_cost = nan_debug_print(1.0 * outputs[2], 'NaN in kld 1')
-            post_cat_cost = nan_debug_print(1.0 * outputs[3], 'NaN in cat 1')
-            post_pea_cost = nan_debug_print(1.0 * outputs[4], 'NaN in pea 1')
-            post_ent_cost = nan_debug_print(1.0 * outputs[5], 'NaN in ent 1')
-            other_reg_cost = nan_debug_print(1.0 * outputs[6], 'NaN in other reg 1')
-            #grad_sq_sum = nan_debug_print(1.0 * outputs[7], 'NaN in grad 1')
-            #gp_cost = nan_debug_print(1.0 * outputs[8], 'NaN in gp_cost 1')
-            #ip_cost = nan_debug_print(1.0 * outputs[9], 'NaN in ip_cost 1')
-            #pp_cost = nan_debug_print(1.0 * outputs[9], 'NaN in pp_cost 1')
-            #act_cost = nan_debug_print(1.0 * outputs[10], 'NaN in act_cost 1')
-            #xxx = nan_debug_print(1.0 * outputs[11], 'NaN in GIT.IN.output_mu 1')
-            #xxx = nan_debug_print(1.0 * outputs[12], 'NaN in GIT.IN.output_sigma 1')
+            joint_cost = 1.0 * outputs[0]
+            data_nll_cost = 1.0 * outputs[1]
+            post_kld_cost = 1.0 * outputs[2]
+            post_cat_cost = 1.0 * outputs[3]
+            post_pea_cost = 1.0 * outputs[4]
+            post_ent_cost = 1.0 * outputs[5]
+            other_reg_cost = 1.0 * outputs[6]
         # do another minibatch update incorporating label information
         if True:
             # get some data to train with
@@ -571,20 +563,13 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             GIT.set_lam_pea(scale * lam_pea)
             GIT.set_lam_ent(0.0)
             outputs = GIT.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
-            joint_2 = nan_debug_print(1.0 * outputs[0], 'NaN in joint 2')
-            data_nll_2 = nan_debug_print(1.0 * outputs[1], 'NaN in nll 2')
-            post_kld_2 = nan_debug_print(1.0 * outputs[2], 'NaN in kld 2')
-            post_cat_cost = nan_debug_print(1.0 * outputs[3], 'NaN in cat 2')
-            post_pea_2 = nan_debug_print(1.0 * outputs[4], 'NaN in pea 2')
-            post_ent_2 = nan_debug_print(1.0 * outputs[5], 'NaN in ent 2')
-            other_reg_cost = nan_debug_print(1.0 * outputs[6], 'NaN in other reg 2')
-            #grad_sq_sum = nan_debug_print(1.0 * outputs[7], 'NaN in grad 2')
-            #gp_cost = nan_debug_print(1.0 * outputs[8], 'NaN in gp_cost 2')
-            #ip_cost = nan_debug_print(1.0 * outputs[9], 'NaN in ip_cost 2')
-            #pp_cost = nan_debug_print(1.0 * outputs[9], 'NaN in pp_cost 2')
-            #act_cost = nan_debug_print(1.0 * outputs[10], 'NaN in act_cost 2')
-            #xxx = nan_debug_print(1.0 * outputs[11], 'NaN in GIT.IN.output_mu 2')
-            #xxx = nan_debug_print(1.0 * outputs[12], 'NaN in GIT.IN.output_sigma 2')
+            joint_2 = 1.0 * outputs[0]
+            data_nll_2 = 1.0 * outputs[1]
+            post_kld_2 = 1.0 * outputs[2]
+            post_cat_cost = 1.0 * outputs[3]
+            post_pea_2 = 1.0 * outputs[4]
+            post_ent_2 = 1.0 * outputs[5]
+            other_reg_cost = 1.0 * outputs[6]
         assert(not (np.isnan(joint_cost)))
         if ((i % 500) == 0):
             o_str = "batch: {0:d}, joint_cost: {1:.4f}, nll: {2:.4f}, kld: {3:.4f}, cat: {4:.4f}, pea: {5:.4f}, ent: {6:.4f}, other_reg: {7:.4f}".format( \
@@ -677,6 +662,7 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = softplus_actfun
+    in_params['init_scale'] = 2.0
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
@@ -716,7 +702,7 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
             g_net=GN, i_net=IN, p_net=PN, \
             data_dim=data_dim, prior_dim=prior_dim, \
             label_dim=label_dim, batch_size=batch_size, \
-            params={}, shared_param_dicts=None)
+            params=None, shared_param_dicts=None)
     # set weighting parameters for the various costs...
     GIS.set_lam_nll(1.0)
     GIS.set_lam_kld(1.0)
@@ -748,7 +734,7 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
     for i in range(num_updates):
         if (i < 100000):
             # start with some updates only for the VAE (InfNet and GenNet)
-            scale = float(i+1) / 100000.0
+            scale = float(min(i+1, 50000)) / 50000.0
             lam_cat = 0.0
             lam_pea = 0.0
             lam_ent = 0.0
@@ -758,10 +744,13 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
             scale = 1.0
             lam_cat = hyper_params['lam_cat']
             lam_pea = hyper_params['lam_pea']
-            lam_ent = hyper_params['lam_ent']
+            if i < 150000:
+                lam_ent = float(i - 99999) * hyper_params['lam_ent']
+            else:
+                lam_ent = hyper_params['lam_ent']
             learn_rate_pn = learn_rate
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.8
+            learn_rate = learn_rate * 0.75
         # do a minibatch update using unlabeled data
         if True:
             # get some data to train with
@@ -777,7 +766,7 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
             GIS.set_lam_kld(scale * 1.0)
             GIS.set_lam_cat(0.0)
             GIS.set_lam_pea(scale * lam_pea)
-            GIS.set_lam_ent(0.0)
+            GIS.set_lam_ent(scale * lam_ent)
             outputs = GIS.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
             joint_cost = 1.0 * outputs[0]
             data_nll_cost = 1.0 * outputs[1]
@@ -801,7 +790,7 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
             GIS.set_lam_kld(0.0)
             GIS.set_lam_cat(scale * lam_cat)
             GIS.set_lam_pea(scale * lam_pea)
-            GIS.set_lam_ent(scale * lam_ent)
+            GIS.set_lam_ent(0.0)
             outputs = GIS.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
             post_cat_cost = 1.0 * outputs[3]
         assert(not (np.isnan(joint_cost)))
@@ -1091,16 +1080,19 @@ def multitest_gi_trip():
     """
     Do random hyperparameter optimization.
     """
+    sup_count = [600, 1000, 3000, 100]
     num_updates = 600000
     learn_rate = [ 0.004 ]
     lam_cat = [ 4.0 ]
     lam_pea = [ 4.0 ]
-    lam_ent = [ -1.0, 0.0, 1.0 ]
-    sup_count = [600, 1000, 3000, 100]
+    lam_ent = [ 1.0 ]
     lam_l2w = [1e-4]
+    cat_prior_1 = {'type': 'entropy', 'param': -1.0}
+    cat_prior_2 = {'type': 'dirichlet', 'param': 0.1}
+    cat_priors = [cat_prior_2, cat_prior_1]
     t_num = 0
     for sc in sup_count:
-        for le in lam_ent:
+        for cp in cat_priors:
             # select the hyperparameters for this test uniformly at random
             hyper_params = {}
             hyper_params['out_name'] = "GIT_TEST_{0:d}.txt".format(t_num)
@@ -1108,8 +1100,9 @@ def multitest_gi_trip():
             hyper_params['learn_rate'] = rand_sample(learn_rate)
             hyper_params['lam_cat'] = rand_sample(lam_cat)
             hyper_params['lam_pea'] = rand_sample(lam_pea)
-            hyper_params['lam_ent'] = le
+            hyper_params['lam_ent'] = rand_sample(lam_ent)
             hyper_params['lam_l2w'] = rand_sample(lam_l2w)
+            hyper_params['cat_prior'] = cp
             # run the test and record results
             test_gi_trip(hyper_params=hyper_params, sup_count=sc, rng_seed=t_num)
             t_num += 1
@@ -1119,12 +1112,12 @@ def multitest_gi_stack():
     """
     Do random hyperparameter optimization.
     """
+    sup_count = [600, 1000, 3000, 100]
     num_updates = 600000
     learn_rate = [ 0.004 ]
     lam_cat = [ 4.0 ]
     lam_pea = [ 4.0 ]
-    lam_ent = [ -1.0, 0.0, 1.0 ]
-    sup_count = [600, 1000, 3000, 100]
+    lam_ent = [ 0.0, 1.0 ]
     lam_l2w = [1e-4]
     t_num = 0
     for sc in sup_count:

@@ -123,7 +123,19 @@ class GITrip(object):
             params=None, shared_param_dicts=None):
         # setup a rng for this GITrip
         self.rng = RandStream(rng.randint(100000))
-        self.params = {}
+        # setup the prior distribution over the categorical variable
+        if params is None:
+            cat_prior = {'type': 'entropy', 'param': -1.0}
+            self.params = {'cat_prior': cat_prior}
+        else:
+            self.params = params
+        self.cat_prior = params['cat_prior']
+        # check for a valid description of the desired categorical prior
+        assert('type' in self.cat_prior)
+        assert((self.cat_prior['type'] == 'entropy') or \
+               (self.cat_prior['type'] == 'dirichlet'))
+        if self.cat_prior['type'] == 'dirichlet':
+            assert(self.cat_prior['param'] > 0.0)
 
         # record the dimensionality of the data handled by this GITrip
         self.data_dim = data_dim
@@ -576,7 +588,15 @@ class GITrip(object):
         """
         Construct the entropy cost on the categorical posterior.
         """
-        ent_cost = T.sum(cat_entropy(self.Yp)) / T.cast(self.Xd.shape[0], 'floatX')
+        obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        if self.cat_prior['type'] == 'entropy':
+            # use an "entropy" prior over the categorical predictions
+            ent_cost = self.cat_prior['param'] * \
+                       (T.sum(cat_entropy(self.Yp)) / obs_count)
+        else:
+            # use a dirichlet prior over the categorical predictions
+            alpha = self.cat_prior['param']
+            ent_cost = -T.sum(cat_prior_dir(self.Yp, alpha=alpha)) / obs_count
         return ent_cost
 
     def _construct_other_reg_cost(self):
