@@ -35,18 +35,21 @@ def cat_entropy(p):
     row_ents = -T.sum((p * safe_log(p)), axis=1, keepdims=True)
     return row_ents
 
-def cat_prior_dir(p, alpha=0.1):
+def cat_prior_dir(p, alpha=2.0):
     """
     Log probability under a dirichlet prior, with dirichlet parameter alpha.
     """
-    log_prob = T.sum((1.0 - alpha) * safe_log(p))
+    log_prob = T.sum((alpha - 1.0) * safe_log(p))
     return log_prob
 
 def cat_prior_ent(p, ent_weight=1.0):
     """
     Log probability under an "entropy-type" prior, with some "weight".
+
+    The log probability here is (modulo an additive constant) equal to minus
+    the categorical entropy. I.e. lower entropy is more probable...
     """
-    log_prob = -cat_entropy * ent_weight
+    log_prob = -cat_entropy(p) * ent_weight
     return log_prob
 
 def binarize_data(X):
@@ -67,10 +70,30 @@ def one_hot(Yc, cat_dim=None):
     if cat_dim is not given, cat_dim is set to max(Yc) + 1
     """
     if cat_dim is None:
-        cat_dim = T.max(cat_dim) + 1
+        cat_dim = T.max(Yc) + 1
     ranges = T.shape_padleft(T.arange(cat_dim), Yc.ndim)
     Yoh = T.eq(ranges, T.shape_padright(Yc, 1))
     return Yoh
+
+def one_hot_np(Yc, cat_dim=None):
+    """
+    Given a numpy integer column vector Yc, generate a matrix Yoh in which
+    Yoh[i,:] is a one-hot vector -- Yoh[i,Yc[i]] = 1.0 and other Yoh[i,j] = 0
+    """
+    if cat_dim is None:
+        cat_dim = np.max(Yc) + 1
+    Yoh = np.zeros((Yc.size, cat_dim))
+    Yoh[np.arange(Yc.size),Yc.flatten()] = 1.0
+    return Yoh
+
+def binarize_data(X):
+    """
+    Make a sample of bernoulli variables with probabilities given by X.
+    """
+    X_shape = X.shape
+    probs = npr.rand(*X_shape)
+    X_binary = 1.0 * (probs < X)
+    return X_binary.astype(theano.config.floatX)
 
 
 #
@@ -125,17 +148,9 @@ class GITrip(object):
         self.rng = RandStream(rng.randint(100000))
         # setup the prior distribution over the categorical variable
         if params is None:
-            cat_prior = {'type': 'entropy', 'param': -1.0}
-            self.params = {'cat_prior': cat_prior}
+            self.params = {}
         else:
             self.params = params
-        self.cat_prior = params['cat_prior']
-        # check for a valid description of the desired categorical prior
-        assert('type' in self.cat_prior)
-        assert((self.cat_prior['type'] == 'entropy') or \
-               (self.cat_prior['type'] == 'dirichlet'))
-        if self.cat_prior['type'] == 'dirichlet':
-            assert(self.cat_prior['param'] > 0.0)
 
         # record the dimensionality of the data handled by this GITrip
         self.data_dim = data_dim
@@ -241,6 +256,10 @@ class GITrip(object):
             # inferred posteriors over the categorical variable of interest
             self.lam_ent = theano.shared(value=zero_ary, name='git_lam_ent')
             self.set_lam_ent(lam_ent=0.0)
+            # init shared var for weighting dirichlet regularization on the
+            # inferred posteriors over the categorical variable of interest
+            self.lam_dir = theano.shared(value=zero_ary, name='git_lam_dir')
+            self.set_lam_dir(lam_dir=0.0)
             # init shared var for controlling l2 regularization on params
             self.lam_l2w = theano.shared(value=zero_ary, name='git_lam_l2w')
             self.set_lam_l2w(lam_l2w=1e-3)
@@ -256,6 +275,7 @@ class GITrip(object):
             self.shared_param_dicts['git_lam_cat'] = self.lam_cat
             self.shared_param_dicts['git_lam_pea'] = self.lam_pea
             self.shared_param_dicts['git_lam_ent'] = self.lam_ent
+            self.shared_param_dicts['git_lam_dir'] = self.lam_dir
             self.shared_param_dicts['git_lam_l2w'] = self.lam_l2w
             self.shared_param_dicts['git_input_mask'] = self.input_mask
         else:
@@ -272,6 +292,7 @@ class GITrip(object):
             self.lam_cat = self.shared_param_dicts['git_lam_cat']
             self.lam_pea = self.shared_param_dicts['git_lam_pea']
             self.lam_ent = self.shared_param_dicts['git_lam_ent']
+            self.lam_dir = self.shared_param_dicts['git_lam_dir']
             self.lam_l2w = self.shared_param_dicts['git_lam_l2w']
             self.input_mask = self.shared_param_dicts['git_input_mask']
 
@@ -289,10 +310,12 @@ class GITrip(object):
         self.post_cat_cost = self.lam_cat[0] * self._construct_post_cat_cost()
         self.post_pea_cost = self.lam_pea[0] * self._construct_post_pea_cost()
         self.post_ent_cost = self.lam_ent[0] * self._construct_post_ent_cost()
+        self.post_dir_cost = self.lam_dir[0] * self._construct_post_dir_cost()
         self.other_reg_costs = self._construct_other_reg_cost()
         self.other_reg_cost = self.other_reg_costs[0]
         self.joint_cost = self.data_nll_cost + self.post_kld_cost + self.post_cat_cost + \
-                self.post_pea_cost + self.post_ent_cost + self.other_reg_cost
+                self.post_pea_cost + self.post_ent_cost + self.post_dir_cost + \
+                self.other_reg_cost
 
         # Initialize momentums for mini-batch SGD updates. All parameters need
         # to be safely nestled in their lists by now.
@@ -516,6 +539,15 @@ class GITrip(object):
         self.lam_ent.set_value(new_lam.astype(theano.config.floatX))
         return
 
+    def set_lam_dir(self, lam_dir=0.0):
+        """
+        Set the strength of dirichlet regularization on the categorical posterior.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_dir
+        self.lam_dir.set_value(new_lam.astype(theano.config.floatX))
+        return
+
     def set_lam_l2w(self, lam_l2w=1e-3):
         """
         Set the relative strength of l2 regularization on network params.
@@ -586,18 +618,19 @@ class GITrip(object):
 
     def _construct_post_ent_cost(self):
         """
-        Construct the entropy cost on the categorical posterior.
+        Construct the "entropy prior" cost on the categorical posterior.
         """
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
-        if self.cat_prior['type'] == 'entropy':
-            # use an "entropy" prior over the categorical predictions
-            ent_cost = self.cat_prior['param'] * \
-                       (T.sum(cat_entropy(self.Yp)) / obs_count)
-        else:
-            # use a dirichlet prior over the categorical predictions
-            alpha = self.cat_prior['param']
-            ent_cost = -T.sum(cat_prior_dir(self.Yp, alpha=alpha)) / obs_count
+        ent_cost = -T.sum(cat_prior_ent(self.Yp)) / obs_count
         return ent_cost
+
+    def _construct_post_dir_cost(self):
+        """
+        Construct the "dirichlet prior" cost on the categorical posterior.
+        """
+        obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        dir_cost = -T.sum(cat_prior_dir(self.Yp)) / obs_count
+        return dir_cost
 
     def _construct_other_reg_cost(self):
         """
@@ -618,14 +651,9 @@ class GITrip(object):
         """
         Construct theano function to train inferencer and generator jointly.
         """
-        #out_mu_sum = T.sum(self.IN.output_mu**2.0)
-        #out_sigma_sum = T.sum(self.IN.output_sigma**2.0)
         outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
                 self.post_cat_cost, self.post_pea_cost, self.post_ent_cost, \
-                self.other_reg_cost]
-                #, self.grad_sq_sum, self.other_reg_costs[1], \
-                #self.other_reg_costs[2], self.other_reg_costs[3], self.other_reg_costs[4], \
-                #out_mu_sum, out_sigma_sum]
+                self.post_dir_cost, self.other_reg_cost]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Yd ], \
                 outputs=outputs, updates=self.joint_updates)
         COMMENT="""
@@ -671,6 +699,52 @@ class GITrip(object):
             # get next data samples by transforming the prior-space points
             X_d = self.GN.transform_prior(XY_p)
         result = {"data samples": data_samples, "prior samples": prior_samples}
+        return result
+
+    def sample_synth_labels(self, X_d, Y_d, loop_iters=5, binarize=False):
+        """
+        Sample for several rounds through the I<->G loop, initialized with the
+        the "data variable" samples in X_d. Include label information in the
+        sampling process.
+
+        If Y_d[i] == 0, sample freely from the categorical posterior.
+        If Y_d[i] != 0, keep the categorical fixed to (Y_d[0] - 1).
+        """
+        # make a one-hot matrix for the labeled/unlabeled points, in which the
+        # first column is 1 if and only if that input is unlabeled
+        Yoh_extra_col = one_hot_np(Y_d, cat_dim=(self.label_dim+1))
+        Yoh = Yoh_extra_col[:,1:]
+        # make a mask that keeps "labeled" rows and drops "unlabeled" rows
+        row_mask_numpy_bs = (1.0 - Yoh_extra_col[:,0])
+        row_mask = row_mask_numpy_bs.reshape((Yoh.shape[0],1))
+        # run multiple times through the loop, keeping some labels fixed and
+        # letting others vary according to the categorical posteriors.
+        data_samples = []
+        prob_samples = []
+        label_samples = []
+        X_c = 0.0 * X_d
+        X_m = 0.0 * X_d
+        for i in range(loop_iters):
+            # record the data samples for this iteration
+            data_samples.append(1.0 * X_d)
+            # sample from their inferred posteriors
+            X_p = self.IN.sample_posterior(X_d, X_c, X_m)
+            Y_p = self.PN.sample_posterior(X_d)
+            # use given labels when available, otherwise use sampled labels
+            Y_prob = (row_mask * Yoh) + ((1.0 - row_mask) * Y_p)
+            # record the indices of the labels (shifted for semi-supervision)
+            Y_label = np.argmax(Y_prob, axis=1) + 1
+            Y_label.reshape((Y_label.size,1)) # reshape for numpy vector bs
+            # construct the joint categorical/continuous posterior sample
+            XY_p = np.hstack([Y_prob, X_p]).astype(theano.config.floatX)
+            # record the sampled label probabilities and one-hots
+            prob_samples.append(1.0 * Y_prob)
+            label_samples.append(Y_label.astype(np.int32))
+            # get next data samples by transforming the prior-space points
+            X_d = self.GN.transform_prior(XY_p)
+            if binarize:
+                X_d = binarize_data(X_d)
+        result = {"X_syn": data_samples, "Y_syn": label_samples, "Y_p": prob_samples}
         return result
 
     def classification_error(self, X_d, Y_d, samples=20):

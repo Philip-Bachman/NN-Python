@@ -64,6 +64,17 @@ def rand_sample(param_list):
     rand_val = new_list[0]
     return rand_val
 
+def one_hot_np(Yc, cat_dim=None):
+    """
+    Given a numpy integer column vector Yc, generate a matrix Yoh in which
+    Yoh[i,:] is a one-hot vector -- Yoh[i,Yc[i]] = 1.0 and other Yoh[i,j] = 0
+    """
+    if cat_dim is None:
+        cat_dim = np.max(Yc) + 1
+    Yoh = np.zeros((Yc.size, cat_dim))
+    Yoh[np.arange(Yc.size),Yc.flatten()] = 1.0
+    return Yoh
+
 ##########################
 ##########################
 ## TESTING FOR GITonGIP ##
@@ -75,21 +86,20 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     # Initialize a source of randomness
     rng = np.random.RandomState(rng_seed)
 
-    # Load some data to train/validate/test with
     sup_count = 100
+    # Load some data to train/validate/test with
     dataset = 'data/mnist.pkl.gz'
     datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
     Xtr_su = datasets[0][0].get_value(borrow=False)
-    Ytr_su = datasets[0][1].get_value(borrow=False)
+    Ytr_su = datasets[0][1].get_value(borrow=False).astype(np.int32)
     Xtr_un = datasets[1][0].get_value(borrow=False)
-    Ytr_un = datasets[1][1].get_value(borrow=False)
-    # get the unlabeled data
+    Ytr_un = datasets[1][1].get_value(borrow=False).astype(np.int32)
+    # get the joint labeled and unlabeled data
     Xtr_un = np.vstack([Xtr_su, Xtr_un]).astype(theano.config.floatX)
-    Ytr_un = np.vstack([Ytr_su[:,np.newaxis], Ytr_un[:,np.newaxis]]).astype(np.int32)
-    Ytr_un = 0 * Ytr_un
+    Ytr_un = np.vstack([Ytr_su[:,np.newaxis], Ytr_un[:,np.newaxis]])
     # get the labeled data
     Xtr_su = Xtr_su.astype(theano.config.floatX)
-    Ytr_su = Ytr_su[:,np.newaxis].astype(np.int32)
+    Ytr_su = Ytr_su[:,np.newaxis]
     # get observations and labels for the validation set
     Xva = datasets[2][0].get_value(borrow=False).astype(theano.config.floatX)
     Yva = datasets[2][1].get_value(borrow=False).astype(np.int32)
@@ -325,10 +335,10 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
             # do a minibatch update of the model, and compute some costs
             GIT.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
             GIT.set_lam_nll(1.0)
-            GIT.set_lam_kld((scale**2.0) * 1.0)
+            GIT.set_lam_kld(scale * 1.0)
             GIT.set_lam_cat(0.0)
             GIT.set_lam_pea(scale * lam_pea_git)
-            GIT.set_lam_ent((scale**2.0) * lam_ent_git)
+            GIT.set_lam_ent(scale * lam_ent_git)
             outputs = GOG.train_git(Xd_un, Xc_un, Xm_un, Yd_un)
             joint_cost = 1.0 * outputs[0]
             data_nll_cost = 1.0 * outputs[1]
@@ -350,7 +360,7 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
             GIT.set_lam_kld(0.0)
             GIT.set_lam_cat(scale * lam_cat_git)
             GIT.set_lam_pea(scale * lam_pea_git)
-            GIT.set_lam_ent((scale**2.0) * lam_ent_git)
+            GIT.set_lam_ent(0.0)
             outputs = GOG.train_git(Xd_su, Xc_su, Xm_su, Yd_su)
             joint_2 = 1.0 * outputs[0]
             data_nll_2 = 1.0 * outputs[1]
@@ -399,16 +409,16 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     dataset = 'data/mnist.pkl.gz'
     datasets = load_udm_ss(dataset, sup_count, rng, zero_mean=False)
     Xtr_su = datasets[0][0].get_value(borrow=False)
-    Ytr_su = datasets[0][1].get_value(borrow=False)
+    Ytr_su = datasets[0][1].get_value(borrow=False).astype(np.int32)
     Xtr_un = datasets[1][0].get_value(borrow=False)
-    Ytr_un = datasets[1][1].get_value(borrow=False)
-    # get the unlabeled data
+    Ytr_un = datasets[1][1].get_value(borrow=False).astype(np.int32)
+    # get the joint labeled and unlabeled data
     Xtr_un = np.vstack([Xtr_su, Xtr_un]).astype(theano.config.floatX)
-    Ytr_un = np.vstack([Ytr_su[:,np.newaxis], Ytr_un[:,np.newaxis]]).astype(np.int32)
-    Ytr_un = 0 * Ytr_un
+    Ytr_un = np.vstack([Ytr_su[:,np.newaxis], Ytr_un[:,np.newaxis]])
+    #Ytr_un = 0 * Ytr_un
     # get the labeled data
     Xtr_su = Xtr_su.astype(theano.config.floatX)
-    Ytr_su = Ytr_su[:,np.newaxis].astype(np.int32)
+    Ytr_su = Ytr_su[:,np.newaxis]
     # get observations and labels for the validation set
     Xva = datasets[2][0].get_value(borrow=False).astype(theano.config.floatX)
     Yva = datasets[2][1].get_value(borrow=False).astype(np.int32)
@@ -448,7 +458,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = softplus_actfun
-    in_params['init_scale'] = 2.0
+    in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
@@ -484,7 +494,6 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
 
     # Initialize the GITrip
     git_params = {}
-    git_params['cat_prior'] = hyper_params['cat_prior']
     GIT = GITrip(rng=rng, \
             Xd=Xd, Yd=Yd, Xc=Xc, Xm=Xm, \
             g_net=GN, i_net=IN, p_net=PN, \
@@ -503,7 +512,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     learn_rate = hyper_params['learn_rate']
     lam_cat = hyper_params['lam_cat']
     lam_pea = hyper_params['lam_pea']
-    lam_ent = hyper_params['lam_ent']
+    cat_prior = hyper_params['cat_prior']
     lam_l2w = hyper_params['lam_l2w']
     out_name = hyper_params['out_name']
 
@@ -513,15 +522,21 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     out_file.write("learn_rate: {0:.4f}\n".format(learn_rate))
     out_file.write("lam_pea: {0:.4f}\n".format(lam_pea))
     out_file.write("lam_cat: {0:.4f}\n".format(lam_cat))
-    out_file.write("lam_ent: {0:.4f}\n".format(lam_ent))
     out_file.write("lam_l2w: {0:.4f}\n".format(lam_l2w))
-    out_file.write("git_params: {0:s}\n".format(str(git_params)))
+    out_file.write("cat_prior: {0:s}\n".format(str(cat_prior)))
     out_file.flush()
 
     GIT.set_lam_l2w(lam_l2w)
     GIT.set_all_sgd_params(learn_rate=learn_rate, momentum=0.98)
     for i in range(num_updates):
-        scale = float(min(i+1, 75000)) / 75000.0
+        if i < 75000:
+            scale = float(i + 1) / 75000.0
+            lam_ent = -1.0
+            lam_dir = 0.0
+        else:
+            scale = 1.0
+            lam_ent = cat_prior['lam_ent']
+            lam_dir = cat_prior['lam_dir']
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.75
         # do a minibatch update using unlabeled data
@@ -537,8 +552,9 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             GIT.set_lam_nll(1.0)
             GIT.set_lam_kld(scale * 1.0)
             GIT.set_lam_cat(0.0)
-            GIT.set_lam_pea(scale * lam_pea)
-            GIT.set_lam_ent(scale * lam_ent)
+            GIT.set_lam_pea(lam_pea)
+            GIT.set_lam_ent(lam_ent)
+            GIT.set_lam_dir(lam_dir)
             outputs = GIT.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
             joint_cost = 1.0 * outputs[0]
             data_nll_cost = 1.0 * outputs[1]
@@ -546,7 +562,8 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             post_cat_cost = 1.0 * outputs[3]
             post_pea_cost = 1.0 * outputs[4]
             post_ent_cost = 1.0 * outputs[5]
-            other_reg_cost = 1.0 * outputs[6]
+            post_dir_cost = 1.0 * outputs[6]
+            other_reg_cost = 1.0 * outputs[7]
         # do another minibatch update incorporating label information
         if True:
             # get some data to train with
@@ -558,10 +575,11 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             # update only based on the label-based classification cost
             GIT.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
             GIT.set_lam_nll(0.0)
-            GIT.set_lam_kld(0.0)
-            GIT.set_lam_cat(scale * lam_cat)
-            GIT.set_lam_pea(scale * lam_pea)
+            GIT.set_lam_kld(0.1 + (0.9*scale))
+            GIT.set_lam_cat(lam_cat)
+            GIT.set_lam_pea(lam_pea)
             GIT.set_lam_ent(0.0)
+            GIT.set_lam_dir(0.0)
             outputs = GIT.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
             joint_2 = 1.0 * outputs[0]
             data_nll_2 = 1.0 * outputs[1]
@@ -572,8 +590,8 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             other_reg_cost = 1.0 * outputs[6]
         assert(not (np.isnan(joint_cost)))
         if ((i % 500) == 0):
-            o_str = "batch: {0:d}, joint_cost: {1:.4f}, nll: {2:.4f}, kld: {3:.4f}, cat: {4:.4f}, pea: {5:.4f}, ent: {6:.4f}, other_reg: {7:.4f}".format( \
-                    i, joint_cost, data_nll_cost, post_kld_cost, post_cat_cost, post_pea_cost, post_ent_cost, other_reg_cost)
+            o_str = "batch: {0:d}, joint_cost: {1:.4f}, nll: {2:.4f}, kld: {3:.4f}, cat: {4:.4f}, pea: {5:.4f}, ent: {6:.4f}, dir: {7:.4f}, other_reg: {8:.4f}".format( \
+                    i, joint_cost, data_nll_cost, post_kld_cost, post_cat_cost, post_pea_cost, post_ent_cost, post_dir_cost, other_reg_cost)
             print(o_str)
             out_file.write("{}\n".format(o_str))
             if ((i % 1000) == 0):
@@ -585,6 +603,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
                 out_file.write("{}\n".format(o_str))
             out_file.flush()
         if ((i % 5000) == 0):
+            # sample the VAE loop freely
             file_name = "GIT_SAMPLES_b{0:d}.png".format(i)
             va_idx = npr.randint(low=0,high=va_samples,size=(5,))
             Xd_samps = np.vstack([Xd_un[0:5,:], binarize_data(Xva[va_idx,:])])
@@ -592,6 +611,18 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             sample_lists = GIT.sample_git_from_data(Xd_samps, loop_iters=10)
             Xs = np.vstack(sample_lists["data samples"])
             Ys = GIT.class_probs(Xs)
+            Xs = mnist_prob_embed(Xs, Ys)
+            utils.visualize_samples(Xs, file_name)
+            # sample the VAE loop with some labels held fixed
+            file_name = "GIT_SYN_SAMPLES_b{0:d}.png".format(i)
+            Xd_samps = Xd_su[0:10,:]
+            Xd_samps = np.repeat(Xd_samps, 3, axis=0)
+            Yd_samps = Yd_su[0:10,:].reshape((10,1))
+            Yd_samps = np.repeat(Yd_samps, 3, axis=0)
+            SAMPS = GIT.sample_synth_labels(Xd_samps, Yd_samps, loop_iters=10, binarize=True)
+            Xs = np.vstack(SAMPS["X_syn"])
+            Ys = one_hot_np(np.vstack(SAMPS["Y_syn"]), cat_dim=11)
+            Ys = Ys[:,1:]
             Xs = mnist_prob_embed(Xs, Ys)
             utils.visualize_samples(Xs, file_name)
     print("TESTING COMPLETE!")
@@ -763,10 +794,10 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
             GIS.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
             GIS.set_pn_sgd_params(learn_rate=(scale*learn_rate_pn), momentum=0.98)
             GIS.set_lam_nll(1.0)
-            GIS.set_lam_kld(scale * 1.0)
+            GIS.set_lam_kld(0.01 + (0.99*scale))
             GIS.set_lam_cat(0.0)
-            GIS.set_lam_pea(scale * lam_pea)
-            GIS.set_lam_ent(scale * lam_ent)
+            GIS.set_lam_pea(lam_pea)
+            GIS.set_lam_ent(lam_ent)
             outputs = GIS.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
             joint_cost = 1.0 * outputs[0]
             data_nll_cost = 1.0 * outputs[1]
@@ -788,8 +819,8 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
             GIS.set_pn_sgd_params(learn_rate=(scale*learn_rate_pn), momentum=0.98)
             GIS.set_lam_nll(0.0)
             GIS.set_lam_kld(0.0)
-            GIS.set_lam_cat(scale * lam_cat)
-            GIS.set_lam_pea(scale * lam_pea)
+            GIS.set_lam_cat(lam_cat)
+            GIS.set_lam_pea(lam_pea)
             GIS.set_lam_ent(0.0)
             outputs = GIS.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
             post_cat_cost = 1.0 * outputs[3]
@@ -1081,15 +1112,14 @@ def multitest_gi_trip():
     Do random hyperparameter optimization.
     """
     sup_count = [600, 1000, 3000, 100]
-    num_updates = 600000
+    num_updates = 500000
     learn_rate = [ 0.004 ]
     lam_cat = [ 4.0 ]
     lam_pea = [ 4.0 ]
-    lam_ent = [ 1.0 ]
     lam_l2w = [1e-4]
-    cat_prior_1 = {'type': 'entropy', 'param': -1.0}
-    cat_prior_2 = {'type': 'dirichlet', 'param': 0.1}
-    cat_priors = [cat_prior_2, cat_prior_1]
+    cat_prior_1 = {'lam_ent': 0.0, 'lam_dir': -0.02}
+    cat_prior_2 = {'lam_ent': -1.0, 'lam_dir': 0.00}
+    cat_priors = [cat_prior_1, cat_prior_2]
     t_num = 0
     for sc in sup_count:
         for cp in cat_priors:
@@ -1100,7 +1130,6 @@ def multitest_gi_trip():
             hyper_params['learn_rate'] = rand_sample(learn_rate)
             hyper_params['lam_cat'] = rand_sample(lam_cat)
             hyper_params['lam_pea'] = rand_sample(lam_pea)
-            hyper_params['lam_ent'] = rand_sample(lam_ent)
             hyper_params['lam_l2w'] = rand_sample(lam_l2w)
             hyper_params['cat_prior'] = cp
             # run the test and record results
@@ -1113,8 +1142,8 @@ def multitest_gi_stack():
     Do random hyperparameter optimization.
     """
     sup_count = [600, 1000, 3000, 100]
-    num_updates = 600000
-    learn_rate = [ 0.004 ]
+    num_updates = 400000
+    learn_rate = [ 0.002 ]
     lam_cat = [ 4.0 ]
     lam_pea = [ 4.0 ]
     lam_ent = [ 0.0, 1.0 ]
