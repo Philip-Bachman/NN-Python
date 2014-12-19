@@ -37,7 +37,6 @@ class GenNet(object):
             hid_drop: drop rate to use on the hidden layer activations
                 -- note: vis_drop/hid_drop are optional, with defaults 0.0/0.0
             bias_noise: standard dev for noise on the biases of hidden layers
-            out_noise: standard dev for noise on the output of this net
             mlp_config: list of "layer descriptions"
             out_type: set this to "bernoulli" for generating outputs to match
                       bernoulli-valued observations and set it to "gaussian" to
@@ -79,11 +78,6 @@ class GenNet(object):
             self.bias_noise = self.params['bias_noise']
         else:
             self.bias_noise = 0.0
-        if 'out_noise' in self.params:
-            # Noise sigma for the output/observable layer
-            self.out_noise = self.params['out_noise']
-        else:
-            self.out_noise = 0.0
         if 'init_scale' in params:
             self.init_scale = params['init_scale']
         else:
@@ -158,10 +152,7 @@ class GenNet(object):
                 d_rate = self.vis_drop
             else:
                 d_rate = self.hid_drop
-            if last_layer:
-                b_noise = self.out_noise
-            else:
-                b_noise = self.bias_noise
+            b_noise = self.bias_noise
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -223,14 +214,14 @@ class GenNet(object):
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
         if self.out_type == 'bernoulli':
-            self.output = T.nnet.sigmoid(self.mlp_layers[-1].noisy_linear) * \
+            self.output = T.nnet.sigmoid(self.mlp_layers[-1].linear_output) * \
                     self.output_mask
             self.output_mu = self.output
             self.output_logvar = self.output
             self.output_sigma = self.output
         else:
-            self.output_mu = self.mlp_layers[-2].noisy_linear
-            self.output_logvar = self.mlp_layers[-1].noisy_linear
+            self.output_mu = self.mlp_layers[-1].linear_output
+            self.output_logvar = self.mlp_layers[-2].linear_output
             self.output_sigma = T.sqrt(T.exp(self.output_logvar))
             self.output = self._construct_post_samples() * self.output_mask
         self.out_dim = self.mlp_layers[-1].out_dim
@@ -349,12 +340,33 @@ class GenNet(object):
         """
         Compute negative log likelihood of the data in Xd, with respect to the
         output distributions currently at self.output_....
+
+        Compute log-prob for all entries in Xd.
         """
         if (self.out_type == 'bernoulli'):
             log_prob_cost = log_prob_bernoulli(Xd, self.output, mask=self.output_mask)
         else:
             log_prob_cost = log_prob_gaussian2(Xd, self.output_mu, \
                     les_logvars=self.output_logvar, mask=self.output_mask)
+        return log_prob_cost
+
+    def masked_log_prob(self, Xc=None, Xm=None):
+        """
+        Compute negative log likelihood of the data in Xc, with respect to the
+        output distributions currently at self.output_....
+
+        Select entries in Xd to compute log-prob for based on the mask Xm. When
+        Xm[i] == 1, don't measure NLL Xc[i]...
+        """
+        # to measure NLL for Xc[i] only when Xm[i] is 0, we need to make an
+        # inverse mask Xm_inv = 1 - X_m, because the masking in the log pdf
+        # functions measures NLL only for observations where the mask != 0.
+        Xm_inv = 1.0 - Xm
+        if (self.out_type == 'bernoulli'):
+            log_prob_cost = log_prob_bernoulli(Xc, self.output, mask=Xm_inv)
+        else:
+            log_prob_cost = log_prob_gaussian2(Xc, self.output_mu, \
+                    les_logvars=self.output_logvar, mask=Xm_inv)
         return log_prob_cost
 
     def shared_param_clone(self, rng=None, Xp=None):
@@ -417,7 +429,6 @@ if __name__=="__main__":
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.0
-    gn_params['out_noise'] = 0.0
     # Make the starter network
     gn_1 = GenNet(rng=rng, Xp=Xp_1, prior_sigma=5.0, \
             params=gn_params, shared_param_dicts=None)

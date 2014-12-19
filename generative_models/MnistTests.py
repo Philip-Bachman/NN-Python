@@ -136,7 +136,6 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     gn1_params['vis_drop'] = 0.0
     gn1_params['hid_drop'] = 0.0
     gn1_params['bias_noise'] = 0.1
-    gn1_params['out_noise'] = 0.0
     # choose some parameters for the continuous inferencer
     in1_params = {}
     shared_config = [data_dim, 600, 600]
@@ -180,7 +179,6 @@ def test_git_on_gip(hyper_params=None, rng_seed=1234):
     gn2_params['vis_drop'] = 0.0
     gn2_params['hid_drop'] = 0.0
     gn2_params['bias_noise'] = 0.1
-    gn2_params['out_noise'] = 0.0
     # choose some parameters for the continuous inferencer
     in2_params = {}
     shared_config = [prior_1_dim, 300]
@@ -415,7 +413,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     # get the joint labeled and unlabeled data
     Xtr_un = np.vstack([Xtr_su, Xtr_un]).astype(theano.config.floatX)
     Ytr_un = np.vstack([Ytr_su[:,np.newaxis], Ytr_un[:,np.newaxis]])
-    #Ytr_un = 0 * Ytr_un
+    Ytr_un = 0 * Ytr_un # KEEP CATS FIXED OR FREE? YES/NO?
     # get the labeled data
     Xtr_su = Xtr_su.astype(theano.config.floatX)
     Ytr_su = Ytr_su[:,np.newaxis]
@@ -449,7 +447,6 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
     shared_config = [data_dim, 600, 600]
@@ -464,7 +461,6 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.1
-    in_params['out_noise'] = 0.1
     # choose some parameters for the categorical inferencer
     pn_params = {}
     pc0 = [data_dim, 800, 800, label_dim]
@@ -550,7 +546,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             # do a minibatch update of the model, and compute some costs
             GIT.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
             GIT.set_lam_nll(1.0)
-            GIT.set_lam_kld(scale * 1.0)
+            GIT.set_lam_kld(0.1 + (0.9 * scale))
             GIT.set_lam_cat(0.0)
             GIT.set_lam_pea(lam_pea)
             GIT.set_lam_ent(lam_ent)
@@ -575,7 +571,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             # update only based on the label-based classification cost
             GIT.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
             GIT.set_lam_nll(0.0)
-            GIT.set_lam_kld(0.1 + (0.9*scale))
+            GIT.set_lam_kld(0.0)
             GIT.set_lam_cat(lam_cat)
             GIT.set_lam_pea(lam_pea)
             GIT.set_lam_ent(0.0)
@@ -604,27 +600,40 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             out_file.flush()
         if ((i % 5000) == 0):
             # sample the VAE loop freely
-            file_name = "GIT_SAMPLES_b{0:d}.png".format(i)
+            file_name = "GIT_100_CHAIN_SAMPLES_b{0:d}.png".format(i)
             va_idx = npr.randint(low=0,high=va_samples,size=(5,))
             Xd_samps = np.vstack([Xd_un[0:5,:], binarize_data(Xva[va_idx,:])])
             Xd_samps = np.repeat(Xd_samps, 3, axis=0)
-            sample_lists = GIT.sample_git_from_data(Xd_samps, loop_iters=10)
+            sample_lists = GIT.sample_git_from_data(Xd_samps, loop_iters=15)
             Xs = np.vstack(sample_lists["data samples"])
             Ys = GIT.class_probs(Xs)
             Xs = mnist_prob_embed(Xs, Ys)
-            utils.visualize_samples(Xs, file_name)
+            utils.visualize_samples(Xs, file_name, num_rows=15)
             # sample the VAE loop with some labels held fixed
-            file_name = "GIT_SYN_SAMPLES_b{0:d}.png".format(i)
+            file_name = "GIT_100_SYNTH_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = Xd_su[0:10,:]
             Xd_samps = np.repeat(Xd_samps, 3, axis=0)
             Yd_samps = Yd_su[0:10,:].reshape((10,1))
             Yd_samps = np.repeat(Yd_samps, 3, axis=0)
-            SAMPS = GIT.sample_synth_labels(Xd_samps, Yd_samps, loop_iters=10, binarize=True)
+            SAMPS = GIT.sample_synth_labels(Xd_samps, Yd_samps, loop_iters=15, binarize=True)
             Xs = np.vstack(SAMPS["X_syn"])
             Ys = one_hot_np(np.vstack(SAMPS["Y_syn"]), cat_dim=11)
             Ys = Ys[:,1:]
             Xs = mnist_prob_embed(Xs, Ys)
-            utils.visualize_samples(Xs, file_name)
+            utils.visualize_samples(Xs, file_name, num_rows=15)
+            # draw samples freely from the generative model's prior
+            file_name = "GIT_100_PRIOR_SAMPLES_b{0:d}.png".format(i)
+            Xs = GIT.sample_from_prior(20*15)
+            utils.visualize_samples(Xs, file_name, num_rows=15)
+            # draw categorical inferencer's weights
+            file_name = "GIT_100_PN_WEIGHTS_b{0:d}.png".format(i)
+            utils.visualize_net_layer(GIT.PN.proto_nets[0][0], file_name)
+            # draw continuous inferencer's weights
+            file_name = "GIT_100_IN_WEIGHTS_b{0:d}.png".format(i)
+            utils.visualize_net_layer(GIT.IN.shared_layers[0], file_name)
+            # draw generator net final layer weights
+            file_name = "GIT_100_GN_WEIGHTS_b{0:d}.png".format(i)
+            utils.visualize_net_layer(GIT.GN.mlp_layers[-1], file_name, use_transpose=True)
     print("TESTING COMPLETE!")
     out_file.close()
     return
@@ -684,7 +693,6 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
     shared_config = [data_dim, 600, 600]
@@ -699,7 +707,6 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.1
-    in_params['out_noise'] = 0.1
     # choose some parameters for the categorical inferencer
     pn_params = {}
     pc0 = [prior_dim, 800, 800, label_dim]
@@ -781,7 +788,7 @@ def test_gi_stack(hyper_params=None, sup_count=600, rng_seed=1234):
                 lam_ent = hyper_params['lam_ent']
             learn_rate_pn = learn_rate
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
+            learn_rate = learn_rate * 0.7
         # do a minibatch update using unlabeled data
         if True:
             # get some data to train with
@@ -893,7 +900,6 @@ def test_gc_pair():
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.1
     gn_params['activation'] = softplus_actfun
 
     # Symbolic input matrix to generator network
@@ -1023,7 +1029,6 @@ def test_gi_pair():
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.0
     # choose some parameters for the continuous inferencer
     in_params = {}
     shared_config = [data_dim, (200, 4)]
@@ -1111,7 +1116,7 @@ def multitest_gi_trip():
     """
     Do random hyperparameter optimization.
     """
-    sup_count = [600, 1000, 3000, 100]
+    sup_count = [100, 600, 1000, 3000]
     num_updates = 500000
     learn_rate = [ 0.004 ]
     lam_cat = [ 4.0 ]
@@ -1125,7 +1130,7 @@ def multitest_gi_trip():
         for cp in cat_priors:
             # select the hyperparameters for this test uniformly at random
             hyper_params = {}
-            hyper_params['out_name'] = "GIT_TEST_{0:d}.txt".format(t_num)
+            hyper_params['out_name'] = "GIT_100_TEST_{0:d}.txt".format(t_num)
             hyper_params['num_updates'] = num_updates
             hyper_params['learn_rate'] = rand_sample(learn_rate)
             hyper_params['lam_cat'] = rand_sample(lam_cat)
@@ -1143,7 +1148,7 @@ def multitest_gi_stack():
     """
     sup_count = [600, 1000, 3000, 100]
     num_updates = 400000
-    learn_rate = [ 0.002 ]
+    learn_rate = [ 0.004 ]
     lam_cat = [ 4.0 ]
     lam_pea = [ 4.0 ]
     lam_ent = [ 0.0, 1.0 ]

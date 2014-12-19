@@ -180,11 +180,22 @@ def visualize(EN, proto_key, layer_num, file_name):
     image.save(file_name)
     return
 
-def visualize_samples(X_samp, file_name):
+def visualize_net_layer(net_layer, file_name, use_transpose=False):
+    W = net_layer.W.get_value(borrow=True).T
+    if use_transpose:
+        W = net_layer.W.get_value(borrow=True)
+    size = int(np.sqrt(W.shape[1]))
+    # hist(W.flatten(),bins=50)
+    image = PIL.Image.fromarray(tile_raster_images(X=W, \
+            img_shape=(size, size), tile_shape=(10,W.shape[0]/10),tile_spacing=(1, 1)))
+    image.save(file_name)
+    return
+
+def visualize_samples(X_samp, file_name, num_rows=10):
     d = int(np.sqrt(X_samp.shape[1]))
     # hist(W.flatten(),bins=50)
     image = PIL.Image.fromarray(tile_raster_images(X=X_samp, img_shape=(d, d), \
-            tile_shape=(10,X_samp.shape[0]/10),tile_spacing=(1, 1)))
+            tile_shape=(num_rows,X_samp.shape[0]/num_rows),tile_spacing=(1, 1)))
     image.save(file_name)
     return
 

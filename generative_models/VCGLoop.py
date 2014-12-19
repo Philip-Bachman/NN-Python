@@ -108,6 +108,31 @@ def binarize_data(X):
     X_binary = 1.0 * (probs < X)
     return X_binary.astype(theano.config.floatX)
 
+def sample_masks(X, drop_prob=0.3):
+    """
+    Sample a binary mask to apply to the matrix X, with rate mask_prob.
+    """
+    probs = npr.rand(*X.shape)
+    mask = 1.0 * (probs > drop_prob)
+    return mask.astype(theano.config.floatX)
+
+def sample_patch_masks(X, im_shape, patch_shape):
+    """
+    Sample a random patch mask for each image in X.
+    """
+    obs_count = X.shape[0]
+    rs = patch_shape[0]
+    cs = patch_shape[1]
+    off_row = npr.randint(1,high=(im_shape[0]-rs-1), size=(obs_count,))
+    off_col = npr.randint(1,high=(im_shape[1]-cs-1), size=(obs_count,))
+    dummy = np.zeros(im_shape)
+    mask = np.zeros(X.shape)
+    for i in range(obs_count):
+        dummy = (0.0 * dummy) + 1.0
+        dummy[off_row[i]:(off_row[i]+rs), off_col[i]:(off_col[i]+cs)] = 0.0
+        mask[i,:] = dummy.ravel()
+    return mask.astype(theano.config.floatX)
+
 class VCGChain(object):
     """
     Controller for training a VAE using guidance from a classifier.
@@ -197,11 +222,17 @@ class VCGChain(object):
 
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         # init shared var for weighting nll of data given posterior sample
-        self.lam_nll = theano.shared(value=zero_ary, name='vcg_lam_nll')
-        self.set_lam_nll(lam_nll=1.0)
+        self.lam_chain_nll = theano.shared(value=zero_ary, name='vcg_lam_chain_nll')
+        self.set_lam_chain_nll(lam_chain_nll=1.0)
         # init shared var for weighting posterior KL-div from prior
-        self.lam_kld = theano.shared(value=zero_ary, name='vcg_lam_kld')
-        self.set_lam_kld(lam_kld=1.0)
+        self.lam_chain_kld = theano.shared(value=zero_ary, name='vcg_lam_chain_kld')
+        self.set_lam_chain_kld(lam_chain_kld=1.0)
+        # init shared var for weighting nll of data given posterior sample
+        self.lam_mask_nll = theano.shared(value=zero_ary, name='vcg_lam_mask_nll')
+        self.set_lam_mask_nll(lam_mask_nll=0.0)
+        # init shared var for weighting posterior KL-div from prior
+        self.lam_mask_kld = theano.shared(value=zero_ary, name='vcg_lam_mask_kld')
+        self.set_lam_mask_kld(lam_mask_kld=0.0)
         # init shared var for controlling l2 regularization on params
         self.lam_l2w = theano.shared(value=zero_ary, name='vcg_lam_l2w')
         self.set_lam_l2w(lam_l2w=1e-4)
@@ -255,13 +286,18 @@ class VCGChain(object):
                 self.disc_reg_cost
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
-        self.data_nll_cost = self.lam_nll[0] * \
-                self._construct_data_nll_cost(data_weight=0.9)
-        self.post_kld_cost = self.lam_kld[0] * \
-                self._construct_post_kld_cost(data_weight=0.9)
+        self.chain_nll_cost = self.lam_chain_nll[0] * \
+                self._construct_chain_nll_cost(data_weight=0.9)
+        self.chain_kld_cost = self.lam_chain_kld[0] * \
+                self._construct_chain_kld_cost(data_weight=0.9)
+        self.mask_nll_cost = self.lam_mask_nll[0] * \
+                self._construct_mask_nll_cost()
+        self.mask_kld_cost = self.lam_mask_kld[0] * \
+                self._construct_mask_kld_cost()
         self.other_reg_cost = self._construct_other_reg_cost()
-        self.gip_cost = self.disc_cost_gn + self.data_nll_cost + \
-                self.post_kld_cost + self.other_reg_cost
+        self.gip_cost = self.disc_cost_gn + self.chain_nll_cost + \
+                self.chain_kld_cost + self.mask_nll_cost + \
+                self.mask_kld_cost + self.other_reg_cost
         # compute total cost on the discriminator and VB generator/inferencer
         self.joint_cost = self.dn_cost + self.gip_cost
 
@@ -418,24 +454,44 @@ class VCGChain(object):
         self.dw_gn.set_value(new_dw_gn)
         return
 
-    def set_lam_nll(self, lam_nll=1.0):
+    def set_lam_chain_nll(self, lam_chain_nll=1.0):
         """
         Set weight for controlling the influence of the data likelihood.
         """
         zero_ary = np.zeros((1,))
-        new_lam = zero_ary + lam_nll
-        self.lam_nll.set_value(new_lam.astype(theano.config.floatX))
+        new_lam = zero_ary + lam_chain_nll
+        self.lam_chain_nll.set_value(new_lam.astype(theano.config.floatX))
         return
 
-    def set_lam_kld(self, lam_kld=1.0):
+    def set_lam_chain_kld(self, lam_chain_kld=1.0):
         """
         Set the strength of regularization on KL-divergence for continuous
         posterior variables. When set to 1.0, this reproduces the standard
         role of KL(posterior || prior) in variational learning.
         """
         zero_ary = np.zeros((1,))
-        new_lam = zero_ary + lam_kld
-        self.lam_kld.set_value(new_lam.astype(theano.config.floatX))
+        new_lam = zero_ary + lam_chain_kld
+        self.lam_chain_kld.set_value(new_lam.astype(theano.config.floatX))
+        return
+
+    def set_lam_mask_nll(self, lam_mask_nll=0.0):
+        """
+        Set weight for controlling the influence of the data likelihood.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_mask_nll
+        self.lam_mask_nll.set_value(new_lam.astype(theano.config.floatX))
+        return
+
+    def set_lam_mask_kld(self, lam_mask_kld=1.0):
+        """
+        Set the strength of regularization on KL-divergence for continuous
+        posterior variables. When set to 1.0, this reproduces the standard
+        role of KL(posterior || prior) in variational learning.
+        """
+        zero_ary = np.zeros((1,))
+        new_lam = zero_ary + lam_mask_kld
+        self.lam_mask_kld.set_value(new_lam.astype(theano.config.floatX))
         return
 
     def set_lam_l2w(self, lam_l2w=1e-3):
@@ -495,9 +551,12 @@ class VCGChain(object):
         gn_cost = self.dw_gn[0] * T.sum(gn_costs)
         return [dn_cost, gn_cost]
 
-    def _construct_data_nll_cost(self, data_weight=0.5):
+    def _construct_chain_nll_cost(self, data_weight=0.5):
         """
         Construct the negative log-likelihood part of cost to minimize.
+
+        This is for operation in "free chain" mode, where a seed point is used
+        to initialize a long(ish) running markov chain.
         """
         assert((data_weight > 0.0) and (data_weight < 1.0))
         nll_costs = []
@@ -515,9 +574,12 @@ class VCGChain(object):
         nll_cost = sum(nll_costs)
         return nll_cost
 
-    def _construct_post_kld_cost(self, data_weight=0.5):
+    def _construct_chain_kld_cost(self, data_weight=0.5):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
+
+        This is for operation in "free chain" mode, where a seed point is used
+        to initialize a long(ish) running markov chain.
         """
         assert((data_weight > 0.0) and (data_weight < 1.0))
         kld_costs = []
@@ -531,6 +593,38 @@ class VCGChain(object):
             else:
                 kld_costs.append(cost_1 * c)
         kld_cost = sum(kld_costs)
+        return kld_cost
+
+    def _construct_mask_nll_cost(self):
+        """
+        Construct the negative log-likelihood part of cost to minimize.
+
+        This is for "iterative reconstruction" when the seed input is subject
+        to partial masking.
+        """
+        nll_costs = []
+        for i in range(self.chain_len):
+            IN_i = self.IN_chain[i]
+            GN_i = self.GN_chain[i]
+            c = -T.sum(GN_i.masked_log_prob(Xc=self.Xc, Xm=self.Xm)) \
+                    / T.cast(self.Xc.shape[0], 'floatX')
+            nll_costs.append(c)
+        nll_cost = sum(nll_costs) / float(self.chain_len)
+        return nll_cost
+
+    def _construct_mask_kld_cost(self):
+        """
+        Construct the posterior KL-d from prior part of cost to minimize.
+
+        This is for "iterative reconstruction" when the seed input is subject
+        to partial masking.
+        """
+        kld_costs = []
+        for i in range(self.chain_len):
+            IN_i = self.IN_chain[i]
+            c = T.sum(IN_i.kld_cost) / T.cast(IN_i.Xd.shape[0], 'floatX')
+            kld_costs.append(c)
+        kld_cost = sum(kld_costs) / float(self.chain_len)
         return kld_cost
 
     def _construct_other_reg_cost(self):
@@ -547,8 +641,9 @@ class VCGChain(object):
         """
         Construct theano function to train generator and discriminator jointly.
         """
-        outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
-                self.disc_cost_gn, self.disc_cost_dn]
+        outputs = [self.joint_cost, self.chain_nll_cost, self.chain_kld_cost, \
+                self.mask_nll_cost, self.mask_kld_cost, self.disc_cost_gn, \
+                self.disc_cost_dn, self.other_reg_cost]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Xt ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
@@ -558,6 +653,15 @@ class VCGChain(object):
         #    max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
         #    print_output_file=True, assert_nb_all_strings=-1)
         return func
+
+    def sample_from_prior(self, samp_count):
+        """
+        Draw independent samples from the model's prior, using the gaussian
+        continuous prior of the underlying GenNet.
+        """
+        Zs = self.GN.sample_from_prior(samp_count).astype(theano.config.floatX)
+        Xs = self.GN.transform_prior(Zs)
+        return Xs
 
 if __name__=="__main__":
     import time
@@ -589,8 +693,11 @@ if __name__=="__main__":
     # get and set some basic dataset information
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
-    prior_dim = 50
+    batch_size = 100
+    prior_dim = 75
     prior_sigma = 1.0
+    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
+    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
 
     # Symbolic inputs
     Xd = T.matrix(name='Xd')
@@ -639,7 +746,6 @@ if __name__=="__main__":
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
-    in_params['out_noise'] = 0.1
     in_params['input_noise'] = 0.0
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
             prior_sigma=prior_sigma, params=in_params)
@@ -656,7 +762,6 @@ if __name__=="__main__":
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.1
     gn_params['out_type'] = 'bernoulli'
     gn_params['activation'] = softplus_actfun
     gn_params['init_scale'] = 1.0
@@ -664,58 +769,115 @@ if __name__=="__main__":
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, params=gn_params)
     GN.init_biases(0.0)
 
-
     ################################
     # Initialize the main VCGChain #
     ################################
     vcg_params = {}
     vcg_params['lam_l2d'] = 1e-2
     VCG = VCGChain(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
-                 g_net=GN, d_net=DN, chain_len=8, data_dim=784, \
-                 prior_dim=50, params=vcg_params)
+                 g_net=GN, d_net=DN, chain_len=8, data_dim=data_dim, \
+                 prior_dim=prior_dim, params=vcg_params)
     VCG.set_lam_l2w(1e-4)
 
     ###################################
     # TRAIN AS MARKOV CHAIN WITH BPTT #
     ###################################
     learn_rate = 0.0003
-    for i in range(750000):
+    for i in range(300000):
         scale = float(min((i+1), 20000)) / 20000.0
-        VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.95)
-        VCG.set_dn_sgd_params(learn_rate=(0.3*scale*learn_rate), momentum=0.95)
-        VCG.set_disc_weights(dweight_gn=10.0, dweight_dn=10.0)
-        VCG.set_lam_kld(scale * 1.0)
         if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.8
-            VCG.set_all_sgd_params(learn_rate=learn_rate, momentum=0.95)
-        # get some data to train with
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
-        Xd_batch = Xtr.take(tr_idx, axis=0)
-        Xc_batch = 0.0 * Xd_batch
-        Xm_batch = 0.0 * Xd_batch
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
-        Xt_batch = Xtr.take(tr_idx, axis=0)
-        # do a minibatch update of the model, and compute some costs
-        outputs = VCG.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
-        joint_cost = 1.0 * outputs[0]
-        data_nll_cost = 1.0 * outputs[1]
-        post_kld_cost = 1.0 * outputs[2]
-        disc_cost_gn = 1.0 * outputs[3]
-        disc_cost_dn = 1.0 * outputs[4]
+            learn_rate = learn_rate * 0.5
+        # do training for the free-running markov chain
+        if True:
+            VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
+            VCG.set_dn_sgd_params(learn_rate=(0.3*scale*learn_rate), momentum=0.98)
+            VCG.set_disc_weights(dweight_gn=10.0, dweight_dn=10.0)
+            VCG.set_lam_chain_nll(1.0)
+            VCG.set_lam_chain_kld(scale * 1.0)
+            VCG.set_lam_mask_nll(0.0)
+            VCG.set_lam_mask_kld(0.0)
+            # get some data to train with
+            tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
+            Xd_batch = Xtr.take(tr_idx, axis=0)
+            Xc_batch = 0.0 * Xd_batch
+            Xm_batch = 0.0 * Xd_batch
+            tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
+            Xt_batch = Xtr.take(tr_idx, axis=0)
+            # do a minibatch update of the model, and compute some costs
+            outputs = VCG.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
+            joint_cost_1 = 1.0 * outputs[0]
+            chain_nll_cost_1= 1.0 * outputs[1]
+            chain_kld_cost_1 = 1.0 * outputs[2]
+            mask_nll_cost_1 = 1.0 * outputs[3]
+            mask_kld_cost_1 = 1.0 * outputs[4]
+            disc_cost_gn_1 = 1.0 * outputs[5]
+            disc_cost_dn_1 = 1.0 * outputs[6]
+            other_reg_cost_1 = 1.0 * outputs[7]
+        if ((i % 4) == 0):
+            VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
+            VCG.set_dn_sgd_params(learn_rate=(0.3*scale*learn_rate), momentum=0.98)
+            VCG.set_disc_weights(dweight_gn=10.0, dweight_dn=10.0)
+            VCG.set_lam_chain_nll(0.0)
+            VCG.set_lam_chain_kld(0.0)
+            VCG.set_lam_mask_nll(1.0)
+            VCG.set_lam_mask_kld(scale * 1.0)
+            # get some data to train with
+            tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
+            Xd_batch = Xc_mean
+            Xc_batch = Xtr.take(tr_idx, axis=0)
+            Xm_rand = sample_masks(Xc_batch, drop_prob=0.4)
+            Xm_patch = sample_patch_masks(Xc_batch, (28,28), (9,9))
+            Xm_batch = Xm_rand * Xm_patch
+            tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
+            Xt_batch = Xtr.take(tr_idx, axis=0)
+            # do a minibatch update of the model, and compute some costs
+            outputs = VCG.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
+            joint_cost_2 = 1.0 * outputs[0]
+            chain_nll_cost_2 = 1.0 * outputs[1]
+            chain_kld_cost_2 = 1.0 * outputs[2]
+            mask_nll_cost_2 = 1.0 * outputs[3]
+            mask_kld_cost_2 = 1.0 * outputs[4]
+            disc_cost_gn_2 = 1.0 * outputs[5]
+            disc_cost_dn_2 = 1.0 * outputs[6]
+            other_reg_cost_2 = 1.0 * outputs[7]
         if ((i % 1000) == 0):
-            print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
-                    i, joint_cost, data_nll_cost, post_kld_cost, disc_cost_gn, disc_cost_dn))
+            print("batch: {0:d}, joint_cost: {1:.4f}, chain_nll_cost: {2:.4f}, chain_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
+                    i, joint_cost_1, chain_nll_cost_1, chain_kld_cost_1, disc_cost_gn_1, disc_cost_dn_1))
+            print("------ {0:d}, joint_cost: {1:.4f}, mask_nll_cost: {2:.4f}, mask_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
+                    i, joint_cost_2, mask_nll_cost_2, mask_kld_cost_2, disc_cost_gn_2, disc_cost_dn_2))
         if ((i % 2500) == 0):
+            tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
+            Xd_batch = Xtr.take(tr_idx, axis=0)
             # draw some chains of samples from the VAE loop
-            file_name = "VCG_SAMPLES_b{0:d}.png".format(i)
+            file_name = "VCG_CHAIN_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
-            sample_lists = VCG.GIP.sample_gil_from_data(Xd_samps, loop_iters=10)
+            sample_lists = VCG.GIP.sample_gil_from_data(Xd_samps, loop_iters=15)
             Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name)
+            utils.visualize_samples(Xs, file_name, num_rows=15)
+            # draw some masked chains of samples from the VAE loop
+            file_name = "VCG_MASK_SAMPLES_b{0:d}.png".format(i)
+            Xd_samps = np.repeat(Xc_mean[0:10,:], 3, axis=0)
+            Xc_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
+            Xm_rand = sample_masks(Xc_samps, drop_prob=0.4)
+            Xm_patch = sample_patch_masks(Xc_samps, (28,28), (9,9))
+            Xm_samps = Xm_rand * Xm_patch
+            sample_lists = VCG.GIP.sample_gil_from_data(Xd_samps, \
+                    X_c=Xc_samps, X_m=Xm_samps, loop_iters=15)
+            Xs = np.vstack(sample_lists["data samples"])
+            utils.visualize_samples(Xs, file_name, num_rows=15)
+            # draw some samples independently from the GenNet's prior
+            file_name = "VCG_PRIOR_SAMPLES_b{0:d}.png".format(i)
+            Xs = VCG.sample_from_prior(20*10)
+            utils.visualize_samples(Xs, file_name, num_rows=10)
             # draw discriminator network's weights
-            file_name = "VCG_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize(VCG.DN, 0, 0, file_name)
-
+            file_name = "VCG_DIS_WEIGHTS_b{0:d}.png".format(i)
+            utils.visualize_net_layer(VCG.DN.proto_nets[0][0], file_name)
+            # draw inference net first layer weights
+            file_name = "VCG_INF_WEIGHTS_b{0:d}.png".format(i)
+            utils.visualize_net_layer(VCG.IN.shared_layers[0], file_name)
+            # draw generator net final layer weights
+            file_name = "VCG_GEN_WEIGHTS_b{0:d}.png".format(i)
+            utils.visualize_net_layer(VCG.GN.mlp_layers[-1], file_name, use_transpose=True)
     print("TESTING COMPLETE!")
 
 

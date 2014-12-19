@@ -361,16 +361,20 @@ class GIPair(object):
             params=self.params, shared_param_dicts=self.shared_param_dicts)
         return clone_gip
 
-    def sample_gil_from_data(self, X_d, loop_iters=5):
+    def sample_gil_from_data(self, X_d, X_c=None, X_m=None, loop_iters=5):
         """
         Sample for several rounds through the I<->G loop, initialized with the
         the "data variable" samples in X_d.
         """
         data_samples = []
         prior_samples = []
-        X_c = 0.0 * X_d
-        X_m = 0.0 * X_d
+        if X_c is None:
+            X_c = 0.0 * X_d
+        if X_m is None:
+            X_m = 0.0 * X_d
         for i in range(loop_iters):
+            # apply mask, mixing foreground and background data
+            X_d = ((1.0 - X_m) * X_d) + (X_m * X_c)
             # record the data samples for this iteration
             data_samples.append(1.0 * X_d)
             # sample from their inferred posteriors
@@ -422,7 +426,6 @@ if __name__=="__main__":
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
-    gn_params['out_noise'] = 0.0
     # choose some parameters for the continuous inferencer
     in_params = {}
     shared_config = [data_dim, (200, 4)]

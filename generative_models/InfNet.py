@@ -44,7 +44,6 @@ class InfNet(object):
                 -- note: vis_drop/hid_drop are optional, with defaults 0.0/0.0
             input_noise: standard dev for noise on the input of this net
             bias_noise: standard dev for noise on the biases of hidden layers
-            out_noise: standard dev for noise on the output of this net
             shared_config: list of "layer descriptions" for shared part
             mu_config: list of "layer descriptions" for mu part
             sigma_config: list of "layer descriptions" for sigma part
@@ -88,11 +87,6 @@ class InfNet(object):
             self.bias_noise = params['bias_noise']
         else:
             self.bias_noise = 0.0
-        if 'out_noise' in self.params:
-            # noise sigma for the output/observable layer
-            self.out_noise = self.params['out_noise']
-        else:
-            self.out_noise = 0.0
         if 'init_scale' in params:
             self.init_scale = params['init_scale']
         else:
@@ -161,8 +155,6 @@ class InfNet(object):
             else:
                 i_noise = 0.0
                 b_noise = self.bias_noise
-                if last_layer:
-                    b_noise = self.out_noise
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #

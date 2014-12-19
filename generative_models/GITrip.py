@@ -747,6 +747,19 @@ class GITrip(object):
         result = {"X_syn": data_samples, "Y_syn": label_samples, "Y_p": prob_samples}
         return result
 
+    def sample_from_prior(self, samp_count):
+        """
+        Draw independent samples from the model's prior. Use the gaussian
+        continuous prior of the underlying GenNet, combined with uniform
+        samples for the categorical variable's prior.
+        """
+        Zs = self.GN.sample_from_prior(samp_count).astype(theano.config.floatX)
+        Zs = Zs[:,self.label_dim:]
+        Yc = npr.randint(0,high=self.label_dim,size=(samp_count,1)).astype(np.int32)
+        Ys = one_hot_np(Yc, cat_dim=self.label_dim).astype(theano.config.floatX)
+        Xs = self.GN.transform_prior(np.hstack([Ys, Zs]))
+        return Xs
+
     def classification_error(self, X_d, Y_d, samples=20):
         """
         Compute classification error for a set of observations X_d with known
