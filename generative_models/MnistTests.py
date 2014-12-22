@@ -440,7 +440,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     batch_size = 150
     # set parameters for the generator network
     gn_params = {}
-    gn_config = [(prior_dim + label_dim), 600, 600, data_dim]
+    gn_config = [(prior_dim + label_dim), 500, 500, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = softplus_actfun
     gn_params['lam_l2a'] = 1e-3
@@ -449,7 +449,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 600, 600]
+    shared_config = [data_dim, 500, 500]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
@@ -463,7 +463,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
     in_params['input_noise'] = 0.1
     # choose some parameters for the categorical inferencer
     pn_params = {}
-    pc0 = [data_dim, 800, 800, label_dim]
+    pc0 = [data_dim, (200, 4), (200, 4), label_dim]
     pn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -600,7 +600,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             out_file.flush()
         if ((i % 5000) == 0):
             # sample the VAE loop freely
-            file_name = "GIT_100_CHAIN_SAMPLES_b{0:d}.png".format(i)
+            file_name = "GIT_CHAIN_SAMPLES_b{0:d}.png".format(i)
             va_idx = npr.randint(low=0,high=va_samples,size=(5,))
             Xd_samps = np.vstack([Xd_un[0:5,:], binarize_data(Xva[va_idx,:])])
             Xd_samps = np.repeat(Xd_samps, 3, axis=0)
@@ -610,7 +610,7 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             Xs = mnist_prob_embed(Xs, Ys)
             utils.visualize_samples(Xs, file_name, num_rows=15)
             # sample the VAE loop with some labels held fixed
-            file_name = "GIT_100_SYNTH_SAMPLES_b{0:d}.png".format(i)
+            file_name = "GIT_SYNTH_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = Xd_su[0:10,:]
             Xd_samps = np.repeat(Xd_samps, 3, axis=0)
             Yd_samps = Yd_su[0:10,:].reshape((10,1))
@@ -622,17 +622,17 @@ def test_gi_trip(hyper_params=None, sup_count=600, rng_seed=1234):
             Xs = mnist_prob_embed(Xs, Ys)
             utils.visualize_samples(Xs, file_name, num_rows=15)
             # draw samples freely from the generative model's prior
-            file_name = "GIT_100_PRIOR_SAMPLES_b{0:d}.png".format(i)
+            file_name = "GIT_PRIOR_SAMPLES_b{0:d}.png".format(i)
             Xs = GIT.sample_from_prior(20*15)
             utils.visualize_samples(Xs, file_name, num_rows=15)
             # draw categorical inferencer's weights
-            file_name = "GIT_100_PN_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "GIT_PN_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_net_layer(GIT.PN.proto_nets[0][0], file_name)
             # draw continuous inferencer's weights
-            file_name = "GIT_100_IN_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "GIT_IN_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_net_layer(GIT.IN.shared_layers[0], file_name)
             # draw generator net final layer weights
-            file_name = "GIT_100_GN_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "GIT_GN_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_net_layer(GIT.GN.mlp_layers[-1], file_name, use_transpose=True)
     print("TESTING COMPLETE!")
     out_file.close()
@@ -894,20 +894,22 @@ def test_gc_pair():
 
     # Choose some parameters for the generative network
     gn_params = {}
-    gn_config = [200, 800, 800, 28*28]
+    gn_config = [200, 1000, 1000, 28*28]
     gn_params['mlp_config'] = gn_config
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
-    gn_params['activation'] = softplus_actfun
+    gn_params['out_type'] = 'bernoulli'
+    gn_params['activation'] = relu_actfun
+    gn_params['init_scale'] = 4.0
 
     # Symbolic input matrix to generator network
     Xp_sym = T.matrix(name='Xp_sym')
     Xd_sym = T.matrix(name='Xd_sym')
 
     # Initialize a generator network object
-    GN = GenNet(rng=rng, Xp=Xp_sym, prior_sigma=5.0, params=gn_params)
+    GN = GenNet(rng=rng, Xp=Xp_sym, prior_sigma=1.0, params=gn_params)
 
     ###############################
     # Setup discriminator network #
@@ -916,7 +918,7 @@ def test_gc_pair():
     # Set some reasonable mlp parameters
     dn_params = {}
     # Set up some proto-networks
-    pc0 = [28*28, (200, 4), (200, 4), 11]
+    pc0 = [28*28, (250, 4), (250, 4), 11]
     dn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
@@ -952,8 +954,8 @@ def test_gc_pair():
     GCP = GCPair(rng=rng, Xd=Xd_sym, Xp=Xp_sym, d_net=DN, g_net=GN, \
             data_dim=28*28, params=gcp_params)
 
-    gn_learn_rate = 0.04
-    dn_learn_rate = 0.02
+    gn_learn_rate = 0.02
+    dn_learn_rate = 0.01
     GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.98)
     GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.98)
     # Init generator's mean and covariance estimates with many samples
@@ -983,10 +985,10 @@ def test_gc_pair():
             dn_learn_rate = dn_learn_rate * 0.7
             GCP.set_gn_sgd_params(learn_rate=gn_learn_rate, momentum=0.98)
             GCP.set_dn_sgd_params(learn_rate=dn_learn_rate, momentum=0.98)
-        if ((i % 500) == 0):
+        if ((i % 1000) == 0):
             print("batch: {0:d}, mom_match_cost: {1:.4f}, disc_cost_gn: {2:.4f}, disc_cost_dn: {3:.4f}".format( \
                     i, mom_match_cost, disc_cost_gn, disc_cost_dn))
-        if ((i % 500) == 0):
+        if ((i % 5000) == 0):
             file_name = "GCP_SAMPLES_b{0:d}.png".format(i)
             Xs = GCP.sample_from_gn(200)
             utils.visualize_samples(Xs, file_name)
@@ -1018,58 +1020,58 @@ def test_gi_pair():
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 128
-    prior_sigma = 2.0
+    prior_dim = 64
+    prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
+    gn_config = [prior_dim, 1000, 1000, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = softplus_actfun
-    gn_params['lam_l2a'] = 1e-3
+    gn_params['activation'] = relu_actfun
+    gn_params['out_type'] = 'bernoulli'
+    gn_params['init_scale'] = 2.0
+    gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, (200, 4)]
-    top_config = [shared_config[-1], (200, 4), prior_dim]
+    shared_config = [data_dim, (250, 4), (250, 4)]
+    top_config = [shared_config[-1], (125, 4), prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['lam_l2a'] = 1e-3
+    in_params['init_scale'] = 2.0
+    in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
-    in_params['input_noise'] = 0.0
+    in_params['input_noise'] = 0.1
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
             params=in_params, shared_param_dicts=None)
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
             params=gn_params, shared_param_dicts=None)
     # Initialize biases in IN and GN
-    IN.init_biases(0.1)
+    IN.init_biases(0.0)
     GN.init_biases(0.1)
     # Initialize the GIPair
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
-    GIP.set_lam_l2w(1e-3)
-    # Set initial learning rate and basic SGD hyper parameters
-    learn_rate = 0.0025
-    GIP.set_all_sgd_params(learn_rate=learn_rate, momentum=0.8)
+    GIP.set_lam_l2w(1e-4)
 
+    # Set initial learning rate and basic SGD hyper parameters
+    learn_rate = 0.001
     for i in range(750000):
-        if (i < 100000):
-            scale = float(i) / 50000.0
-            if (i < 50000):
-                GIP.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.8)
-            GIP.set_lam_kld(lam_kld=scale)
+        scale = min(1.0, float(i) / 25000.0)
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.75
-            GIP.set_all_sgd_params(learn_rate=learn_rate, momentum=0.9)
+        GIP.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.95)
+        GIP.set_lam_nll(lam_nll=1.0)
+        GIP.set_lam_kld(lam_kld=(1.0 * scale))
         # get some data to train with
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
-        Xd_batch = binarize_data(Xtr.take(tr_idx, axis=0))
+        Xd_batch = Xtr.take(tr_idx, axis=0) #binarize_data(Xtr.take(tr_idx, axis=0))
         Xc_batch = 0.0 * Xd_batch
         Xm_batch = 0.0 * Xd_batch
         # do a minibatch update of the model, and compute some costs
@@ -1078,15 +1080,21 @@ def test_gi_pair():
         data_nll_cost = 1.0 * outputs[1]
         post_kld_cost = 1.0 * outputs[2]
         other_reg_cost = 1.0 * outputs[3]
-        if ((i % 500) == 0):
+        if ((i % 1000) == 0):
             print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
                     i, joint_cost, data_nll_cost, post_kld_cost, other_reg_cost))
-        if ((i % 2500) == 0):
-            file_name = "GIP_SAMPLES_b{0:d}.png".format(i)
+        if ((i % 5000) == 0):
+            file_name = "GIP_CHAIN_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
-            sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=10)
+            sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name)
+            utils.visualize_samples(Xs, file_name, num_rows=20)
+            # draw inference net first layer weights
+            file_name = "GIP_INF_WEIGHTS_b{0:d}.png".format(i)
+            utils.visualize_net_layer(GIP.IN.shared_layers[0], file_name)
+            # draw generator net final layer weights
+            file_name = "GIP_GEN_WEIGHTS_b{0:d}.png".format(i)
+            utils.visualize_net_layer(GIP.GN.mlp_layers[-1], file_name, use_transpose=True)
     print("TESTING COMPLETE!")
     return
 
@@ -1116,7 +1124,7 @@ def multitest_gi_trip():
     """
     Do random hyperparameter optimization.
     """
-    sup_count = [100, 600, 1000, 3000]
+    sup_count = [600, 100, 1000, 3000]
     num_updates = 500000
     learn_rate = [ 0.004 ]
     lam_cat = [ 4.0 ]
@@ -1130,7 +1138,7 @@ def multitest_gi_trip():
         for cp in cat_priors:
             # select the hyperparameters for this test uniformly at random
             hyper_params = {}
-            hyper_params['out_name'] = "GIT_100_TEST_{0:d}.txt".format(t_num)
+            hyper_params['out_name'] = "GIT_TEST_NEW_{0:d}.txt".format(t_num)
             hyper_params['num_updates'] = num_updates
             hyper_params['learn_rate'] = rand_sample(learn_rate)
             hyper_params['lam_cat'] = rand_sample(lam_cat)
@@ -1177,7 +1185,7 @@ def multitest_gi_stack():
 
 if __name__=="__main__":
     #test_gc_pair()
-    #test_gi_pair()
+    test_gi_pair()
     #multitest_git_on_gip()
-    multitest_gi_trip()
+    #multitest_gi_trip()
     #multitest_gi_stack()

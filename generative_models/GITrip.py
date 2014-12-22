@@ -360,16 +360,7 @@ class GITrip(object):
             self.joint_updates[var_mom] = self.gn_updates[var_mom]
             # make basic update to the var
             var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
-            # apply "norm clipping" if desired
-            if ((var in self.GN.clip_params) and \
-                    (var in self.GN.clip_norms) and \
-                    (self.GN.clip_params[var] == 1)):
-                clip_norm = self.GN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True) + 1e-4
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.gn_updates[var] = var_new * var_scale
-            else:
-                self.gn_updates[var] = var_new
+            self.gn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.gn_updates[var]
         ###################################################
@@ -390,16 +381,7 @@ class GITrip(object):
             self.joint_updates[var_mom] = self.in_updates[var_mom]
             # make basic update to the var
             var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
-            # apply "norm clipping" if desired
-            if ((var in self.IN.clip_params) and \
-                    (var in self.IN.clip_norms) and \
-                    (self.IN.clip_params[var] == 1)):
-                clip_norm = self.IN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True) + 1e-4
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.in_updates[var] = var_new * var_scale
-            else:
-                self.in_updates[var] = var_new
+            self.in_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.in_updates[var]
         ####################################################
@@ -420,16 +402,7 @@ class GITrip(object):
             self.joint_updates[var_mom] = self.pn_updates[var_mom]
             # make basic update to the var
             var_new = var - (self.lr_pn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
-            # apply "norm clipping" if desired
-            if ((var in self.PN.clip_params) and \
-                    (var in self.PN.clip_norms) and \
-                    (self.PN.clip_params[var] == 1)):
-                clip_norm = self.PN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True) + 1e-4
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.pn_updates[var] = var_new * var_scale
-            else:
-                self.pn_updates[var] = var_new
+            self.pn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.pn_updates[var]
         # Record the sum of squared gradients (for NaN checking)

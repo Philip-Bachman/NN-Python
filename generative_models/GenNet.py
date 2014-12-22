@@ -116,14 +116,9 @@ class GenNet(object):
         self.latent_dim = self.mlp_config[0]
         self.data_dim = self.mlp_config[-1]
 
-        # construct a mask for deciding which output dimensions to keep/ignore
-        row_mask = np.ones((self.data_dim,)).astype(theano.config.floatX)
-        self.output_mask = theano.shared(value=row_mask, name='gn_output_mask')
-
         ##########################
         # Initialize the network #
         ##########################
-        self.clip_params = {}
         self.mlp_layers = []
         self.logvar_layer = None
         layer_def_pairs = zip(self.mlp_config[:-1],self.mlp_config[1:])
@@ -194,18 +189,29 @@ class GenNet(object):
                         W=init_params['W'], b=init_params['b'], \
                         name=l_name, W_scale=self.init_scale))
             next_input = self.mlp_layers[-1].output
-            # Set the non-bias parameters of this layer to be clipped
-            self.clip_params[self.mlp_layers[-1].W] = 1
             # Acknowledge layer completion
             layer_num = layer_num + 1
 
-        # TODO: implement adjustable norm clipping
-        self.clip_norms = {}
+        # construct a mask for deciding which output dimensions to keep/ignore
+        if self.is_clone:
+            self.output_mask = self.shared_param_dicts[-1]['output_mask']
+            self.output_bias = self.shared_param_dicts[-1]['output_bias']
+        else:
+            row_mask = np.ones((self.data_dim,)).astype(theano.config.floatX)
+            self.output_mask = theano.shared(value=row_mask, name='gn_output_mask')
+            row_mask = 0.0 * row_mask
+            self.output_bias = theano.shared(value=row_mask, name='gn_output_bias')
+            op_dict = {'output_mask': self.output_mask, \
+                       'output_bias': self.output_bias}
+            self.shared_param_dicts.append(op_dict)
 
         # Mash all the parameters together, into a list.
         self.mlp_params = []
         for layer in self.mlp_layers:
             self.mlp_params.extend(layer.params)
+        # add the output bias vector to the param list
+        self.mlp_params.append(self.output_bias)
+
 
         # The output of this generator network is given by the noisy output
         # of its final layer. We will keep a running estimate of the mean and
@@ -214,13 +220,13 @@ class GenNet(object):
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
         if self.out_type == 'bernoulli':
-            self.output = T.nnet.sigmoid(self.mlp_layers[-1].linear_output) * \
-                    self.output_mask
+            self.output = (T.nnet.sigmoid(self.mlp_layers[-1].linear_output + self.output_bias) * \
+                    self.output_mask)
             self.output_mu = self.output
             self.output_logvar = self.output
             self.output_sigma = self.output
         else:
-            self.output_mu = self.mlp_layers[-1].linear_output
+            self.output_mu = self.mlp_layers[-1].linear_output + self.output_bias
             self.output_logvar = self.mlp_layers[-2].linear_output
             self.output_sigma = T.sqrt(T.exp(self.output_logvar))
             self.output = self._construct_post_samples() * self.output_mask

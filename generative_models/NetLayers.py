@@ -159,7 +159,7 @@ class HiddenLayer(object):
         if W is None:
             if self.pool_size <= 10000:
                 # Generate random initial filters in a typical way
-                W_init = 0.02 * np.asarray(rng.normal( \
+                W_init = 0.01 * np.asarray(rng.normal( \
                           size=(self.in_dim, self.filt_count)), \
                           dtype=theano.config.floatX)
             else:
@@ -169,7 +169,7 @@ class HiddenLayer(object):
                 filters = []
                 f_size = (self.in_dim, 1)
                 for g_num in range(self.pool_count):
-                    g_filt = 0.02 * rng.normal(size=f_size)
+                    g_filt = 0.01 * rng.normal(size=f_size)
                     for f_num in range(self.pool_size):
                         f_filt = g_filt + 0.005 * rng.normal(size=f_size)
                         filters.append(f_filt)

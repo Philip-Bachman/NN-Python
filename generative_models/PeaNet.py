@@ -143,7 +143,6 @@ class PeaNet(object):
         ########################################
         # Initialize all of the proto-networks #
         ########################################
-        self.clip_params = {}
         self.proto_nets = []
         # Construct the proto-networks from which to generate spawn-sembles
         for (pn_num, proto_config) in enumerate(self.proto_configs):
@@ -195,8 +194,6 @@ class PeaNet(object):
                             name=pnl_name, W_scale=self.init_scale)
                     proto_net.append(new_layer)
                 next_input = proto_net[-1].output
-                # Set the non-bias parameters of this layer to be clipped
-                self.clip_params[proto_net[-1].W] = 1
                 layer_num = layer_num + 1
             # Add this network to the list of proto-networks, and add its
             # param dict to the list of pro-net param dicts, if not a clone
@@ -241,9 +238,6 @@ class PeaNet(object):
                 layer_num = layer_num + 1
             # Add this network to the list of spawn-networks
             self.spawn_nets.append(spawn_net)
-
-        # TODO: implement adjustable norm clipping
-        self.clip_norms = {}
 
         # Mash all the parameters together, into a list. Also make a list
         # comprising only parameters located in final/classification layers

@@ -118,7 +118,6 @@ class InfNet(object):
         #########################################
         # Initialize the shared part of network #
         #########################################
-        self.clip_params = {}
         self.shared_layers = []
         layer_def_pairs = zip(self.shared_config[:-1],self.shared_config[1:])
         layer_num = 0
@@ -179,8 +178,6 @@ class InfNet(object):
                         name=l_name, W_scale=self.init_scale)
                 self.shared_layers.append(new_layer)
             next_input = self.shared_layers[-1].output
-            # Set the non-bias parameters of this layer to be clipped
-            self.clip_params[self.shared_layers[-1].W] = 1
             # Acknowledge layer completion
             layer_num = layer_num + 1
         #####################################
@@ -237,8 +234,6 @@ class InfNet(object):
                         name=l_name, W_scale=self.init_scale)
                 self.mu_layers.append(new_layer)
             next_input = self.mu_layers[-1].output
-            # Set the non-bias parameters of this layer to be clipped
-            self.clip_params[self.mu_layers[-1].W] = 1
             # Acknowledge layer completion
             layer_num = layer_num + 1
         ########################################
@@ -295,13 +290,8 @@ class InfNet(object):
                         name=l_name, W_scale=self.init_scale)
                 self.sigma_layers.append(new_layer)
             next_input = self.sigma_layers[-1].output
-            # Set the non-bias parameters of this layer to be clipped
-            self.clip_params[self.sigma_layers[-1].W] = 1
             # Acknowledge layer completion
             layer_num = layer_num + 1
-
-        # TODO: implement adjustable norm clipping
-        self.clip_norms = {}
 
         # Mash all the parameters together, into a list.
         self.mlp_params = []

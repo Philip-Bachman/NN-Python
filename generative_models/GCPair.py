@@ -251,16 +251,7 @@ class GCPair(object):
             self.joint_updates[var_mom] = self.dn_updates[var_mom]
             # make basic update to the var
             var_new = var - (self.lr_dn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
-            # apply "norm clipping" if desired
-            if ((var in self.DN.clip_params) and \
-                    (var in self.DN.clip_norms) and \
-                    (self.DN.clip_params[var] == 1)):
-                clip_norm = self.DN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.dn_updates[var] = var_new * var_scale
-            else:
-                self.dn_updates[var] = var_new
+            self.dn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.dn_updates[var]
         ########################################################
@@ -287,16 +278,7 @@ class GCPair(object):
             self.joint_updates[var_mom] = self.gn_updates[var_mom]
             # make basic update to the var
             var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
-            # apply "norm clipping" if desired
-            if ((var in self.GN.clip_params) and \
-                    (var in self.GN.clip_norms) and \
-                    (self.GN.clip_params[var] == 1)):
-                clip_norm = self.GN.clip_norms[var]
-                var_norms = T.sum(var_new**2.0, axis=1, keepdims=True)
-                var_scale = T.clip(T.sqrt(clip_norm / var_norms), 0., 1.)
-                self.gn_updates[var] = var_new * var_scale
-            else:
-                self.gn_updates[var] = var_new
+            self.gn_updates[var] = var_new
             # add this var's update to the joint updates too
             self.joint_updates[var] = self.gn_updates[var]
 
@@ -394,7 +376,7 @@ class GCPair(object):
             # Compute gn cost based only on predictions for noise
             gn_pred_count = self.In.size
             #dnl_gn_cost = hinge_loss(noise_preds, 0.0) / gn_pred_count
-            dnl_gn_cost = ulh_loss(noise_preds, 0.0) / gn_pred_count
+            dnl_gn_cost = ulh_loss(noise_preds, Yt=0.0, delta=0.5) / gn_pred_count
             dn_costs.append(dnl_dn_cost)
             gn_costs.append(dnl_gn_cost)
         dn_cost = self.dw_dn[0] * T.sum(dn_costs)
