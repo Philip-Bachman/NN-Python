@@ -6,6 +6,7 @@
 import numpy as np
 import numpy.random as npr
 from collections import OrderedDict
+import cPickle
 
 # theano business
 import theano
@@ -400,35 +401,119 @@ class InfNet(object):
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
+    def save_to_file(self, f_name=None):
+        """
+        Dump important stuff to a Python pickle, so that we can reload this
+        model later. We'll pickle everything required to create a clone of
+        this model given the pickle and the rng/Xd params to the cloning
+        function: "InfNet.shared_param_clone()".
+        """
+        assert(not (f_name is None))
+        f_handle = file(f_name, 'wb')
+        # dump the "simple" python value in self.prior_sigma
+        cPickle.dump(self.prior_sigma, f_handle, protocol=-1)
+        # dump the dict self.params, which just holds "simple" python values
+        cPickle.dump(self.params, f_handle, protocol=-1)
+        # make a copy of self.shared_param_dicts, with numpy arrays in place
+        # of the theano shared variables
+        numpy_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
+        for layer_group in ['shared', 'mu', 'sigma']:
+            for shared_dict in self.shared_param_dicts[layer_group]:
+                numpy_dict = {}
+                for key in shared_dict:
+                    numpy_dict[key] = shared_dict[key].get_value(borrow=False)
+                numpy_param_dicts[layer_group].append(numpy_dict)
+        # dump the numpy version of self.shared_param_dicts
+        cPickle.dump(numpy_param_dicts, f_handle, protocol=-1)
+        f_handle.close()
+        return
+
+def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None):
+    """
+    Load a clone of some previously trained model.
+    """
+    assert(not (f_name is None))
+    pickle_file = open(f_name)
+    self_dot_prior_sigma = cPickle.load(pickle_file)
+    self_dot_params = cPickle.load(pickle_file)
+    self_dot_numpy_param_dicts = cPickle.load(pickle_file)
+    self_dot_shared_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
+    for layer_group in ['shared', 'mu', 'sigma']:
+        for numpy_dict in self_dot_numpy_param_dicts[layer_group]:
+            shared_dict = {}
+            for key in numpy_dict:
+                val = numpy_dict[key].astype(theano.config.floatX)
+                shared_dict[key] = theano.shared(val)
+            self_dot_shared_param_dicts[layer_group].append(shared_dict)
+    # now, create a PeaNet with the configuration we just unpickled
+    clone_net = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
+            prior_sigma=self_dot_prior_sigma, params=self_dot_params, \
+            shared_param_dicts=self_dot_shared_param_dicts)
+    return clone_net
+
 if __name__=="__main__":
-    # Do basic testing, to make sure classes aren't completely broken.
-    Xc = T.matrix('CONTROL_INPUT')
-    Xm = T.matrix('MASK_INPUT')
-    Xd_1 = T.matrix('DATA_INPUT_1')
+    # TEST CODE FOR MODEL SAVING AND LOADING
+    from load_data import load_udm, load_udm_ss, load_mnist
+    from NetLayers import relu_actfun, softplus_actfun, \
+                          safe_softmax, safe_log
+    
+    # Simple test code, to check that everything is basically functional.
+    print("TESTING...")
+
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
-    # Choose some parameters for the generative network
+
+    # Load some data to train/validate/test with
+    dataset = 'data/mnist.pkl.gz'
+    datasets = load_udm(dataset, zero_mean=False)
+    Xtr = datasets[0][0]
+    Xtr = Xtr.get_value(borrow=False)
+    Xva = datasets[1][0]
+    Xva = Xva.get_value(borrow=False)
+    print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
+
+    # get and set some basic dataset information
+    tr_samples = Xtr.shape[0]
+    data_dim = Xtr.shape[1]
+    batch_size = 128
+    prior_dim = 50
+    prior_sigma = 1.0
+    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
+    Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
+    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
+
+    # Symbolic inputs
+    Xd = T.matrix(name='Xd')
+    Xc = T.matrix(name='Xc')
+    Xm = T.matrix(name='Xm')
+    Xt = T.matrix(name='Xt')
+    Xp = T.matrix(name='Xp')
+
+    ############################
+    # Setup inferencer network #
+    ############################
+    # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [28*28, 500]
-    gauss_config = [shared_config[-1], 500, 100]
-    mu_config = gauss_config
-    sigma_config = gauss_config
+    shared_config = [data_dim, (200, 4), (200, 4)]
+    top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
-    in_params['mu_config'] = mu_config
-    in_params['sigma_config'] = sigma_config
-    in_params['lam_l2a'] = 1e-3
+    in_params['mu_config'] = top_config
+    in_params['sigma_config'] = top_config
+    in_params['activation'] = softplus_actfun
+    in_params['init_scale'] = 2.0
+    in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.0
+    in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
-    # Make the starter network
-    in_1 = InfNet(rng=rng, Xd=Xd_1, Xc=Xc, Xm=Xm, prior_sigma=5.0, \
-            params=in_params, shared_param_dicts=None)
-    # Make a clone of the network with a different symbolic input
-    Xd_2 = T.matrix('DATA_INPUT_2')
-    in_2 = InfNet(rng=rng, Xd=Xd_2, Xc=Xc, Xm=Xm, prior_sigma=5.0, \
-            params=in_params, shared_param_dicts=in_1.shared_param_dicts)
-    # Explicitly construct a clone via the helper function
-    Xd_3 = T.matrix('DATA_INPUT_3')
-    in_3 = in_1.shared_param_clone(rng=rng, Xd=Xd_3, Xc=Xc, Xm=Xm)
-    print("TESTING COMPLETE")
+    IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
+            prior_sigma=prior_sigma, params=in_params)
+    IN.init_biases(0.0)
+
+    pkl_file_name = "TEST_PKL_FILE.pkl"
+    print("Saving model:")
+    IN.save_to_file(f_name=pkl_file_name)
+    print("Loading model:")
+    IN_clone = load_infnet_from_file(f_name=pkl_file_name, rng=rng, \
+            Xd=Xd, Xc=Xc, Xm=Xm)
+    print("DONE!")

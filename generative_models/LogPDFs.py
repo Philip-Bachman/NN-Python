@@ -50,11 +50,13 @@ def log_prob_bernoulli(p_true, p_approx, mask=None):
     row_log_probs = T.sum((log_prob_01 * mask), axis=1, keepdims=True)
     return row_log_probs
 
+#logpxz = -0.5*np.log(2 * np.pi) - log_sigma_decoder - (0.5 * ((x - mu_decoder) / T.exp(log_sigma_decoder))**2)
+
 def log_prob_gaussian(mu_true, mu_approx, les_sigmas=1.0, mask=None):
     """
     Compute log probability of some continuous variables with values given
     by mu_true, w.r.t. gaussian distributions with means given by mu_approx
-    and standard deviations given by le_sigma. We assume isotropy.
+    and standard deviations given by les_sigmas.
     """
     if mask is None:
         mask = T.ones((1, mu_approx.shape[1]))
@@ -67,12 +69,13 @@ def log_prob_gaussian2(mu_true, mu_approx, les_logvars=1.0, mask=None):
     """
     Compute log probability of some continuous variables with values given
     by mu_true, w.r.t. gaussian distributions with means given by mu_approx
-    and standard deviations given by le_sigma. We assume isotropy.
+    and log variances given by les_logvars.
     """
     if mask is None:
         mask = T.ones((1, mu_approx.shape[1]))
-    ind_log_probs = C - (les_logvars/2.0)  - \
-            ((mu_true-mu_approx)**2.0 / (2.0 * T.exp(les_logvars)))
+    log_sigmas = les_logvars / 2.0
+    ind_log_probs = C - log_sigmas  - \
+            (0.5 * ((mu_true - mu_approx) / T.exp(log_sigmas))**2.0)
     row_log_probs = T.sum((ind_log_probs * mask), axis=1, keepdims=True)
     return row_log_probs
 

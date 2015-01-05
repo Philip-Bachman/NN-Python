@@ -5,6 +5,7 @@
 # basic python
 import numpy as np
 import numpy.random as npr
+import cPickle
 from collections import OrderedDict
 
 # theano business
@@ -226,9 +227,11 @@ class GenNet(object):
             self.output_logvar = self.output
             self.output_sigma = self.output
         else:
-            self.output_mu = self.mlp_layers[-1].linear_output + self.output_bias
-            self.output_logvar = self.mlp_layers[-2].linear_output
-            self.output_sigma = T.sqrt(T.exp(self.output_logvar))
+            #self.output_mu = self.mlp_layers[-1].linear_output + self.output_bias
+            self.output_mu = T.nnet.sigmoid(self.mlp_layers[-1].linear_output) + self.output_bias
+            # WE BOUND LOG VARIANCE -- TO KEEP SIGMA BOUNDED AWAY FROM 0...
+            self.output_logvar = 6.0 * T.tanh(self.mlp_layers[-2].linear_output / 6.0)
+            self.output_sigma = T.exp(0.5 * self.output_logvar)
             self.output = self._construct_post_samples() * self.output_mask
         self.out_dim = self.mlp_layers[-1].out_dim
         C_init = np.zeros((self.out_dim,self.out_dim)).astype(theano.config.floatX)
@@ -309,9 +312,16 @@ class GenNet(object):
         """
         Initialize the biases in all hidden layers to some constant.
         """
-        for layer in self.mlp_layers[:-1]:
-            b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
-            layer.b.set_value(b_vec)
+        if (self.out_type == 'bernoulli'):
+            # Always start with 0 bias on the pre-sigmoid output
+            for layer in self.mlp_layers[:-1]:
+                b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
+                layer.b.set_value(b_vec)
+        else:
+            # Always start with 0 bias on the output mean and log-variance
+            for layer in self.mlp_layers[:-2]:
+                b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
+                layer.b.set_value(b_vec)
         return
 
     def init_moments(self, X_noise):
@@ -388,57 +398,114 @@ class GenNet(object):
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
-#############################################
-# HELPER FUNCTION FOR 1st/2nd ORDER MOMENTS #
-#############################################
+    def save_to_file(self, f_name=None):
+        """
+        Dump important stuff to a Python pickle, so that we can reload this
+        model later. We'll pickle everything required to create a clone of
+        this model given the pickle and the rng/Xd params to the cloning
+        function: "GenNet.shared_param_clone()".
+        """
+        assert(not (f_name is None))
+        f_handle = file(f_name, 'wb')
+        # dump the "simple" python value in self.prior_sigma
+        cPickle.dump(self.prior_sigma, f_handle, protocol=-1)
+        # dump the dict self.params, which just holds "simple" python values
+        cPickle.dump(self.params, f_handle, protocol=-1)
+        # make a copy of self.shared_param_dicts, with numpy arrays in place
+        # of the theano shared variables
+        numpy_param_dicts = []
+        for shared_dict in self.shared_param_dicts:
+            numpy_dict = {}
+            for key in shared_dict:
+                numpy_dict[key] = shared_dict[key].get_value(borrow=False)
+            numpy_param_dicts.append(numpy_dict)
+        # dump the numpy version of self.shared_param_dicts
+        cPickle.dump(numpy_param_dicts, f_handle, protocol=-1)
+        f_handle.close()
+        return
 
-def projected_moments(X, P, ary_type=None):
+def load_gennet_from_file(f_name=None, rng=None, Xp=None):
     """
-    Compute 1st/2nd-order moments after linear transform.
-
-    Return type is always a numpy array. Inputs should both be of the same
-    type, which can be either numpy array or theano shared variable.
+    Load a clone of some previously trained model.
     """
-    assert(not (ary_type is None))
-    assert((ary_type == 'theano') or (ary_type == 'numpy'))
-    proj_mean = None
-    proj_cov = None
-    if ary_type == 'theano':
-        Xp = T.dot(X, P)
-        Xp_mean = T.mean(Xp, axis=0)
-        Xp_centered = Xp - Xp_mean
-        Xp_cov = T.dot(Xp_centered.T, Xp_centered) / T.cast(Xp.shape[0], 'floatX')
-        proj_mean = Xp_mean.eval()
-        proj_cov = Xp_cov.eval()
-    else:
-        Xp = np.dot(X, P)
-        Xp_mean = np.mean(Xp, axis=0)
-        Xp_centered = Xp - Xp_mean
-        Xp_cov = np.dot(Xp_centered.T, Xp_centered) / Xp.shape[0]
-        proj_mean = Xp_mean
-        proj_cov = Xp_cov
-    return [proj_mean, proj_cov]
-
-
+    assert(not (f_name is None))
+    pickle_file = open(f_name)
+    self_dot_prior_sigma = cPickle.load(pickle_file)
+    self_dot_params = cPickle.load(pickle_file)
+    self_dot_numpy_param_dicts = cPickle.load(pickle_file)
+    self_dot_shared_param_dicts = []
+    for numpy_dict in self_dot_numpy_param_dicts:
+        shared_dict = {}
+        for key in numpy_dict:
+            val = numpy_dict[key].astype(theano.config.floatX)
+            shared_dict[key] = theano.shared(val)
+        self_dot_shared_param_dicts.append(shared_dict)
+    # now, create a PeaNet with the configuration we just unpickled
+    clone_net = GenNet(rng=rng, Xp=Xp, \
+            prior_sigma=self_dot_prior_sigma, params=self_dot_params, \
+            shared_param_dicts=self_dot_shared_param_dicts)
+    return clone_net
 
 
 if __name__=="__main__":
-    # Do basic testing, to make sure classes aren't completely broken.
-    Xp_1 = T.matrix('INPUT_1')
+    # TEST CODE FOR MODEL SAVING AND LOADING
+    from load_data import load_udm, load_udm_ss, load_mnist
+    from NetLayers import relu_actfun, softplus_actfun, \
+                          safe_softmax, safe_log
+    
+    # Simple test code, to check that everything is basically functional.
+    print("TESTING...")
+
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
+
+    # Load some data to train/validate/test with
+    dataset = 'data/mnist.pkl.gz'
+    datasets = load_udm(dataset, zero_mean=False)
+    Xtr = datasets[0][0]
+    Xtr = Xtr.get_value(borrow=False)
+    Xva = datasets[1][0]
+    Xva = Xva.get_value(borrow=False)
+    print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
+
+    # get and set some basic dataset information
+    tr_samples = Xtr.shape[0]
+    data_dim = Xtr.shape[1]
+    batch_size = 128
+    prior_dim = 50
+    prior_sigma = 1.0
+    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
+    Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
+    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
+
+    # Symbolic inputs
+    Xd = T.matrix(name='Xd')
+    Xc = T.matrix(name='Xc')
+    Xm = T.matrix(name='Xm')
+    Xt = T.matrix(name='Xt')
+    Xp = T.matrix(name='Xp')
+
+    ###########################
+    # Setup generator network #
+    ###########################
     # Choose some parameters for the generative network
     gn_params = {}
-    gn_config = [100, 500, 500, 28*28]
+    gn_config = [prior_dim, 800, 800, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['lam_l2a'] = 1e-3
+    gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.0
-    # Make the starter network
-    gn_1 = GenNet(rng=rng, Xp=Xp_1, prior_sigma=5.0, \
-            params=gn_params, shared_param_dicts=None)
-    # Make a clone of the network with a different symbolic input
-    Xp_2 = T.matrix('INPUT_2')
-    gn_2 = gn_1.shared_param_clone(rng=rng, Xp=Xp_2)
-    print("TESTING COMPLETE")
+    gn_params['bias_noise'] = 0.1
+    gn_params['out_type'] = 'bernoulli'
+    gn_params['activation'] = relu_actfun
+    gn_params['init_scale'] = 2.0
+    # Initialize a generator network object
+    GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, params=gn_params)
+    GN.init_biases(0.1)
+
+    pkl_file_name = "TEST_PKL_FILE.pkl"
+    print("Saving model:")
+    GN.save_to_file(f_name=pkl_file_name)
+    print("Loading model:")
+    GN_clone = load_gennet_from_file(f_name=pkl_file_name, rng=rng, Xp=Xp)
+    print("DONE!")

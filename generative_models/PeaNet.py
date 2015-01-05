@@ -6,6 +6,7 @@ import numpy as np
 import numpy.random as npr
 import theano
 import theano.tensor as T
+import cPickle
 #from theano.tensor.shared_randomstreams import RandomStreams as RandStream
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
@@ -102,6 +103,7 @@ class PeaNet(object):
         assert(not (params is None))
         assert(len(params['proto_configs']) == 1) # permit only one proto-net
         assert(len(params['spawn_configs']) <= 2) # use one or two spawn nets
+        assert(len(params['spawn_configs']) > 0)
         self.Xd = Xd # symbolic input to this computation graph
         self.params = params
         lam_l2a = params['lam_l2a']
@@ -408,15 +410,116 @@ class PeaNet(object):
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
+    def save_to_file(self, f_name=None):
+        """
+        Dump important stuff to a Python pickle, so that we can reload this
+        model later. We'll pickle everything required to create a clone of
+        this model given the pickle and the rng/Xd params to the cloning
+        function: "PeaNet.shared_param_clone()".
+        """
+        assert(not (f_name is None))
+        f_handle = file(f_name, 'wb')
+        # dump the dict self.params, which just holds "simple" python values
+        cPickle.dump(self.params, f_handle, protocol=-1)
+        # make a copy of self.shared_param_dicts, with numpy arrays in place
+        # of the theano shared variables
+        numpy_param_dicts = []
+        for shared_dict in self.shared_param_dicts:
+            numpy_dict = {}
+            for key in shared_dict:
+                numpy_dict[key] = shared_dict[key].get_value(borrow=False)
+            numpy_param_dicts.append(numpy_dict)
+        # dump the numpy version of self.shared_param_dicts
+        cPickle.dump(numpy_param_dicts, f_handle, protocol=-1)
+        f_handle.close()
+        return
+
+def load_peanet_from_file(f_name=None, rng=None, Xd=None):
+    """
+    Load a clone of some previously trained model.
+    """
+    assert(not (f_name is None))
+    pickle_file = open(f_name)
+    self_dot_params = cPickle.load(pickle_file)
+    self_dot_numpy_param_dicts = cPickle.load(pickle_file)
+    self_dot_shared_param_dicts = []
+    for numpy_dict in self_dot_numpy_param_dicts:
+        shared_dict = {}
+        for key in numpy_dict:
+            val = numpy_dict[key].astype(theano.config.floatX)
+            shared_dict[key] = theano.shared(val)
+        self_dot_shared_param_dicts.append(shared_dict)
+    # now, create a PeaNet with the configuration we just unpickled
+    clone_net = PeaNet(rng=rng, Xd=Xd, params=self_dot_params, \
+            shared_param_dicts=self_dot_shared_param_dicts)
+    return clone_net
 
 
 
+if __name__ == "__main__":
+    # TEST CODE FOR MODEL SAVING AND LOADING
+    from load_data import load_udm, load_udm_ss, load_mnist
+    from NetLayers import relu_actfun, softplus_actfun, \
+                          safe_softmax, safe_log
+    
+    # Simple test code, to check that everything is basically functional.
+    print("TESTING...")
 
+    # Initialize a source of randomness
+    rng = np.random.RandomState(1234)
 
+    # Load some data to train/validate/test with
+    dataset = 'data/mnist.pkl.gz'
+    datasets = load_udm(dataset, zero_mean=False)
+    Xtr = datasets[0][0]
+    Xtr = Xtr.get_value(borrow=False)
+    Xva = datasets[1][0]
+    Xva = Xva.get_value(borrow=False)
+    print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
 
+    # get and set some basic dataset information
+    tr_samples = Xtr.shape[0]
+    data_dim = Xtr.shape[1]
+    batch_size = 128
+    prior_dim = 50
+    prior_sigma = 1.0
+    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
+    Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
+    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
 
+    # Symbolic inputs
+    Xd = T.matrix(name='Xd')
 
+    ###############################
+    # Setup discriminator network #
+    ###############################
+    # Set some reasonable mlp parameters
+    dn_params = {}
+    # Set up some proto-networks
+    pc0 = [data_dim, (250, 4), (250, 4), 10]
+    dn_params['proto_configs'] = [pc0]
+    # Set up some spawn networks
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    dn_params['spawn_configs'] = [sc0]
+    dn_params['spawn_weights'] = [1.0]
+    # Set remaining params
+    dn_params['ear_type'] = 2
+    dn_params['ear_lam'] = 0.0
+    dn_params['lam_l2a'] = 1e-2
+    dn_params['vis_drop'] = 0.2
+    dn_params['hid_drop'] = 0.5
+    dn_params['init_scale'] = 2.0
+    # Initialize a network object to use as the discriminator
+    DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
+    DN.init_biases(0.0)
 
+    pkl_file_name = "TEST_PKL_FILE.pkl"
+    print("Saving model:")
+    DN.save_to_file(f_name=pkl_file_name)
+    print("Loading model:")
+    DN_clone = load_peanet_from_file(f_name=pkl_file_name, rng=rng, Xd=Xd)
+    print("DONE!")
 
 ##############
 # EYE BUFFER #

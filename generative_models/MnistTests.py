@@ -7,9 +7,9 @@ import utils as utils
 from load_data import load_udm, load_udm_ss, load_mnist
 from PeaNet import PeaNet
 from InfNet import InfNet
-from GenNet import GenNet, projected_moments
+from GenNet import GenNet
 from GIPair import GIPair
-from GCPair import GCPair
+from GCPair import GCPair, projected_moments
 from GIStack import GIStack
 from GITrip import GITrip
 from GITonGIP import GITonGIP

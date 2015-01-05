@@ -15,7 +15,38 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, safe_log, softplus_actfun
-from GenNet import projected_moments
+
+
+#############################################
+# HELPER FUNCTION FOR 1st/2nd ORDER MOMENTS #
+#############################################
+
+def projected_moments(X, P, ary_type=None):
+    """
+    Compute 1st/2nd-order moments after linear transform.
+
+    Return type is always a numpy array. Inputs should both be of the same
+    type, which can be either numpy array or theano shared variable.
+    """
+    assert(not (ary_type is None))
+    assert((ary_type == 'theano') or (ary_type == 'numpy'))
+    proj_mean = None
+    proj_cov = None
+    if ary_type == 'theano':
+        Xp = T.dot(X, P)
+        Xp_mean = T.mean(Xp, axis=0)
+        Xp_centered = Xp - Xp_mean
+        Xp_cov = T.dot(Xp_centered.T, Xp_centered) / T.cast(Xp.shape[0], 'floatX')
+        proj_mean = Xp_mean.eval()
+        proj_cov = Xp_cov.eval()
+    else:
+        Xp = np.dot(X, P)
+        Xp_mean = np.mean(Xp, axis=0)
+        Xp_centered = Xp - Xp_mean
+        Xp_cov = np.dot(Xp_centered.T, Xp_centered) / Xp.shape[0]
+        proj_mean = Xp_mean
+        proj_cov = Xp_cov
+    return [proj_mean, proj_cov]
 
 #############################
 # SOME HANDY LOSS FUNCTIONS #
