@@ -92,6 +92,16 @@ class InfNet(object):
             self.init_scale = params['init_scale']
         else:
             self.init_scale = 1.0
+        if 'encoder' in params:
+            self.encoder = params['encoder']
+            self.use_encoder = True
+            self.Xc_encoded = self.encoder(self.Xc)
+            self.Xd_encoded = self.encoder(self.Xd)
+        else:
+            self.encoder = lambda x: x
+            self.use_encoder = False
+            self.Xc_encoded = self.encoder(self.Xc)
+            self.Xd_encoded = self.encoder(self.Xd)
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
@@ -124,8 +134,12 @@ class InfNet(object):
         layer_num = 0
         # Construct input by combining data input and control input, taking
         # unmasked values from data input and others from the control input
-        next_input = ((1.0 - self.Xm) * self.Xd) + \
+        masked_input = ((1.0 - self.Xm) * self.Xd) + \
                 (self.Xm * self.Xc)
+        if self.use_encoder:
+            next_input = self.encoder(masked_input)
+        else:
+            next_input = masked_input
         for in_def, out_def in layer_def_pairs:
             first_layer = (layer_num == 0)
             last_layer = (layer_num == (len(layer_def_pairs) - 1))
@@ -155,6 +169,8 @@ class InfNet(object):
             else:
                 i_noise = 0.0
                 b_noise = self.bias_noise
+            # set in-bound weights to have norm self.init_scale
+            i_scale = (100.0 / np.sqrt(in_dim)) * self.init_scale
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -163,7 +179,7 @@ class InfNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name, W_scale=self.init_scale)
+                        name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
                 self.shared_param_dicts['shared'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
@@ -176,7 +192,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=self.init_scale)
+                        name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
             next_input = self.shared_layers[-1].output
             # Acknowledge layer completion
@@ -211,6 +227,8 @@ class InfNet(object):
             d_rate = self.hid_drop
             i_noise = 0.0
             b_noise = self.bias_noise
+            # set in-bound weights to have norm self.init_scale
+            i_scale = (100.0 / np.sqrt(in_dim)) * self.init_scale
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -219,7 +237,7 @@ class InfNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name, W_scale=self.init_scale)
+                        name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
                 self.shared_param_dicts['mu'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
@@ -232,7 +250,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=self.init_scale)
+                        name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
             next_input = self.mu_layers[-1].output
             # Acknowledge layer completion
@@ -267,6 +285,11 @@ class InfNet(object):
             d_rate = self.hid_drop
             i_noise = 0.0
             b_noise = self.bias_noise
+            # set in-bound weights to have norm self.init_scale
+            i_scale = (100.0 / np.sqrt(in_dim)) * self.init_scale
+            if last_layer:
+                # set in-bound weights for logvar predictions to 0
+                i_scale = 0.0
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -275,7 +298,7 @@ class InfNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name, W_scale=self.init_scale)
+                        name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
                 self.shared_param_dicts['sigma'].append({'W': new_layer.W, 'b': new_layer.b})
             else:
@@ -288,7 +311,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=self.init_scale)
+                        name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
             next_input = self.sigma_layers[-1].output
             # Acknowledge layer completion

@@ -106,6 +106,9 @@ class GITonGIP(object):
             data_dim=None, prior_1_dim=None, prior_2_dim=None, \
             label_dim=None, batch_size=None, \
             params=None, shared_param_dicts=None):
+        # TODO: refactor for use with "encoded" inferencer/generator
+        assert(not (gip_vae.IN.use_encoder or gip_vae.GN.use_encoder))
+
         # setup a rng for this GITrip
         self.rng = RandStream(rng.randint(100000))
         # record the symbolic variables that will provide inputs to the

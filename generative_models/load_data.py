@@ -1,4 +1,5 @@
 import numpy as np
+import numpy.random as npr
 import cPickle
 import gzip
 import os
@@ -162,3 +163,57 @@ def load_udm(dataset, as_shared=True, zero_mean=True):
             (test_set_x, test_set_y)]
     return rval
 
+def load_svhn(tr_file, te_file, ex_file=None, ex_count=None):
+    """
+    Loads the full SVHN train/test sets and an additional number of randomly
+    selected examples from the "extra set".
+    """
+    # load the training set as a numpy arrays
+    pickle_file = open(tr_file)
+    data_dict = cPickle.load(pickle_file)
+    Xtr = data_dict['X'].astype(theano.config.floatX)
+    Ytr = data_dict['y'].astype(np.int32) + 1
+    Xtr_vec = np.zeros((Xtr.shape[3], 32*32*3)).astype(theano.config.floatX)
+    for i in range(Xtr.shape[3]):
+        c_pix = 32*32
+        for c in range(3):
+            Xtr_vec[i,c*c_pix:((c+1)*c_pix)] = \
+                    Xtr[:,:,c,i].reshape((32*32,))
+    Xtr = Xtr_vec
+    pickle_file.close()
+    # load the test set as numpy arrays
+    pickle_file = open(te_file)
+    data_dict = cPickle.load(pickle_file)
+    Xte = data_dict['X'].astype(theano.config.floatX)
+    Yte = data_dict['y'].astype(np.int32) + 1
+    Xte_vec = np.zeros((Xte.shape[3], 32*32*3)).astype(theano.config.floatX)
+    for i in range(Xte.shape[3]):
+        c_pix = 32*32
+        for c in range(3):
+            Xte_vec[i,c*c_pix:((c+1)*c_pix)] = \
+                    Xte[:,:,c,i].reshape((32*32,))
+    Xte = Xte_vec
+    pickle_file.close()
+    if ex_file is None:
+        Xex = None
+    else:
+        # load the extra digit examples and only keep a random subset
+        pickle_file = open(ex_file)
+        data_dict = cPickle.load(pickle_file)
+        ex_full_size = data_dict['X'].shape[3]
+        idx = npr.randint(low=0, high=ex_full_size, size=(ex_count))
+        Xex = data_dict['X'].take(idx, axis=3).astype(theano.config.floatX)
+        Xex_vec = np.zeros((Xex.shape[3], 32*32*3)).astype(theano.config.floatX)
+        for i in range(Xex.shape[3]):
+            c_pix = 32*32
+            for c in range(3):
+                Xex_vec[i,c*c_pix:((c+1)*c_pix)] = \
+                        Xex[:,:,c,i].reshape((32*32,))
+        Xex = Xex_vec
+        pickle_file.close()
+
+    # package data up for easy returnage
+    data_dict = {'Xtr': Xtr, 'Ytr': Ytr, \
+                 'Xte': Xte, 'Yte': Yte, \
+                 'Xex': Xex}
+    return data_dict

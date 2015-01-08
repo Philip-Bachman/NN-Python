@@ -32,6 +32,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # phil's sweetness
 from NetLayers import safe_log, safe_softmax
 from PeaNet import PeaNet
+from DKCode import get_adam_updates, get_adadelta_updates
 
 ######################################################
 # HELPER FUNCTIONS FOR PEAR AND CLASSIFICATION COSTS #
@@ -187,8 +188,10 @@ class PeaNetSeq(object):
         # shared var learning rate for the base network
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         self.lr_pn = theano.shared(value=zero_ary, name='pnseq_lr_pn')
-        # shared var momentum parameter for the base network
-        self.mo_pn = theano.shared(value=zero_ary, name='pnseq_mo_pn')
+        # shared var momentum parameters for the base network
+        self.mom_1 = theano.shared(value=zero_ary, name='pnseq_mom_1')
+        self.mom_2 = theano.shared(value=zero_ary, name='pnseq_mom_2')
+        self.it_count = theano.shared(value=zero_ary, name='pnseq_it_count')
         # init parameters for controlling learning dynamics
         self.set_pn_sgd_params()
         # init shared var for weighting PEA cost on supervised inputs
@@ -222,30 +225,17 @@ class PeaNetSeq(object):
         self.joint_cost = self.pea_cost + self.ent_cost + self.class_cost + \
                 self.other_reg_cost
 
-        # Initialize momentums for mini-batch SGD updates. All parameters need
-        # to be safely nestled in their lists by now.
-        self.pn_moms = OrderedDict()
-        for p in self.mlp_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.pn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-
-        # Construct the updates for the parameters of the main PeaNet
-        self.pn_updates = OrderedDict()
         ######################################################
         # Construct updates for the shared PeaNet parameters #
         ######################################################
-        for var in self.mlp_params:
-            # these updates are for trainable params in the base net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.joint_cost, var).clip(-1.0,1.0)
-            # get the momentum for this var
-            var_mom = self.pn_moms[var]
-            # update the momentum for this var using its grad
-            self.pn_updates[var_mom] = (self.mo_pn[0] * var_mom) + \
-                    ((1.0 - self.mo_pn[0]) * (var_grad**2.0))
-            # make basic update to the var
-            var_new = var - (self.lr_pn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
-            self.pn_updates[var] = var_new
+        self.mlp_grads = OrderedDict()
+        for p in self.mlp_params:
+            self.mlp_grads[p] = T.grad(self.joint_cost, p).clip(-1.0,1.0)
+        # Construct the updates for the generator and inferencer networks
+        self.mlp_updates = get_adam_updates(params=self.mlp_params, \
+                grads=self.mlp_grads, alpha=self.lr_pn, \
+                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                mom2_init=1e-3, smoothing=1e-8)
 
         # Construct a function for training the base network to minimize the
         # sequential PEAR cost
@@ -255,15 +245,17 @@ class PeaNetSeq(object):
                 outputs=self.PN.output_proto)
         return
 
-    def set_pn_sgd_params(self, learn_rate=0.02, momentum=0.9):
+    def set_pn_sgd_params(self, lr_pn=0.01, mom_1=0.9, mom_2=0.999):
         """
-        Set learning rate and momentum parameter for base network updates.
+        Set learning rate and momentum parameters for base network updates.
         """
         zero_ary = np.zeros((1,))
-        new_lr = zero_ary + learn_rate
+        new_lr = zero_ary + lr_pn
         self.lr_pn.set_value(new_lr.astype(theano.config.floatX))
-        new_mo = zero_ary + momentum
-        self.mo_pn.set_value(new_mo.astype(theano.config.floatX))
+        new_mom_1 = zero_ary + mom_1
+        self.mom_1.set_value(new_mom_1.astype(theano.config.floatX))
+        new_mom_2 = zero_ary + mom_2
+        self.mom_2.set_value(new_mom_2.astype(theano.config.floatX))
         return
 
     def set_lam_pea_su(self, lam_pea_su=1.0):
@@ -286,7 +278,7 @@ class PeaNetSeq(object):
 
     def set_lam_ent(self, lam_ent=1.0):
         """
-        Set weight for the classification cost on supervised inputs.
+        Set weight for the entropy cost on unsupervised inputs.
         """
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_ent
@@ -401,7 +393,7 @@ class PeaNetSeq(object):
                 self.ent_cost, self.other_reg_cost]
         func = theano.function(inputs=self.seq_inputs, \
                 outputs=outputs, \
-                updates=self.pn_updates)
+                updates=self.mlp_updates)
         return func
 
     def classification_error(self, X_d, Y_d):
@@ -420,6 +412,11 @@ class PeaNetSeq(object):
         # compute the classification error for points with valid labels
         err_rate = np.sum(((Y_d != Y_c) * Y_mask)) / np.sum(Y_mask)
         return err_rate
+
+def zmuv(X, axis=1):
+    X = X - np.mean(X, axis=axis, keepdims=True)
+    X = X / np.std(X, axis=axis, keepdims=True)
+    return X
 
 if __name__=="__main__":
     import utils as utils
@@ -448,6 +445,10 @@ if __name__=="__main__":
     Xva = datasets[2][0].get_value(borrow=False).astype(theano.config.floatX)
     Yva = datasets[2][1].get_value(borrow=False).astype(np.int32)
     Yva = Yva[:,np.newaxis] # numpy is dumb
+    # set observations to zero mean and unit variance
+    #Xtr_su = zmuv(Xtr_su, axis=1)
+    #Xtr_un = zmuv(Xtr_un, axis=1)
+    #Xva = zmuv(Xva, axis=1)
     # get size information for the data
     un_samples = Xtr_un.shape[0]
     su_samples = Xtr_su.shape[0]
@@ -490,15 +491,14 @@ if __name__=="__main__":
     PNS.set_lam_ent(0.0)
     PNS.set_lam_l2w(1e-5)
 
-    learn_rate = 0.06
-    lam_ent = 0.5
-    PNS.set_pn_sgd_params(learn_rate=learn_rate, momentum=0.98)
-    for i in range(250000):
+    out_file = open("PNS_TEST_ZMUV.txt", 'wb')
+    learn_rate = 0.1
+    PNS.set_pn_sgd_params(lr_pn=learn_rate, mom_1=0.9, mom_2=0.999)
+    for i in range(300000):
         if i < 5000:
             scale = float(i + 1) / 5000.0
-        if ((i+1 % 10000) == 0):
-            learn_rate = learn_rate * 0.95
-        lam_ent = min((float(i+1) / 150000), 1.0)
+        if ((i+1 % 100000) == 0):
+            learn_rate = learn_rate * 0.5
         # get some data to train with
         su_idx = npr.randint(low=0,high=su_samples,size=(batch_size,))
         Xd_su = Xtr_su.take(su_idx, axis=0)
@@ -509,28 +509,31 @@ if __name__=="__main__":
         Xd_batch = np.vstack((Xd_su, Xd_un))
         Yd_batch = np.vstack((Yd_su, Yd_un))
         # set learning parameters for this update
-        PNS.set_pn_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
-        PNS.set_lam_ent(lam_ent)
+        PNS.set_pn_sgd_params(lr_pn=learn_rate, mom_1=0.9, mom_2=0.999)
         # do a minibatch update of all PeaNet parameters
         outputs = PNS.train_joint(Xd_batch, Xd_batch, Yd_batch, Yd_batch)
         joint_cost = 1.0 * outputs[0]
         class_cost = 1.0 * outputs[1]
         pea_cost = 1.0 * outputs[2]
         ent_cost = 1.0 * outputs[3]
-        other_reg_cost = 1.0 * outputs[3]
+        other_reg_cost = 1.0 * outputs[4]
         assert(not (np.isnan(joint_cost)))
-        if ((i % 500) == 0):
+        if ((i % 1000) == 0):
             o_str = "batch: {0:d}, joint: {1:.4f}, class: {2:.4f}, pea: {3:.4f}, ent: {4:.4f}, other_reg: {5:.4f}".format( \
                     i, joint_cost, class_cost, pea_cost, ent_cost, other_reg_cost)
             print(o_str)
+            out_file.write(o_str+"\n")
+            out_file.flush()
             # check classification error on training and validation set
             train_err = PNS.classification_error(Xtr_su, Ytr_su)
             va_err = PNS.classification_error(Xva, Yva)
             o_str = "    tr_err: {0:.4f}, va_err: {1:.4f}".format(train_err, va_err)
             print(o_str)
-        if ((i % 500) == 0):
+            out_file.write(o_str+"\n")
+            out_file.flush()
+        if ((i % 1000) == 0):
             # draw the main PeaNet's first-layer filters/weights
-            file_name = "PNS_PN_WEIGHTS.png".format(i)
+            file_name = "PNS_WEIGHTS_ZMUV.png".format(i)
             utils.visualize_net_layer(PNS.PN.proto_nets[0][0], file_name)
     print("TESTING COMPLETE!")
 

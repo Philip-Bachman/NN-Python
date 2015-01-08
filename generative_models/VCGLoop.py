@@ -17,6 +17,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, safe_log, softplus_actfun
+from DKCode import get_adam_updates, get_adadelta_updates
 
 #################
 # FOR PROFILING #
@@ -189,6 +190,8 @@ class VCGChain(object):
                 prior_dim=self.prior_dim, params=None, shared_param_dicts=None)
         self.IN = self.GIP.IN
         self.GN = self.GIP.GN
+        self.use_encoder = self.IN.use_encoder
+        assert(self.use_encoder == self.GN.use_decoder)
         # self-loop some clones of the main VAE into a chain
         self.IN_chain = []
         self.GN_chain = []
@@ -205,13 +208,19 @@ class VCGChain(object):
                 _IN = self.IN.shared_param_clone(rng=rng, Xd=_Xd, \
                         Xc=self.Xc, Xm=self.Xm)
                 _GN = self.GN.shared_param_clone(rng=rng, Xp=_IN.output)
-            _Xd = _GN.output
+            if self.use_encoder:
+                # use the "decoded" output of the previous generator as input
+                # to the next inferencer, which will re-encode it prior to
+                # inference
+                _Xd = _GN.output_decoded
+            else:
+                # use the "encoded" output of the previous generator as input
+                # to the next inferencer, as the inferencer won't try to 
+                # re-encode it prior to inference
+                _Xd = _GN.output
             self.IN_chain.append(_IN)
             self.GN_chain.append(_GN)
             self.Xg_chain.append(_Xd)
-        #Xg_stack = T.vertical_stack(*self.Xg_chain)
-        #self.Xg = Xg_stack + (0.1 * self.rng.normal(size=Xg_stack.shape, avg=0.0, \
-        #        std=1.0, dtype=theano.config.floatX))
 
         # make a clone of the desired discriminator network, which will try
         # to discriminate between samples from the training data and samples
@@ -238,21 +247,19 @@ class VCGChain(object):
         # init shared var for controlling l2 regularization on params
         self.lam_l2w = theano.shared(value=zero_ary, name='vcg_lam_l2w')
         self.set_lam_l2w(lam_l2w=1e-4)
-        # shared var learning rate for generator and discriminator
+        # shared var learning rates for all networks
         self.lr_dn = theano.shared(value=zero_ary, name='vcg_lr_dn')
         self.lr_gn = theano.shared(value=zero_ary, name='vcg_lr_gn')
         self.lr_in = theano.shared(value=zero_ary, name='vcg_lr_in')
-        # shared var momentum parameters for generator and discriminator
-        self.mo_dn = theano.shared(value=zero_ary, name='vcg_mo_dn')
-        self.mo_gn = theano.shared(value=zero_ary, name='vcg_mo_gn')
-        self.mo_in = theano.shared(value=zero_ary, name='vcg_mo_in')
+        # shared var momentum parameters for all networks
+        self.mom_1 = theano.shared(value=zero_ary, name='vcg_mom_1')
+        self.mom_2 = theano.shared(value=zero_ary, name='vcg_mom_2')
+        self.it_count = theano.shared(value=zero_ary, name='vcg_it_count')
         # shared var weights for adversarial classification objective
         self.dw_dn = theano.shared(value=zero_ary, name='vcg_dw_dn')
         self.dw_gn = theano.shared(value=zero_ary, name='vcg_dw_gn')
         # init parameters for controlling learning dynamics
-        self.set_dn_sgd_params() # init SGD rate/momentum for DN
-        self.set_gn_sgd_params() # init SGD rate/momentum for GN
-        self.set_in_sgd_params() # init SGD rate/momentum for IN
+        self.set_all_sgd_params()
         
         self.set_disc_weights()  # init adversarial cost weights for GN/DN
         self.lam_l2d = theano.shared(value=(zero_ary + params['lam_l2d']), \
@@ -276,6 +283,7 @@ class VCGChain(object):
                 self.dn_params.extend(pnl.params)
         self.in_params = [p for p in self.IN.mlp_params]
         self.gn_params = [p for p in self.GN.mlp_params]
+        self.joint_params = self.dn_params + self.in_params + self.gn_params
 
         # Now construct a binary discriminator layer for each proto-net in the
         # discriminator network. And, add their params to optimization list.
@@ -295,9 +303,9 @@ class VCGChain(object):
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
         self.chain_nll_cost = self.lam_chain_nll[0] * \
-                self._construct_chain_nll_cost(data_weight=0.15)
+                self._construct_chain_nll_cost(data_weight=0.1)
         self.chain_kld_cost = self.lam_chain_kld[0] * \
-                self._construct_chain_kld_cost(data_weight=0.15)
+                self._construct_chain_kld_cost(data_weight=0.1)
         self.chain_vel_cost = self.lam_chain_vel[0] * \
                 self._construct_chain_vel_cost()
         self.mask_nll_cost = self.lam_mask_nll[0] * \
@@ -312,146 +320,94 @@ class VCGChain(object):
         # compute total cost on the discriminator and VB generator/inferencer
         self.joint_cost = self.dn_cost + self.gip_cost
 
-        # Initialize momentums for mini-batch SGD updates. All parameters need
-        # to be safely nestled in their lists by now.
-        self.joint_moms = OrderedDict()
-        self.dn_moms = OrderedDict()
-        self.in_moms = OrderedDict()
-        self.gn_moms = OrderedDict()
+        # grab the gradients for all parameters to optimize
+        self.joint_grads = OrderedDict()
         for p in self.dn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.dn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.dn_moms[p]
+            # grads for discriminator network params use a separate cost
+            self.joint_grads[p] = T.grad(self.dn_cost, p).clip(-0.1,0.1)
         for p in self.in_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.in_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.in_moms[p]
+            # grads for generator network use the joint cost
+            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1,0.1)
         for p in self.gn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.gn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.gn_moms[p]
+            # grads for generator network use the joint cost
+            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1,0.1)
 
-        # Construct the updates for the generator and discriminator network
+        # construct the updates for the discriminator, generator and 
+        # inferencer networks. all networks share the same first/second
+        # moment momentum and iteration count. the networks each have their
+        # own learning rates, which lets you turn their learning on/off.
+        self.dn_updates = get_adam_updates(params=self.dn_params, \
+                grads=self.joint_grads, alpha=self.lr_dn, \
+                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                mom2_init=1e-3, smoothing=1e-8)
+        self.gn_updates = get_adam_updates(params=self.gn_params, \
+                grads=self.joint_grads, alpha=self.lr_gn, \
+                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                mom2_init=1e-3, smoothing=1e-8)
+        self.in_updates = get_adam_updates(params=self.in_params, \
+                grads=self.joint_grads, alpha=self.lr_in, \
+                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                mom2_init=1e-3, smoothing=1e-8)
+        # bag up all the updates required for training
         self.joint_updates = OrderedDict()
-        self.dn_updates = OrderedDict()
-        self.in_updates = OrderedDict()
-        self.gn_updates = OrderedDict()
+        for k in self.dn_updates:
+            self.joint_updates[k] = self.dn_updates[k]
+        for k in self.gn_updates:
+            self.joint_updates[k] = self.gn_updates[k]
+        for k in self.in_updates:
+            self.joint_updates[k] = self.in_updates[k]
 
-        ###########################################
-        # Construct updates for the discriminator #
-        ###########################################
-        for var in self.dn_params:
-            # these updates are for trainable params in the inferencer net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.dn_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-0.1,0.1)
-            # get the momentum for this var
-            var_mom = self.dn_moms[var]
-            # update the momentum for this var using its grad
-            self.dn_updates[var_mom] = (self.mo_dn[0] * var_mom) + \
-                    ((1.0 - self.mo_dn[0]) * (var_grad**2.0))
-            self.joint_updates[var_mom] = self.dn_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_dn[0] * (var_grad / T.sqrt(var_mom + 1e-3)))
-            self.dn_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.dn_updates[var]
-        ########################################
-        # Construct updates for the inferencer #
-        ########################################
-        for var in self.in_params:
-            # these updates are for trainable params in the generator net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.gip_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-0.1,0.1)
-            # get the momentum for this var
-            var_mom = self.in_moms[var]
-            # update the momentum for this var using its grad
-            self.in_updates[var_mom] = (self.mo_in[0] * var_mom) + \
-                    ((1.0 - self.mo_in[0]) * (var_grad**2.0))
-            self.joint_updates[var_mom] = self.in_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-3)))
-            self.in_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.in_updates[var]
-        #######################################
-        # Construct updates for the generator #
-        #######################################
-        for var in self.gn_params:
-            # these updates are for trainable params in the generator net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.gip_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-0.1,0.1)
-            # get the momentum for this var
-            var_mom = self.gn_moms[var]
-            # update the momentum for this var using its grad
-            self.gn_updates[var_mom] = (self.mo_gn[0] * var_mom) + \
-                    ((1.0 - self.mo_gn[0]) * (var_grad**2.0))
-            self.joint_updates[var_mom] = self.gn_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-3)))
-            self.gn_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.gn_updates[var]
-
-        # Construct the function for training on training data
+        # construct the function for training on training data
         self.train_joint = self._construct_train_joint()
 
-        # Construct a function for computing the ouputs of the generator
+        # construct a function for computing the ouputs of the generator
         # network for a batch of noise. Presumably, the noise will be drawn
         # from the same distribution that was used in training....
         self.sample_chain_from_data = self.GIP.sample_gil_from_data
         return
 
-    def set_dn_sgd_params(self, learn_rate=0.02, momentum=0.9):
+    def set_dn_sgd_params(self, learn_rate=0.01):
         """
-        Set learning rate and momentum parameter for discriminator updates.
+        Set learning rate for the discriminator network.
         """
         zero_ary = np.zeros((1,))
         new_lr = zero_ary + learn_rate
         self.lr_dn.set_value(new_lr.astype(theano.config.floatX))
-        new_mo = zero_ary + momentum
-        self.mo_dn.set_value(new_mo.astype(theano.config.floatX))
         return
 
-    def set_in_sgd_params(self, learn_rate=0.02, momentum=0.9):
+    def set_in_sgd_params(self, learn_rate=0.01):
         """
-        Set learning rate and momentum parameter for self.PN updates.
+        Set learning rate for the inferencer network.
         """
         zero_ary = np.zeros((1,))
         new_lr = zero_ary + learn_rate
         self.lr_in.set_value(new_lr.astype(theano.config.floatX))
-        new_mo = zero_ary + momentum
-        self.mo_in.set_value(new_mo.astype(theano.config.floatX))
         return
 
-    def set_gn_sgd_params(self, learn_rate=0.02, momentum=0.9):
+    def set_gn_sgd_params(self, learn_rate=0.01):
         """
-        Set learning rate and momentum parameter for generator updates.
+        Set learning rate for the generator network.
         """
         zero_ary = np.zeros((1,))
         new_lr = zero_ary + learn_rate
         self.lr_gn.set_value(new_lr.astype(theano.config.floatX))
-        new_mo = zero_ary + momentum
-        self.mo_gn.set_value(new_mo.astype(theano.config.floatX))
         return
 
-    def set_all_sgd_params(self, learn_rate=0.02, momentum=0.9):
+    def set_all_sgd_params(self, learn_rate=0.01, mom_1=0.9, mom_2=0.999):
         """
         Set learning rate and momentum parameter for all updates.
         """
         zero_ary = np.zeros((1,))
-        # set learning rates
+        # set learning rates to the same value
         new_lr = zero_ary + learn_rate
         self.lr_dn.set_value(new_lr.astype(theano.config.floatX))
         self.lr_gn.set_value(new_lr.astype(theano.config.floatX))
         self.lr_in.set_value(new_lr.astype(theano.config.floatX))
-        # set momentums
-        new_mo = zero_ary + momentum
-        self.mo_dn.set_value(new_mo.astype(theano.config.floatX))
-        self.mo_gn.set_value(new_mo.astype(theano.config.floatX))
-        self.mo_in.set_value(new_mo.astype(theano.config.floatX))
+        # set the first/second moment momentum parameters
+        new_mom_1 = zero_ary + mom_1
+        new_mom_2 = zero_ary + mom_2
+        self.mom_1.set_value(new_mom_1.astype(theano.config.floatX))
+        self.mom_2.set_value(new_mom_2.astype(theano.config.floatX))
         return
 
     def set_disc_weights(self, dweight_gn=1.0, dweight_dn=1.0):
@@ -556,10 +512,6 @@ class VCGChain(object):
             # the parameters of the discriminator network
             data_size = T.cast(self.It.size, 'floatX')
             noise_size = T.cast(self.Id.size, 'floatX')
-            k_ns_nce = noise_size / data_size
-            #dnl_dn_cost = (ns_nce_pos(data_preds, k=k_ns_nce) + \
-            #               ns_nce_neg(noise_preds, k=k_ns_nce)) / \
-            #               (data_size + noise_size)
             dnl_dn_cost = (logreg_loss(data_preds, 1.0) / data_size) + \
                           (logreg_loss(noise_preds, -1.0) / noise_size)
             # compute the cost with respect to which we will be optimizing
@@ -581,22 +533,21 @@ class VCGChain(object):
         assert((data_weight > 0.0) and (data_weight < 1.0))
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
         nll_costs = []
-        cost_0 = data_weight
-        cost_1 = (1.0 - data_weight) * (1.0 / (self.chain_len - 1))
-        ### TESTING DECAY, RATHER THAN FIXED WEIGHT ###
         step_weight = 1.0
         step_decay = data_weight
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
             GN_i = self.GN_chain[i]
-            c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd)) / obs_count
+            if self.use_encoder:
+                # compare encoded output of the generator with the encoded
+                # non-control input to the inferencer
+                c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd_encoded)) / obs_count
+            else:
+                # compare encoded output of the generator with the unencoded
+                # non-control input to the inferencer
+                c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd)) / obs_count
             nll_costs.append(step_weight * c)
             step_weight = step_weight * step_decay
-            ### TESTING DECAY, RATHER THAN FIXED WEIGHT ###
-            #if (i == 0):
-            #    nll_costs.append(cost_0 * c)
-            #else:
-            #    nll_costs.append(cost_1 * c)
         nll_cost = sum(nll_costs)
         return nll_cost
 
@@ -610,9 +561,6 @@ class VCGChain(object):
         assert((data_weight > 0.0) and (data_weight < 1.0))
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
         kld_costs = []
-        cost_0 = data_weight
-        cost_1 = (1.0 - data_weight) * (1.0 / (self.chain_len - 1))
-        ### TESTING DECAY, RATHER THAN FIXED WEIGHT ###
         step_weight = 1.0
         step_decay = data_weight
         for i in range(self.chain_len):
@@ -620,11 +568,6 @@ class VCGChain(object):
             c = T.sum(IN_i.kld_cost) / obs_count
             kld_costs.append(step_weight * c)
             step_weight = step_weight * step_decay
-            ### TESTING DECAY, RATHER THAN FIXED WEIGHT ###
-            #if (i == 0):
-            #    kld_costs.append(cost_0 * c)
-            #else:
-            #    kld_costs.append(cost_1 * c)
         kld_cost = sum(kld_costs)
         return kld_cost
 
@@ -653,8 +596,16 @@ class VCGChain(object):
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
             GN_i = self.GN_chain[i]
-            c = -T.sum(GN_i.masked_log_prob(Xc=self.Xc, Xm=self.Xm)) \
-                    / obs_count
+            if self.use_encoder:
+                # compare encoded output of the generator to the encoded
+                # representation of control input to the inferencer
+                c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xc_encoded)) / obs_count
+            else:
+                # compare encoded output of the generator to the unencoded
+                # control input to the inferencer, but only measure NLL for
+                # input dimensions that are not part of the "control set"
+                c = -T.sum(GN_i.masked_log_prob(Xc=self.Xc, Xm=self.Xm)) \
+                        / obs_count
             nll_costs.append(self.mask_nll_weights[i] * c)
         nll_cost = sum(nll_costs)
         return nll_cost
@@ -721,6 +672,9 @@ if __name__=="__main__":
     from GIPair import GIPair
     from NetLayers import relu_actfun, softplus_actfun, \
                           safe_softmax, safe_log
+    import GenNet
+    import InfNet
+    import PeaNet
 
     import sys, resource
     resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
@@ -744,8 +698,8 @@ if __name__=="__main__":
     # get and set some basic dataset information
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
-    batch_size = 50
-    prior_dim = 50
+    batch_size = 64
+    prior_dim = 75
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
@@ -758,68 +712,79 @@ if __name__=="__main__":
     Xt = T.matrix(name='Xt')
     Xp = T.matrix(name='Xp')
 
-    ###############################
-    # Setup discriminator network #
-    ###############################
-    # Set some reasonable mlp parameters
-    dn_params = {}
-    # Set up some proto-networks
-    pc0 = [data_dim, (250, 4), (250, 4), 10]
-    dn_params['proto_configs'] = [pc0]
-    # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    dn_params['spawn_configs'] = [sc0]
-    dn_params['spawn_weights'] = [1.0]
-    # Set remaining params
-    dn_params['ear_type'] = 2
-    dn_params['ear_lam'] = 0.0
-    dn_params['lam_l2a'] = 1e-2
-    dn_params['vis_drop'] = 0.2
-    dn_params['hid_drop'] = 0.5
-    dn_params['init_scale'] = 2.0
-    # Initialize a network object to use as the discriminator
-    DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
-    DN.init_biases(0.0)
+    LOAD_FROM_FILE = True
+    if not LOAD_FROM_FILE:
+        ###############################
+        # Setup discriminator network #
+        ###############################
+        # Set some reasonable mlp parameters
+        dn_params = {}
+        # Set up some proto-networks
+        pc0 = [data_dim, (250, 4), (250, 4), 10]
+        dn_params['proto_configs'] = [pc0]
+        # Set up some spawn networks
+        sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+        #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+        dn_params['spawn_configs'] = [sc0]
+        dn_params['spawn_weights'] = [1.0]
+        # Set remaining params
+        dn_params['ear_type'] = 2
+        dn_params['ear_lam'] = 0.0
+        dn_params['lam_l2a'] = 1e-2
+        dn_params['vis_drop'] = 0.2
+        dn_params['hid_drop'] = 0.5
+        dn_params['init_scale'] = 2.0
+        # Initialize a network object to use as the discriminator
+        DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
+        DN.init_biases(0.0)
 
-    ############################
-    # Setup inferencer network #
-    ############################
-    # choose some parameters for the continuous inferencer
-    in_params = {}
-    shared_config = [data_dim, (250, 4), (250, 4)]
-    top_config = [shared_config[-1], (125, 4), prior_dim]
-    in_params['shared_config'] = shared_config
-    in_params['mu_config'] = top_config
-    in_params['sigma_config'] = top_config
-    in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 2.0
-    in_params['lam_l2a'] = 1e-2
-    in_params['vis_drop'] = 0.0
-    in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.1
-    in_params['input_noise'] = 0.0
-    IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
-            prior_sigma=prior_sigma, params=in_params)
-    IN.init_biases(0.0)
+        ############################
+        # Setup inferencer network #
+        ############################
+        # choose some parameters for the continuous inferencer
+        in_params = {}
+        shared_config = [data_dim, 1000, 1000]
+        top_config = [shared_config[-1], 250, prior_dim]
+        in_params['shared_config'] = shared_config
+        in_params['mu_config'] = top_config
+        in_params['sigma_config'] = top_config
+        in_params['activation'] = relu_actfun
+        in_params['init_scale'] = 2.0
+        in_params['lam_l2a'] = 1e-2
+        in_params['vis_drop'] = 0.0
+        in_params['hid_drop'] = 0.0
+        in_params['bias_noise'] = 0.1
+        in_params['input_noise'] = 0.0
+        IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
+                prior_sigma=prior_sigma, params=in_params)
+        IN.init_biases(0.2)
 
-    ###########################
-    # Setup generator network #
-    ###########################
-    # Choose some parameters for the generative network
-    gn_params = {}
-    gn_config = [prior_dim, 1000, 1000, data_dim]
-    gn_params['mlp_config'] = gn_config
-    gn_params['lam_l2a'] = 1e-2
-    gn_params['vis_drop'] = 0.0
-    gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.1
-    gn_params['out_type'] = 'bernoulli'
-    gn_params['activation'] = relu_actfun
-    gn_params['init_scale'] = 2.0
-    # Initialize a generator network object
-    GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, params=gn_params)
-    GN.init_biases(0.2)
+        ###########################
+        # Setup generator network #
+        ###########################
+        # Choose some parameters for the generative network
+        gn_params = {}
+        gn_config = [prior_dim, 1000, 1000, data_dim]
+        gn_params['mlp_config'] = gn_config
+        gn_params['lam_l2a'] = 1e-2
+        gn_params['vis_drop'] = 0.0
+        gn_params['hid_drop'] = 0.0
+        gn_params['bias_noise'] = 0.1
+        gn_params['out_type'] = 'bernoulli'
+        gn_params['activation'] = relu_actfun
+        gn_params['init_scale'] = 2.0
+        # Initialize a generator network object
+        GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, params=gn_params)
+        GN.init_biases(0.2)
+    else:
+        # Give file names for loading previously trained networks
+        dn_file = "VCG_PARAMS_DN_PREV.pkl"
+        in_file = "VCG_PARAMS_IN_PREV.pkl"
+        gn_file = "VCG_PARAMS_GN_PREV.pkl"
+        # Load the discriminator, inferencer, and generator from disk
+        DN = PeaNet.load_peanet_from_file(f_name=dn_file, rng=rng, Xd=Xd)
+        IN = InfNet.load_infnet_from_file(f_name=in_file, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        GN = GenNet.load_gennet_from_file(f_name=gn_file, rng=rng, Xp=Xp)
 
     ################################
     # Initialize the main VCGChain #
@@ -834,7 +799,7 @@ if __name__=="__main__":
     ###################################
     # TRAIN AS MARKOV CHAIN WITH BPTT #
     ###################################
-    learn_rate = 0.0002
+    learn_rate = 0.0003
     for i in range(1000000):
         scale = float(min((i+1), 25000)) / 25000.0
         if ((i+1 % 100000) == 0):
@@ -843,11 +808,12 @@ if __name__=="__main__":
             ########################################
             # TRAIN THE CHAIN IN FREE-RUNNING MODE #
             ########################################
-            VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
-            VCG.set_dn_sgd_params(learn_rate=(0.4*scale*learn_rate), momentum=0.98)
+            VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), \
+                    mom_1=0.9, mom_2=0.999)
+            VCG.set_dn_sgd_params(learn_rate=0.5*scale*learn_rate)
             VCG.set_disc_weights(dweight_gn=5.0, dweight_dn=5.0)
             VCG.set_lam_chain_nll(1.0)
-            VCG.set_lam_chain_kld(0.05 + (1.5*scale))
+            VCG.set_lam_chain_kld(1.0 + 0.5*scale)
             VCG.set_lam_chain_vel(0.0)
             VCG.set_lam_mask_nll(0.0)
             VCG.set_lam_mask_kld(0.0)
@@ -888,14 +854,15 @@ if __name__=="__main__":
             #########################################
             # TRAIN THE CHAIN UNDER PARTIAL CONTROL #
             #########################################
-            VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.98)
-            VCG.set_dn_sgd_params(learn_rate=(0.4*scale*learn_rate), momentum=0.98)
+            VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), \
+                    mom_1=0.9, mom_2=0.999)
+            VCG.set_dn_sgd_params(learn_rate=0.5*scale*learn_rate)
             VCG.set_disc_weights(dweight_gn=5.0, dweight_dn=5.0)
             VCG.set_lam_chain_nll(0.0)
             VCG.set_lam_chain_kld(0.0)
             VCG.set_lam_chain_vel(0.0)
             VCG.set_lam_mask_nll(1.0)
-            VCG.set_lam_mask_kld(0.05 + (1.5*scale))
+            VCG.set_lam_mask_kld(1.0 + 0.5*scale)
             # get some data to train with
             tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
             Xd_batch = Xc_mean
@@ -941,13 +908,13 @@ if __name__=="__main__":
             va_idx = npr.randint(low=0,high=Xva.shape[0],size=(5,))
             Xd_batch = np.vstack([Xtr.take(tr_idx, axis=0), Xva.take(va_idx, axis=0)])
             # draw some chains of samples from the VAE loop
-            file_name = "VCG_MMM_CHAIN_SAMPLES_b{0:d}.png".format(i)
+            file_name = "VCG_AAA_CHAIN_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch, 3, axis=0)
             sample_lists = VCG.GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some masked chains of samples from the VAE loop
-            file_name = "VCG_MMM_MASK_SAMPLES_b{0:d}.png".format(i)
+            file_name = "VCG_AAA_MASK_SAMPLES_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
             Xc_samps = np.repeat(Xd_batch, 3, axis=0)
             Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
@@ -958,18 +925,23 @@ if __name__=="__main__":
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some samples independently from the GenNet's prior
-            file_name = "VCG_MMM_PRIOR_SAMPLES_b{0:d}.png".format(i)
+            file_name = "VCG_AAA_PRIOR_SAMPLES_b{0:d}.png".format(i)
             Xs = VCG.sample_from_prior(20*20)
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw discriminator network's weights
-            file_name = "VCG_MMM_DIS_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "VCG_AAA_DIS_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCG.DN.proto_nets[0][0], file_name)
             # draw inference net first layer weights
-            file_name = "VCG_MMM_INF_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "VCG_AAA_INF_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCG.IN.shared_layers[0], file_name)
             # draw generator net final layer weights
-            file_name = "VCG_MMM_GEN_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "VCG_AAA_GEN_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCG.GN.mlp_layers[-1], file_name, use_transpose=True)
+        # DUMP PARAMETERS FROM TIME-TO-TIME
+        if (i % 10000 == 0):
+            DN.save_to_file(f_name="VCG_PARAMS_DN.pkl")
+            IN.save_to_file(f_name="VCG_PARAMS_IN.pkl")
+            GN.save_to_file(f_name="VCG_PARAMS_GN.pkl")
     print("TESTING COMPLETE!")
     profmode.print_summary()
 

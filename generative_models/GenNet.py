@@ -91,6 +91,30 @@ class GenNet(object):
         else:
             # default to bernoulli-valued outputs
             self.out_type = 'bernoulli'
+        # Get the configuration/prototype for this network. The config is a
+        # list of layer descriptions, including a description for the input
+        # layer, which is typically just the dimension of the inputs. So, the
+        # depth of the mlp is one less than the number of layer configs.
+        self.mlp_config = params['mlp_config']
+        if 'activation' in params:
+            self.activation = params['activation']
+        else:
+            self.activation = relu_actfun
+        self.mlp_depth = len(self.mlp_config) - 1
+        self.latent_dim = self.mlp_config[0]
+        self.data_dim = self.mlp_config[-1]
+        if 'decoder' in params:
+            # we want to transform samples from the generator into some
+            # other space in a convenient way. e.g., we want to construct the
+            # generative model for some images in a dimension-reduced PCA space
+            # rather than in the original pixel space. but, we want to be able
+            # to sample easily from the model distribution in pixel space...
+            self.decoder = params['decoder']
+            self.use_decoder = True
+        else:
+            # no transform was given by the user, so we'll just apply a no-op
+            self.decoder = lambda x: x
+            self.use_decoder = False
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of a generative network, with all
         # of the network parameters shared between clones.
@@ -104,18 +128,7 @@ class GenNet(object):
             # referring to the given param dict (i.e. shared_param_dicts).
             self.shared_param_dicts = shared_param_dicts
             self.is_clone = True
-        # Get the configuration/prototype for this network. The config is a
-        # list of layer descriptions, including a description for the input
-        # layer, which is typically just the dimension of the inputs. So, the
-        # depth of the mlp is one less than the number of layer configs.
-        self.mlp_config = params['mlp_config']
-        if 'activation' in params:
-            self.activation = params['activation']
-        else:
-            self.activation = relu_actfun
-        self.mlp_depth = len(self.mlp_config) - 1
-        self.latent_dim = self.mlp_config[0]
-        self.data_dim = self.mlp_config[-1]
+
 
         ##########################
         # Initialize the network #
@@ -148,6 +161,7 @@ class GenNet(object):
                 d_rate = self.vis_drop
             else:
                 d_rate = self.hid_drop
+            i_scale = (100.0 / np.sqrt(in_dim)) * self.init_scale
             b_noise = self.bias_noise
             if not self.is_clone:
                 ##########################################
@@ -157,7 +171,7 @@ class GenNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name, W_scale=self.init_scale)
+                        name=l_name, W_scale=i_scale)
                 self.mlp_layers.append(new_layer)
                 self.shared_param_dicts.append({'W': new_layer.W, 'b': new_layer.b})
                 if (last_layer and (self.out_type == 'gaussian')):
@@ -166,7 +180,7 @@ class GenNet(object):
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name+'_logvar', W_scale=self.init_scale)
+                        name=l_name+'_logvar', W_scale=0.2*i_scale)
                     self.logvar_layer = lv_layer
                     self.mlp_layers.append(lv_layer)
                     self.shared_param_dicts.append({'W': lv_layer.W, 'b': lv_layer.b})
@@ -180,15 +194,18 @@ class GenNet(object):
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=self.init_scale))
+                        name=l_name, W_scale=i_scale))
                 if (last_layer and (self.out_type == 'gaussian')):
+                    # add an extra layer for predicting log-variance.
+                    # we'll shrink the init scale for this layer, to avoid
+                    # unreasonably small initial predicted logvars.
                     init_params = self.shared_param_dicts[layer_num+1]
                     self.mlp_layers.append(HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name, W_scale=self.init_scale))
+                        name=l_name+'_logvar', W_scale=0.2*i_scale))
             next_input = self.mlp_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1
@@ -197,13 +214,17 @@ class GenNet(object):
         if self.is_clone:
             self.output_mask = self.shared_param_dicts[-1]['output_mask']
             self.output_bias = self.shared_param_dicts[-1]['output_bias']
+            self.logvar_bias = self.shared_param_dicts[-1]['logvar_bias']
         else:
             row_mask = np.ones((self.data_dim,)).astype(theano.config.floatX)
             self.output_mask = theano.shared(value=row_mask, name='gn_output_mask')
             row_mask = 0.0 * row_mask
             self.output_bias = theano.shared(value=row_mask, name='gn_output_bias')
+            row_mask = 0.0 * row_mask
+            self.logvar_bias = theano.shared(value=row_mask, name='gn_logvar_bias')
             op_dict = {'output_mask': self.output_mask, \
-                       'output_bias': self.output_bias}
+                       'output_bias': self.output_bias, \
+                       'logvar_bias': self.logvar_bias}
             self.shared_param_dicts.append(op_dict)
 
         # Mash all the parameters together, into a list.
@@ -212,7 +233,8 @@ class GenNet(object):
             self.mlp_params.extend(layer.params)
         # add the output bias vector to the param list
         self.mlp_params.append(self.output_bias)
-
+        if (self.out_type == 'gaussian'):
+            self.mlp_params.append(self.logvar_bias)
 
         # The output of this generator network is given by the noisy output
         # of its final layer. We will keep a running estimate of the mean and
@@ -227,12 +249,18 @@ class GenNet(object):
             self.output_logvar = self.output
             self.output_sigma = self.output
         else:
-            #self.output_mu = self.mlp_layers[-1].linear_output + self.output_bias
-            self.output_mu = T.nnet.sigmoid(self.mlp_layers[-1].linear_output) + self.output_bias
+            self.output_mu = self.mlp_layers[-2].linear_output + self.output_bias
+            #self.output_mu = T.nnet.sigmoid(self.mlp_layers[-2].linear_output + self.output_bias)
             # WE BOUND LOG VARIANCE -- TO KEEP SIGMA BOUNDED AWAY FROM 0...
-            self.output_logvar = 6.0 * T.tanh(self.mlp_layers[-2].linear_output / 6.0)
+            self.output_logvar = (4.0 * T.tanh(self.mlp_layers[-1].linear_output / 4.0)) - \
+                    (3.0 * T.tanh(self.logvar_bias[0] / 3.0))
             self.output_sigma = T.exp(0.5 * self.output_logvar)
             self.output = self._construct_post_samples() * self.output_mask
+        # apply a decoder (or a no-op if the user didn't provide a decoder)
+        if self.use_decoder:
+            self.output_decoded = self.decoder(self.output)
+        else:
+            self.output_decoded = self.output
         self.out_dim = self.mlp_layers[-1].out_dim
         C_init = np.zeros((self.out_dim,self.out_dim)).astype(theano.config.floatX)
         m_init = np.zeros((self.out_dim,)).astype(theano.config.floatX)
@@ -288,8 +316,13 @@ class GenNet(object):
         prior_samples = self.prior_sigma * self.rng.normal( \
                 size=(samp_count, self.latent_dim), avg=0.0, std=1.0, \
                 dtype=theano.config.floatX)
-        prior_sampler = theano.function([samp_count], outputs=self.output, \
-                givens={self.Xp: prior_samples})
+        if self.use_decoder:
+            prior_sampler = theano.function([samp_count], \
+                    outputs=self.output_decoded, \
+                    givens={self.Xp: prior_samples})
+        else:
+            prior_sampler = theano.function([samp_count], outputs=self.output, \
+                    givens={self.Xp: prior_samples})
         return prior_sampler
 
     def _construct_transform_prior(self):
@@ -297,7 +330,15 @@ class GenNet(object):
         Apply the tranform induced by the current model parameters to some
         set of points in the latent/prior space.
         """
-        feedforward = theano.function([self.Xp], outputs=self.output)
+        if self.use_decoder:
+            # transform the output of this generator, presumably to match the
+            # expected input shape for an associated inferencer (for looping)
+            feedforward = theano.function([self.Xp], \
+                    outputs=self.output_decoded)
+        else:
+            # take the "encoded" output of the generator because, whatever
+            # inferencer we might feed this back into, it's the right shape
+            feedforward = theano.function([self.Xp], outputs=self.output)
         return feedforward
 
     def _batch_moments(self):
@@ -355,7 +396,7 @@ class GenNet(object):
     def compute_log_prob(self, Xd=None):
         """
         Compute negative log likelihood of the data in Xd, with respect to the
-        output distributions currently at self.output_....
+        output distributions currently at self.output....
 
         Compute log-prob for all entries in Xd.
         """
@@ -369,7 +410,7 @@ class GenNet(object):
     def masked_log_prob(self, Xc=None, Xm=None):
         """
         Compute negative log likelihood of the data in Xc, with respect to the
-        output distributions currently at self.output_....
+        output distributions currently at self.output....
 
         Select entries in Xd to compute log-prob for based on the mask Xm. When
         Xm[i] == 1, don't measure NLL Xc[i]...

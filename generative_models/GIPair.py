@@ -19,6 +19,7 @@ from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
+from DKCode import get_adam_updates, get_adadelta_updates
 
 #
 #
@@ -66,6 +67,10 @@ class GIPair(object):
         self.Xd = Xd
         self.Xc = Xc
         self.Xm = Xm
+        # check whether we'll be working with "encoded" inputs
+        self.use_encoder = i_net.use_encoder
+        print("i_net.use_encoder: {0:s}, g_net.use_decoder: {1:s}".format(str(i_net.use_encoder), str(g_net.use_decoder)))
+        assert(self.use_encoder == g_net.use_decoder)
         # create a "shared-parameter" clone of the inferencer, set up to
         # receive input from the appropriate symbolic variables.
         self.IN = i_net.shared_param_clone(rng=rng, \
@@ -106,45 +111,49 @@ class GIPair(object):
         if not self.is_clone:
             # shared var learning rate for generator and inferencer
             zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-            self.lr_gn = theano.shared(value=zero_ary, name='gil_lr_gn')
-            self.lr_in = theano.shared(value=zero_ary, name='gil_lr_in')
+            self.lr_gn = theano.shared(value=zero_ary, name='gip_lr_gn')
+            self.lr_in = theano.shared(value=zero_ary, name='gip_lr_in')
             # shared var momentum parameters for generator and inferencer
-            self.mo_gn = theano.shared(value=zero_ary, name='gil_mo_gn')
-            self.mo_in = theano.shared(value=zero_ary, name='gil_mo_in')
+            self.mom_1 = theano.shared(value=zero_ary, name='gip_mom_1')
+            self.mom_2 = theano.shared(value=zero_ary, name='gip_mom_2')
+            self.it_count = theano.shared(value=zero_ary, name='gip_it_count')
             # init parameters for controlling learning dynamics
             self.set_all_sgd_params()
             # init shared var for weighting nll of data given posterior sample
-            self.lam_nll = theano.shared(value=zero_ary, name='gis_lam_nll')
+            self.lam_nll = theano.shared(value=zero_ary, name='gip_lam_nll')
             self.set_lam_nll(lam_nll=1.0)
             # init shared var for weighting prior kld against reconstruction
-            self.lam_kld = theano.shared(value=zero_ary, name='gil_lam_kld')
+            self.lam_kld = theano.shared(value=zero_ary, name='gip_lam_kld')
             self.set_lam_kld(lam_kld=1.0)
             # init shared var for controlling l2 regularization on params
-            self.lam_l2w = theano.shared(value=zero_ary, name='gil_lam_l2w')
+            self.lam_l2w = theano.shared(value=zero_ary, name='gip_lam_l2w')
             self.set_lam_l2w(1e-4)
             # record shared parameters that are to be shared among clones
-            self.shared_param_dicts['gil_lr_gn'] = self.lr_gn
-            self.shared_param_dicts['gil_lr_in'] = self.lr_in
-            self.shared_param_dicts['gil_mo_gn'] = self.mo_gn
-            self.shared_param_dicts['gil_mo_in'] = self.mo_in
-            self.shared_param_dicts['gis_lam_nll'] = self.lam_nll
-            self.shared_param_dicts['gil_lam_kld'] = self.lam_kld
-            self.shared_param_dicts['gil_lam_l2w'] = self.lam_l2w
+            self.shared_param_dicts['gip_lr_gn'] = self.lr_gn
+            self.shared_param_dicts['gip_lr_in'] = self.lr_in
+            self.shared_param_dicts['gip_mom_1'] = self.mom_1
+            self.shared_param_dicts['gip_mom_2'] = self.mom_2
+            self.shared_param_dicts['gip_it_count'] = self.it_count
+            self.shared_param_dicts['gip_lam_nll'] = self.lam_nll
+            self.shared_param_dicts['gip_lam_kld'] = self.lam_kld
+            self.shared_param_dicts['gip_lam_l2w'] = self.lam_l2w
         else:
             # use some shared parameters that are shared among all clones of
             # some "base" GIPair
-            self.lr_gn = self.shared_param_dicts['gil_lr_gn']
-            self.lr_in = self.shared_param_dicts['gil_lr_in']
-            self.mo_gn = self.shared_param_dicts['gil_mo_gn']
-            self.mo_in = self.shared_param_dicts['gil_mo_in']
-            self.lam_nll = self.shared_param_dicts['gis_lam_nll']
-            self.lam_kld = self.shared_param_dicts['gil_lam_kld']
-            self.lam_l2w = self.shared_param_dicts['gil_lam_l2w']
+            self.lr_gn = self.shared_param_dicts['gip_lr_gn']
+            self.lr_in = self.shared_param_dicts['gip_lr_in']
+            self.mom_1 = self.shared_param_dicts['gip_mom_1']
+            self.mom_2 = self.shared_param_dicts['gip_mom_2']
+            self.it_count = self.shared_param_dicts['gip_it_count']
+            self.lam_nll = self.shared_param_dicts['gip_lam_nll']
+            self.lam_kld = self.shared_param_dicts['gip_lam_kld']
+            self.lam_l2w = self.shared_param_dicts['gip_lam_l2w']
 
         # Grab the full set of "optimizable" parameters from the generator
         # and inferencer networks that we'll be working with.
         self.in_params = [p for p in self.IN.mlp_params]
         self.gn_params = [p for p in self.GN.mlp_params]
+        self.joint_params = self.in_params + self.gn_params
 
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
@@ -155,62 +164,25 @@ class GIPair(object):
         self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
                 self.other_reg_cost
 
-        # Initialize momentums for mini-batch SGD updates. All parameters need
-        # to be safely nestled in their lists by now.
-        self.joint_moms = OrderedDict()
-        self.in_moms = OrderedDict()
-        self.gn_moms = OrderedDict()
-        for p in self.gn_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.gn_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.gn_moms[p]
-        for p in self.in_params:
-            p_mo = np.zeros(p.get_value(borrow=True).shape) + 5.0
-            self.in_moms[p] = theano.shared(value=p_mo.astype(theano.config.floatX))
-            self.joint_moms[p] = self.in_moms[p]
+        # Get the gradient of the joint cost for all optimizable parameters
+        self.joint_grads = OrderedDict()
+        for p in self.joint_params:
+            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-1.0, 1.0)
 
-        # Construct the updates for the generator and inferer networks
+        # Construct the updates for the generator and inferencer networks
+        self.gn_updates = get_adam_updates(params=self.gn_params, \
+                grads=self.joint_grads, alpha=self.lr_gn, \
+                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                mom2_init=1e-3, smoothing=1e-8)
+        self.in_updates = get_adam_updates(params=self.in_params, \
+                grads=self.joint_grads, alpha=self.lr_in, \
+                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                mom2_init=1e-3, smoothing=1e-8)
         self.joint_updates = OrderedDict()
-        self.gn_updates = OrderedDict()
-        self.in_updates = OrderedDict()
-        #######################################
-        # Construct updates for the generator #
-        #######################################
-        for var in self.gn_params:
-            # these updates are for trainable params in the generator net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
-            # get the momentum for this var
-            var_mom = self.gn_moms[var]
-            # update the momentum for this var using its grad
-            self.gn_updates[var_mom] = (self.mo_gn[0] * var_mom) + \
-                    ((1.0 - self.mo_gn[0]) * (var_grad**2.0))
-            self.joint_updates[var_mom] = self.gn_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_gn[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
-            self.gn_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.gn_updates[var]
-        ###################################################
-        # Construct updates for the continuous inferencer #
-        ###################################################
-        for var in self.in_params:
-            # these updates are for trainable params in the inferencer net...
-            # first, get gradient of cost w.r.t. var
-            var_grad = T.grad(self.joint_cost, var, \
-                    consider_constant=[self.GN.dist_mean, self.GN.dist_cov]).clip(-1.0,1.0)
-            # get the momentum for this var
-            var_mom = self.in_moms[var]
-            # update the momentum for this var using its grad
-            self.in_updates[var_mom] = (self.mo_in[0] * var_mom) + \
-                    ((1.0 - self.mo_in[0]) * (var_grad**2.0))
-            self.joint_updates[var_mom] = self.in_updates[var_mom]
-            # make basic update to the var
-            var_new = var - (self.lr_in[0] * (var_grad / T.sqrt(var_mom + 1e-2)))
-            self.in_updates[var] = var_new
-            # add this var's update to the joint updates too
-            self.joint_updates[var] = self.in_updates[var]
+        for k in self.gn_updates:
+            self.joint_updates[k] = self.gn_updates[k]
+        for k in self.in_updates:
+            self.joint_updates[k] = self.in_updates[k]
 
         # Construct a function for jointly training the generator/inferencer
         self.train_joint = self._construct_train_joint()
@@ -221,41 +193,22 @@ class GIPair(object):
         self.sample_from_gn = self.GN.sample_from_model
         return
 
-    def set_gn_sgd_params(self, learn_rate=0.02, momentum=0.9):
-        """
-        Set learning rate and momentum parameter for generator updates.
-        """
-        zero_ary = np.zeros((1,))
-        new_lr = zero_ary + learn_rate
-        self.lr_gn.set_value(new_lr.astype(theano.config.floatX))
-        new_mo = zero_ary + momentum
-        self.mo_gn.set_value(new_mo.astype(theano.config.floatX))
-        return
-
-    def set_in_sgd_params(self, learn_rate=0.02, momentum=0.9):
-        """
-        Set learning rate and momentum parameter for discriminator updates.
-        """
-        zero_ary = np.zeros((1,))
-        new_lr = zero_ary + learn_rate
-        self.lr_in.set_value(new_lr.astype(theano.config.floatX))
-        new_mo = zero_ary + momentum
-        self.mo_in.set_value(new_mo.astype(theano.config.floatX))
-        return
-
-    def set_all_sgd_params(self, learn_rate=0.02, momentum=0.9):
+    def set_all_sgd_params(self, lr_gn=0.01, lr_in=0.01, \
+                mom_1=0.9, mom_2=0.999):
         """
         Set learning rate and momentum parameter for all updates.
         """
         zero_ary = np.zeros((1,))
         # set learning rates
-        new_lr = zero_ary + learn_rate
-        self.lr_gn.set_value(new_lr.astype(theano.config.floatX))
-        self.lr_in.set_value(new_lr.astype(theano.config.floatX))
+        new_lr_gn = zero_ary + lr_gn
+        self.lr_gn.set_value(new_lr_gn.astype(theano.config.floatX))
+        new_lr_in = zero_ary + lr_in
+        self.lr_in.set_value(new_lr_in.astype(theano.config.floatX))
         # set momentums
-        new_mo = zero_ary + momentum
-        self.mo_gn.set_value(new_mo.astype(theano.config.floatX))
-        self.mo_in.set_value(new_mo.astype(theano.config.floatX))
+        new_mom_1 = zero_ary + mom_1
+        self.mom_1.set_value(new_mom_1.astype(theano.config.floatX))
+        new_mom_2 = zero_ary + mom_2
+        self.mom_2.set_value(new_mom_2.astype(theano.config.floatX))
         return
 
     def set_lam_nll(self, lam_nll=1.0):
@@ -289,7 +242,12 @@ class GIPair(object):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
-        log_prob_cost = self.GN.compute_log_prob(self.Xd)
+        if self.use_encoder:
+            # compare the encoded input to the inferencer with the encoded
+            # output of the generator
+            log_prob_cost = self.GN.compute_log_prob(self.IN.Xd_encoded)
+        else:
+            log_prob_cost = self.GN.compute_log_prob(self.IN.Xd)
         nll_cost = -T.sum(log_prob_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return nll_cost
 
@@ -434,7 +392,7 @@ if __name__=="__main__":
             data_dim=data_dim, prior_dim=prior_dim, params=None)
     GIP.set_lam_l2w(1e-3)
     # Set initial learning rate and basic SGD hyper parameters
-    learn_rate = 0.0025
+    learn_rate = 0.001
     GIP.set_all_sgd_params(learn_rate=learn_rate, momentum=0.8)
 
     for i in range(750000):

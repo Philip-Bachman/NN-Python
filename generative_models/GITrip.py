@@ -144,6 +144,9 @@ class GITrip(object):
             data_dim=None, prior_dim=None, label_dim=None, \
             batch_size=None, \
             params=None, shared_param_dicts=None):
+        # TODO: refactor for use with "encoded" inferencer/generator
+        assert(not (i_net.use_encoder or g_net.use_encoder))
+
         # setup a rng for this GITrip
         self.rng = RandStream(rng.randint(100000))
         # setup the prior distribution over the categorical variable

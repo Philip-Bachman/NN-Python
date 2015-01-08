@@ -43,9 +43,10 @@ def scale_to_unit_interval(ndar, eps=1e-8):
     ndar *= 1.0 / (ndar.max() + eps)
     return ndar
 
-def tile_raster_images(X, img_shape, tile_shape, tile_spacing=(0, 0),
-                       scale_rows_to_unit_interval=True,
-                       output_pixel_vals=True):
+def tile_raster_images(X, img_shape=None, tile_shape=None, tile_spacing=(0, 0),
+                        scale=True,
+                        output_pixel_vals=True,
+                        colorImg=False):
     """
     Transform an array with one flattened image per row, into an array in
     which images are reshaped and layed out like tiles on a floor.
@@ -53,30 +54,13 @@ def tile_raster_images(X, img_shape, tile_shape, tile_spacing=(0, 0),
     This function is useful for visualizing datasets whose rows are images,
     and also columns of matrices for transforming those rows
     (such as the first layer of a neural net).
-
-    :type X: a 2-D ndarray or a tuple of 4 channels, elements of which can
-    be 2-D ndarrays or None;
-    :param X: a 2-D array in which every row is a flattened image.
-
-    :type img_shape: tuple; (height, width)
-    :param img_shape: the original shape of each image
-
-    :type tile_shape: tuple; (rows, cols)
-    :param tile_shape: the number of images to tile (rows, cols)
-
-    :param output_pixel_vals: if output should be pixel values (i.e. int8
-    values) or floats
-
-    :param scale_rows_to_unit_interval: if the values need to be scaled before
-    being plotted to [0,1] or not
-
-
-    :returns: array suitable for viewing as an image.
-    (See:`PIL.Image.fromarray`.)
-    :rtype: a 2-d array with same dtype as X.
-
     """
-
+    X = X * 1.0 # converts ints to floats
+    
+    if colorImg:
+        channelSize = X.shape[1]/3
+        X = (X[:,0:channelSize], X[:,channelSize:2*channelSize], X[:,2*channelSize:3*channelSize], None)
+    
     assert len(img_shape) == 2
     assert len(tile_shape) == 2
     assert len(tile_spacing) == 2
@@ -84,23 +68,21 @@ def tile_raster_images(X, img_shape, tile_shape, tile_spacing=(0, 0),
     # The expression below can be re-written in a more C style as
     # follows :
     #
-    # out_shape    = [0,0]
-    # out_shape[0] = (img_shape[0]+tile_spacing[0])*tile_shape[0] -
+    # out_shape = [0,0]
+    # out_shape[0] = (img_shape[0] + tile_spacing[0]) * tile_shape[0] -
     #                tile_spacing[0]
-    # out_shape[1] = (img_shape[1]+tile_spacing[1])*tile_shape[1] -
+    # out_shape[1] = (img_shape[1] + tile_spacing[1]) * tile_shape[1] -
     #                tile_spacing[1]
     out_shape = [(ishp + tsp) * tshp - tsp for ishp, tshp, tsp
                         in zip(img_shape, tile_shape, tile_spacing)]
 
     if isinstance(X, tuple):
         assert len(X) == 4
-        # Create an output numpy ndarray to store the image
+        # Create an output np ndarray to store the image
         if output_pixel_vals:
-            out_array = np.zeros((out_shape[0], out_shape[1], 4),
-                                    dtype='uint8')
+            out_array = np.zeros((out_shape[0], out_shape[1], 4), dtype='uint8')
         else:
-            out_array = np.zeros((out_shape[0], out_shape[1], 4),
-                                    dtype=X.dtype)
+            out_array = np.zeros((out_shape[0], out_shape[1], 4), dtype=X.dtype)
 
         #colors default to 0, alpha defaults to 1 (opaque)
         if output_pixel_vals:
@@ -108,52 +90,51 @@ def tile_raster_images(X, img_shape, tile_shape, tile_spacing=(0, 0),
         else:
             channel_defaults = [0., 0., 0., 1.]
 
+        
         for i in xrange(4):
             if X[i] is None:
                 # if channel is None, fill it with zeros of the correct
                 # dtype
-                dt = out_array.dtype
-                if output_pixel_vals:
-                    dt = 'uint8'
                 out_array[:, :, i] = np.zeros(out_shape,
-                        dtype=dt) + channel_defaults[i]
+                        dtype='uint8' if output_pixel_vals else out_array.dtype
+                        ) + channel_defaults[i]
+                if i < 3:
+                    print('WHY AM I HERE (utils.py line 101)?')
             else:
                 # use a recurrent call to compute the channel and store it
                 # in the output
-                out_array[:, :, i] = tile_raster_images(
-                    X[i], img_shape, tile_shape, tile_spacing,
-                    scale_rows_to_unit_interval, output_pixel_vals)
+                xi = X[i]
+                if scale:
+                    # shift and scale this channel to be in [0...1]
+                    xi = (X[i] - X[i].min()) / (X[i].max() - X[i].min())
+                out_array[:, :, i] = tile_raster_images(xi, img_shape, tile_shape, tile_spacing, False, output_pixel_vals) 
         return out_array
+
     else:
         # if we are dealing with only one channel
         H, W = img_shape
         Hs, Ws = tile_spacing
+
         # generate a matrix to store the output
-        dt = X.dtype
-        if output_pixel_vals:
-            dt = 'uint8'
-        out_array = np.zeros(out_shape, dtype=dt)
+        out_array = np.zeros(out_shape, dtype='uint8' if output_pixel_vals else X.dtype)
         for tile_row in xrange(tile_shape[0]):
             for tile_col in xrange(tile_shape[1]):
                 if tile_row * tile_shape[1] + tile_col < X.shape[0]:
-                    this_x = X[tile_row * tile_shape[1] + tile_col]
-                    if scale_rows_to_unit_interval:
+                    if scale:
                         # if we should scale values to be between 0 and 1
                         # do this by calling the `scale_to_unit_interval`
                         # function
-                        this_img = scale_to_unit_interval(
-                            this_x.reshape(img_shape))
+                        tmp = X[tile_row * tile_shape[1] + tile_col].reshape(img_shape)
+                        this_img = scale_to_unit_interval(tmp)
                     else:
-                        this_img = this_x.reshape(img_shape)
+                        this_img = X[tile_row * tile_shape[1] + tile_col].reshape(img_shape)
                     # add the slice to the corresponding position in the
                     # output array
-                    c = 1
-                    if output_pixel_vals:
-                        c = 255
                     out_array[
-                        tile_row * (H + Hs): tile_row * (H + Hs) + H,
-                        tile_col * (W + Ws): tile_col * (W + Ws) + W
-                        ] = this_img * c
+                        tile_row * (H+Hs): tile_row * (H + Hs) + H,
+                        tile_col * (W+Ws): tile_col * (W + Ws) + W
+                        ] \
+                        = this_img * (255 if output_pixel_vals else 1)
         return out_array
 
 
@@ -180,14 +161,24 @@ def visualize(EN, proto_key, layer_num, file_name):
     image.save(file_name)
     return
 
-def visualize_net_layer(net_layer, file_name, use_transpose=False):
-    W = net_layer.W.get_value(borrow=True).T
+def visualize_net_layer(net_layer, file_name, colorImg=False, \
+        use_transpose=False, transform=None):
+    W = net_layer.W.get_value(borrow=False).T
     if use_transpose:
-        W = net_layer.W.get_value(borrow=True)
-    size = int(np.sqrt(W.shape[1]))
-    # hist(W.flatten(),bins=50)
-    image = PIL.Image.fromarray(tile_raster_images(X=W, \
-            img_shape=(size, size), tile_shape=(10,W.shape[0]/10),tile_spacing=(1, 1)))
+        W = net_layer.W.get_value(borrow=False)
+    if not (transform is None):
+        W = transform(W)
+    if colorImg:
+        size = int(np.sqrt(W.shape[1] / 3.0))
+    else:
+        size = int(np.sqrt(W.shape[1]))
+    num_rows = 10
+    num_cols = int((W.shape[0] / num_rows) + 0.999)
+    img_shape = (size, size)
+    tile_shape = (num_rows, num_cols)
+    image = tile_raster_images(X=W, img_shape=img_shape, tile_shape=tile_shape, \
+            tile_spacing=(1, 1), scale=True, colorImg=colorImg)
+    image = PIL.Image.fromarray(image)
     image.save(file_name)
     return
 
@@ -196,6 +187,21 @@ def visualize_samples(X_samp, file_name, num_rows=10):
     # hist(W.flatten(),bins=50)
     image = PIL.Image.fromarray(tile_raster_images(X=X_samp, img_shape=(d, d), \
             tile_shape=(num_rows,X_samp.shape[0]/num_rows),tile_spacing=(1, 1)))
+    image.save(file_name)
+    return
+
+# Matrix to image
+def mat_to_img(X, file_name, img_shape, num_rows=10, \
+        scale=True, colorImg=False, tile_spacing=(1,1)):
+    num_rows = int(num_rows)
+    num_cols = int((X.shape[0] / num_rows) + 0.999)
+    tile_shape = (num_rows, num_cols)
+    # make a tiled image from the given matrix's rows
+    image = tile_raster_images(X=X, img_shape=img_shape, \
+            tile_shape=tile_shape, tile_spacing=tile_spacing, \
+            scale=scale, colorImg=colorImg)
+    # convert to a standard image format and save to disk
+    image = PIL.Image.fromarray(image)
     image.save(file_name)
     return
 
