@@ -672,9 +672,9 @@ if __name__=="__main__":
     from GIPair import GIPair
     from NetLayers import relu_actfun, softplus_actfun, \
                           safe_softmax, safe_log
-    import GenNet
-    import InfNet
-    import PeaNet
+    import GenNet as GNet
+    import InfNet as INet
+    import PeaNet as PNet
 
     import sys, resource
     resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
@@ -698,7 +698,7 @@ if __name__=="__main__":
     # get and set some basic dataset information
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
-    batch_size = 64
+    batch_size = 100
     prior_dim = 75
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
@@ -712,7 +712,7 @@ if __name__=="__main__":
     Xt = T.matrix(name='Xt')
     Xp = T.matrix(name='Xp')
 
-    LOAD_FROM_FILE = True
+    LOAD_FROM_FILE = False
     if not LOAD_FROM_FILE:
         ###############################
         # Setup discriminator network #
@@ -733,7 +733,7 @@ if __name__=="__main__":
         dn_params['lam_l2a'] = 1e-2
         dn_params['vis_drop'] = 0.2
         dn_params['hid_drop'] = 0.5
-        dn_params['init_scale'] = 2.0
+        dn_params['init_scale'] = 1.0
         # Initialize a network object to use as the discriminator
         DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
         DN.init_biases(0.0)
@@ -744,20 +744,20 @@ if __name__=="__main__":
         # choose some parameters for the continuous inferencer
         in_params = {}
         shared_config = [data_dim, 1000, 1000]
-        top_config = [shared_config[-1], 250, prior_dim]
+        top_config = [shared_config[-1], prior_dim]
         in_params['shared_config'] = shared_config
         in_params['mu_config'] = top_config
         in_params['sigma_config'] = top_config
         in_params['activation'] = relu_actfun
-        in_params['init_scale'] = 2.0
+        in_params['init_scale'] = 1.0
         in_params['lam_l2a'] = 1e-2
         in_params['vis_drop'] = 0.0
         in_params['hid_drop'] = 0.0
         in_params['bias_noise'] = 0.1
-        in_params['input_noise'] = 0.0
+        in_params['input_noise'] = 1.3
         IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
                 prior_sigma=prior_sigma, params=in_params)
-        IN.init_biases(0.2)
+        IN.init_biases(0.0)
 
         ###########################
         # Setup generator network #
@@ -771,20 +771,20 @@ if __name__=="__main__":
         gn_params['hid_drop'] = 0.0
         gn_params['bias_noise'] = 0.1
         gn_params['out_type'] = 'bernoulli'
-        gn_params['activation'] = relu_actfun
-        gn_params['init_scale'] = 2.0
+        gn_params['activation'] = softplus_actfun
+        gn_params['init_scale'] = 1.3
         # Initialize a generator network object
         GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, params=gn_params)
-        GN.init_biases(0.2)
+        GN.init_biases(0.0)
     else:
         # Give file names for loading previously trained networks
-        dn_file = "VCG_PARAMS_DN_PREV.pkl"
-        in_file = "VCG_PARAMS_IN_PREV.pkl"
-        gn_file = "VCG_PARAMS_GN_PREV.pkl"
+        dn_file = "VCG_PARAMS_DN.pkl"
+        in_file = "VCG_PARAMS_IN.pkl"
+        gn_file = "VCG_PARAMS_GN.pkl"
         # Load the discriminator, inferencer, and generator from disk
-        DN = PeaNet.load_peanet_from_file(f_name=dn_file, rng=rng, Xd=Xd)
-        IN = InfNet.load_infnet_from_file(f_name=in_file, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
-        GN = GenNet.load_gennet_from_file(f_name=gn_file, rng=rng, Xp=Xp)
+        DN = PNet.load_peanet_from_file(f_name=dn_file, rng=rng, Xd=Xd)
+        IN = INet.load_infnet_from_file(f_name=in_file, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        GN = GNet.load_gennet_from_file(f_name=gn_file, rng=rng, Xp=Xp)
 
     ################################
     # Initialize the main VCGChain #
@@ -792,16 +792,32 @@ if __name__=="__main__":
     vcg_params = {}
     vcg_params['lam_l2d'] = 1e-2
     VCG = VCGChain(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
-                 g_net=GN, d_net=DN, chain_len=5, data_dim=data_dim, \
+                 g_net=GN, d_net=DN, chain_len=6, data_dim=data_dim, \
                  prior_dim=prior_dim, params=vcg_params)
     VCG.set_lam_l2w(1e-4)
+
+    # Pretrain a bit with RICA at input and output
+    IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
+    GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
+    for i in range(5000):
+        scale = min(1.0, (float(i+1) / 5000.0))
+        l_rate = 0.001 * scale
+        lam_l1 = 0.05
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(1000,))
+        Xd_batch = Xtr.take(tr_idx, axis=0)
+        inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
+        gnr_out = GN.train_rica(Xd_batch, l_rate, lam_l1)
+        if ((i % 1000) == 0):
+            print("rica batch {0:d}: in_recon={1:.4f}, in_spars={2:.4f}, gn_recon={3:.4f}, gn_spars={4:.4f}".format( \
+                    i, 1.*inr_out[1], 1.*inr_out[2], 1.*gnr_out[1], 1.*gnr_out[2]))
 
     ###################################
     # TRAIN AS MARKOV CHAIN WITH BPTT #
     ###################################
-    learn_rate = 0.0003
+    learn_rate = 0.0005
+    cost_1 = [0. for i in range(10)]
     for i in range(1000000):
-        scale = float(min((i+1), 25000)) / 25000.0
+        scale = float(min((i+1), 10000)) / 10000.0
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.75
         if True:
@@ -813,7 +829,7 @@ if __name__=="__main__":
             VCG.set_dn_sgd_params(learn_rate=0.5*scale*learn_rate)
             VCG.set_disc_weights(dweight_gn=5.0, dweight_dn=5.0)
             VCG.set_lam_chain_nll(1.0)
-            VCG.set_lam_chain_kld(1.0 + 0.5*scale)
+            VCG.set_lam_chain_kld(0.2 + 1.*scale)
             VCG.set_lam_chain_vel(0.0)
             VCG.set_lam_mask_nll(0.0)
             VCG.set_lam_mask_kld(0.0)
@@ -825,31 +841,14 @@ if __name__=="__main__":
             tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
             Xt_batch = Xtr.take(tr_idx, axis=0)
             # do 4 repetitions of the batch
-            Xd_batch = np.repeat(Xd_batch, 4, axis=0)
-            Xc_batch = np.repeat(Xc_batch, 4, axis=0)
-            Xm_batch = np.repeat(Xm_batch, 4, axis=0)
-            Xt_batch = np.repeat(Xt_batch, 4, axis=0)
+            Xd_batch = np.repeat(Xd_batch, 5, axis=0)
+            Xc_batch = np.repeat(Xc_batch, 5, axis=0)
+            Xm_batch = np.repeat(Xm_batch, 5, axis=0)
+            Xt_batch = np.repeat(Xt_batch, 5, axis=0)
             # do a minibatch update of the model, and compute some costs
             outputs = VCG.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
-            joint_cost_1 = 1.0 * outputs[0]
-            chain_nll_cost_1= 1.0 * outputs[1]
-            chain_kld_cost_1 = 1.0 * outputs[2]
-            chain_vel_cost_1 = 1.0 * outputs[3]
-            mask_nll_cost_1 = 1.0 * outputs[4]
-            mask_kld_cost_1 = 1.0 * outputs[5]
-            disc_cost_gn_1 = 1.0 * outputs[6]
-            disc_cost_dn_1 = 1.0 * outputs[7]
-            other_reg_cost_1 = 1.0 * outputs[8]
-            # # #
-            joint_cost_2 = 1.0
-            chain_nll_cost_2 = 1.0
-            chain_kld_cost_2 = 1.0
-            chain_vel_cost_2 = 1.0
-            mask_nll_cost_2 = 1.0
-            mask_kld_cost_2 = 1.0
-            disc_cost_gn_2 = 1.0
-            disc_cost_dn_2 = 1.0
-            other_reg_cost_2 = 1.0
+            cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
+            #cost_2 = [1.0 for v in cost_1]
         if ((i % 4) == 0):
             #########################################
             # TRAIN THE CHAIN UNDER PARTIAL CONTROL #
@@ -862,7 +861,7 @@ if __name__=="__main__":
             VCG.set_lam_chain_kld(0.0)
             VCG.set_lam_chain_vel(0.0)
             VCG.set_lam_mask_nll(1.0)
-            VCG.set_lam_mask_kld(1.0 + 0.5*scale)
+            VCG.set_lam_mask_kld(0.2 + 1.*scale)
             # get some data to train with
             tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
             Xd_batch = Xc_mean
@@ -888,21 +887,14 @@ if __name__=="__main__":
             disc_cost_gn_2 = 1.0 * outputs[6]
             disc_cost_dn_2 = 1.0 * outputs[7]
             other_reg_cost_2 = 1.0 * outputs[8]
-            # # #
-            #joint_cost_1 = 1.0
-            #chain_nll_cost_1 = 1.0
-            #chain_kld_cost_1 = 1.0
-            #chain_vel_cost_1 = 1.0
-            #mask_nll_cost_1 = 1.0
-            #mask_kld_cost_1 = 1.0
-            #disc_cost_gn_1 = 1.0
-            #disc_cost_dn_1 = 1.0
-            #other_reg_cost_1 = 1.0
+            # cost_1 = [0. for k in range(10)]
         if ((i % 1000) == 0):
-            print("batch: {0:d}, joint_cost: {1:.4f}, chain_nll_cost: {2:.4f}, chain_kld_cost: {3:.4f}, chain_vel_cost: {4:.4f}, disc_cost_gn: {5:.4f}, disc_cost_dn: {6:.4f}".format( \
-                    i, joint_cost_1, chain_nll_cost_1, chain_kld_cost_1, chain_vel_cost_1, disc_cost_gn_1, disc_cost_dn_1))
+            cost_1 = [(v / 1000.0) for v in cost_1]
+            print("batch: {0:d}, joint_cost: {1:.4f}, chain_nll_cost: {2:.4f}, chain_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
+                    i, cost_1[0], cost_1[1], cost_1[2], cost_1[6], cost_1[7]))
             print("------ {0:d}, joint_cost: {1:.4f}, mask_nll_cost: {2:.4f}, mask_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
                     i, joint_cost_2, mask_nll_cost_2, mask_kld_cost_2, disc_cost_gn_2, disc_cost_dn_2))
+            cost_1 = [0. for v in cost_1]
         if ((i % 5000) == 0):
             tr_idx = npr.randint(low=0,high=Xtr.shape[0],size=(5,))
             va_idx = npr.randint(low=0,high=Xva.shape[0],size=(5,))

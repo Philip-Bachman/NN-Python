@@ -65,7 +65,7 @@ def log_prob_gaussian(mu_true, mu_approx, les_sigmas=1.0, mask=None):
     row_log_probs = T.sum((ind_log_probs * mask), axis=1, keepdims=True)
     return row_log_probs
 
-def log_prob_gaussian2(mu_true, mu_approx, les_logvars=1.0, mask=None):
+def log_prob_gaussian2(mu_true, mu_approx, log_vars=1.0, mask=None):
     """
     Compute log probability of some continuous variables with values given
     by mu_true, w.r.t. gaussian distributions with means given by mu_approx
@@ -73,9 +73,8 @@ def log_prob_gaussian2(mu_true, mu_approx, les_logvars=1.0, mask=None):
     """
     if mask is None:
         mask = T.ones((1, mu_approx.shape[1]))
-    log_sigmas = les_logvars / 2.0
-    ind_log_probs = C - log_sigmas  - \
-            (0.5 * ((mu_true - mu_approx) / T.exp(log_sigmas))**2.0)
+    ind_log_probs = C - (0.5 * log_vars)  - \
+            ((mu_true - mu_approx)**2.0 / (2.0 * T.exp(log_vars)))
     row_log_probs = T.sum((ind_log_probs * mask), axis=1, keepdims=True)
     return row_log_probs
 

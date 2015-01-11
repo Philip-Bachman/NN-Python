@@ -35,7 +35,7 @@ class GIPair(object):
     Controller for training a variational autoencoder.
 
     The generator must be an instance of the GenNet class implemented in
-    "GINet.py". The inferencer must be an instance of the InfNet class
+    "GenNet.py". The inferencer must be an instance of the InfNet class
     implemented in "InfNet.py".
 
     Parameters:
@@ -69,7 +69,8 @@ class GIPair(object):
         self.Xm = Xm
         # check whether we'll be working with "encoded" inputs
         self.use_encoder = i_net.use_encoder
-        print("i_net.use_encoder: {0:s}, g_net.use_decoder: {1:s}".format(str(i_net.use_encoder), str(g_net.use_decoder)))
+        print("i_net.use_encoder: {0:s}, g_net.use_decoder: {1:s}".format( \
+                str(i_net.use_encoder), str(g_net.use_decoder)))
         assert(self.use_encoder == g_net.use_decoder)
         # create a "shared-parameter" clone of the inferencer, set up to
         # receive input from the appropriate symbolic variables.
@@ -167,7 +168,7 @@ class GIPair(object):
         # Get the gradient of the joint cost for all optimizable parameters
         self.joint_grads = OrderedDict()
         for p in self.joint_params:
-            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-1.0, 1.0)
+            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1, 0.1)
 
         # Construct the updates for the generator and inferencer networks
         self.gn_updates = get_adam_updates(params=self.gn_params, \

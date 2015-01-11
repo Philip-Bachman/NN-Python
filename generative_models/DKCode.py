@@ -28,6 +28,9 @@ def PCA_theano(x_in, cutoff=0.99, global_sd=True):
     print "Performing eigen-decomposition for PCA..."
     x_cov = np.dot(x.T, x) / x.shape[0]
     eigval, eigvec = np.linalg.eig(x_cov)
+    #
+    #eigval = np.ones(eigval.shape)
+    #
     print "Done."
     if cutoff <= 1:
         # pick the number of dimensions to keep based on recovered variance

@@ -70,8 +70,6 @@ class PeaNet(object):
             vis_drop: drop rate to use on input layers (when desired)
             hid_drop: drop rate to use on hidden layers (when desired)
                 -- note: vis_drop/hid_drop are optional, with defaults 0.2/0.5
-            ear_type: type of Ensemble Agreement Regularization (EAR) to use
-                -- note: defns of _ear_cost() and _ear_loss() give more info
             activation: non-linearity to apply in hidden layers
             init_scale: scaling factor for hidden layer weights (__ * 0.01)
             proto_configs: list of lists, where each sublist gives the number
@@ -125,7 +123,6 @@ class PeaNet(object):
             self.init_scale = 1.0
         self.proto_configs = params['proto_configs']
         self.spawn_configs = params['spawn_configs']
-        self.ear_type = params['ear_type']
         # Compute some "structural" properties of this ensemble
         self.max_proto_depth = max([(len(pc)-1) for pc in self.proto_configs])
         self.spawn_count = len(self.spawn_configs)
@@ -266,7 +263,7 @@ class PeaNet(object):
         self.output_spawn = [sn[-1].linear_output for sn in self.spawn_nets]
 
         # get a cost function for encouraging "pseudo-ensemble agreement"
-        self.pea_reg_cost = self._ear_cost(self.ear_type)
+        self.pea_reg_cost = self._ear_cost()
         # get a cost function for penalizing/rewarding prediction entropy
         self.ent_reg_cost = self._ent_cost()
         self.act_reg_cost = lam_l2a * self._act_reg_cost()
@@ -286,7 +283,7 @@ class PeaNet(object):
         full_act_sq_sum = T.sum(act_sq_sums) / self.spawn_count
         return full_act_sq_sum
 
-    def _ear_cost(self, ear_type):
+    def _ear_cost(self):
         """
         Compute the cost of pseudo-ensemble agreement regularization.
         """
@@ -401,13 +398,19 @@ class PeaNet(object):
             layer.b.set_value(b_vec)
         return
 
-    def shared_param_clone(self, rng=None, Xd=None):
+    def shared_param_clone(self, rng=None, Xd=None, params=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
         """
-        clone_net = PeaNet(rng=rng, Xd=Xd, params=self.params, \
-                shared_param_dicts=self.shared_param_dicts)
+        if params is None:
+            # make a clone with the same parameters as this PeaNet
+            clone_net = PeaNet(rng=rng, Xd=Xd, params=self.params, \
+                    shared_param_dicts=self.shared_param_dicts)
+        else:
+            # make a clone with different parameters from this PeaNet
+            clone_net = PeaNet(rng=rng, Xd=Xd, params=params, \
+                    shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
     def save_to_file(self, f_name=None):
@@ -504,8 +507,6 @@ if __name__ == "__main__":
     dn_params['spawn_configs'] = [sc0]
     dn_params['spawn_weights'] = [1.0]
     # Set remaining params
-    dn_params['ear_type'] = 2
-    dn_params['ear_lam'] = 0.0
     dn_params['lam_l2a'] = 1e-2
     dn_params['vis_drop'] = 0.2
     dn_params['hid_drop'] = 0.5

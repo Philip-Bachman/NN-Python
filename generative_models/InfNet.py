@@ -22,6 +22,20 @@ from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
 # INFREENCE NETWORK IMPLEMENTATION #
 ####################################
 
+def row_normalize(x):
+    """
+    Normalize rows of matrix x to unit (L2) norm.
+    """
+    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1)+1e-8)
+    return x_normed
+
+def soft_abs(x, smoothing=1e-5):
+    """
+    Soft absolute value function applied to x.
+    """
+    sa_x = T.sqrt(x**2. + smoothing)
+    return sa_x
+
 
 class InfNet(object):
     """
@@ -94,11 +108,13 @@ class InfNet(object):
             self.init_scale = 1.0
         if 'encoder' in params:
             self.encoder = params['encoder']
+            self.decoder = params['decoder']
             self.use_encoder = True
             self.Xc_encoded = self.encoder(self.Xc)
             self.Xd_encoded = self.encoder(self.Xd)
         else:
             self.encoder = lambda x: x
+            self.decoder = lambda x: x
             self.use_encoder = False
             self.Xc_encoded = self.encoder(self.Xc)
             self.Xd_encoded = self.encoder(self.Xd)
@@ -328,11 +344,11 @@ class InfNet(object):
 
         # The output of this inference network is given by the noisy output
         # of the final layers of its mu and sigma networks.
-        self.output_mu = self.mu_layers[-1].noisy_linear
+        self.output_mean = self.mu_layers[-1].noisy_linear
         self.output_logvar = self.sigma_layers[-1].noisy_linear
         self.output_sigma = T.exp(0.5 * self.output_logvar)
         # We'll also construct an output containing a single samples from each
-        # of the distributions represented by the rows of self.output_mu and
+        # of the distributions represented by the rows of self.output_mean and
         # self.output_sigma.
         self.output = self._construct_post_samples()
         self.out_dim = self.sigma_layers[-1].out_dim
@@ -347,8 +363,39 @@ class InfNet(object):
         # in the "data space".
         self.sample_posterior = self._construct_sample_posterior()
         self.mean_posterior = theano.function([self.Xd, self.Xc, self.Xm], \
-                outputs=self.output_mu)
+                outputs=self.output_mean)
+
+        ########################################################
+        # CONSTRUCT FUNCTIONS FOR RICA PRETRAINING INPUT LAYER #
+        ########################################################
+        self.rica_func = None
+        self.W_rica = self.shared_layers[0].W
         return
+
+    def train_rica(self, X, lr, lam):
+        """
+        CONSTRUCT FUNCTIONS FOR RICA PRETRAINING INPUT LAYER
+        """
+        if self.rica_func is None:
+            l_rate = T.scalar()
+            lam_l1 = T.scalar()
+            X_in = T.matrix('in_X_in')
+            W_in = self.W_rica + self.rng.normal(size=self.W_rica.shape, \
+                avg=0.0, std=0.01, dtype=theano.config.floatX)
+            X_enc = self.encoder(X_in)
+            H_rec = T.dot(X_enc, W_in)
+            X_rec = T.dot(H_rec, W_in.T)
+            recon_cost = T.sum((X_enc - X_rec)**2.0) / X_enc.shape[0]
+            spars_cost = lam_l1 * (T.sum(soft_abs(H_rec)) / H_rec.shape[0])
+            rica_cost = recon_cost + spars_cost
+            dW = T.grad(rica_cost, self.W_rica)
+            rica_updates = {self.W_rica: self.W_rica - (l_rate * dW)}
+            rica_outputs = [rica_cost, recon_cost, spars_cost]
+            self.rica_func = theano.function([X_in, l_rate, lam_l1], \
+                    outputs=rica_outputs, \
+                    updates=rica_updates)
+        outputs = self.rica_func(X, lr, lam)
+        return outputs
 
     def _act_reg_cost(self):
         """
@@ -367,9 +414,9 @@ class InfNet(object):
     def _construct_post_samples(self):
         """
         Draw a single sample from each of the approximate posteriors encoded
-        in self.output_mu and self.output_sigma.
+        in self.output_mean and self.output_sigma.
         """
-        post_samples = self.output_mu + (self.output_sigma * \
+        post_samples = self.output_mean + (self.output_sigma * \
                 self.rng.normal(size=self.output_sigma.shape, avg=0.0, std=1.0, \
                 dtype=theano.config.floatX))
         return post_samples
@@ -382,7 +429,7 @@ class InfNet(object):
         """
         prior_sigma_sq = self.prior_sigma**2.0
         prior_log_sigma_sq = np.log(prior_sigma_sq)
-        kld_cost = 0.5 * T.sum(((self.output_mu**2.0 / prior_sigma_sq) + \
+        kld_cost = 0.5 * T.sum(((self.output_mean**2.0 / prior_sigma_sq) + \
                 (T.exp(self.output_logvar) / prior_sigma_sq) - \
                 (self.output_logvar - prior_log_sigma_sq) - 1.0), axis=1, keepdims=True)
         return kld_cost
@@ -396,19 +443,22 @@ class InfNet(object):
                 outputs=self.output)
         return psample
 
-    def init_biases(self, b_init=0.0):
+    def init_biases(self, b_init=0.0, b_std=1e-2):
         """
         Initialize the biases in all hidden layers to some constant.
         """
         for layer in self.shared_layers:
             b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
-            layer.b.set_value(b_vec)
+            b_vec = b_vec + (b_std * npr.randn(*b_vec.shape))
+            layer.b.set_value(b_vec.astype(theano.config.floatX))
         for layer in self.mu_layers[:-1]:
             b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
-            layer.b.set_value(b_vec)
+            b_vec = b_vec + (b_std * npr.randn(*b_vec.shape))
+            layer.b.set_value(b_vec.astype(theano.config.floatX))
         for layer in self.sigma_layers[:-1]:
             b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
-            layer.b.set_value(b_vec)
+            b_vec = b_vec + (b_std * npr.randn(*b_vec.shape))
+            layer.b.set_value(b_vec.astype(theano.config.floatX))
         return
 
     def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None):

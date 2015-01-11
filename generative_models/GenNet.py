@@ -22,6 +22,20 @@ from LogPDFs import log_prob_bernoulli, log_prob_gaussian2
 # GENERATIVE NETWORK IMPLEMENTATION #
 #####################################
 
+def row_normalize(x):
+    """
+    Normalize rows of matrix x to unit (L2) norm.
+    """
+    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1)+1e-8)
+    return x_normed
+
+def soft_abs(x, smoothing=1e-5):
+    """
+    Soft absolute value function applied to x.
+    """
+    sa_x = T.sqrt(x**2. + smoothing)
+    return sa_x
+
 class GenNet(object):
     """
     A net that transforms a simple distribution so that it matches some
@@ -42,6 +56,8 @@ class GenNet(object):
             out_type: set this to "bernoulli" for generating outputs to match
                       bernoulli-valued observations and set it to "gaussian" to
                       match general real-valued observations.
+            mean_transform: an optional transform, e.g. the sigmoid or a norm
+                            constraint, to apply to output gaussian's mean.
             activation: "function handle" for the desired non-linearity
             init_scale: scaling factor for hidden layer weights (__ * 0.01)
         shared_param_dicts: parameters for the MLP controlled by this GenNet
@@ -91,6 +107,10 @@ class GenNet(object):
         else:
             # default to bernoulli-valued outputs
             self.out_type = 'bernoulli'
+        if 'mean_transform' in params:
+            self.mean_transform = params['mean_transform']
+        else:
+            self.mean_transform = lambda x: x
         # Get the configuration/prototype for this network. The config is a
         # list of layer descriptions, including a description for the input
         # layer, which is typically just the dimension of the inputs. So, the
@@ -109,10 +129,12 @@ class GenNet(object):
             # generative model for some images in a dimension-reduced PCA space
             # rather than in the original pixel space. but, we want to be able
             # to sample easily from the model distribution in pixel space...
+            self.encoder = params['encoder']
             self.decoder = params['decoder']
             self.use_decoder = True
         else:
             # no transform was given by the user, so we'll just apply a no-op
+            self.encoder = lambda x: x
             self.decoder = lambda x: x
             self.use_decoder = False
         # Check if the params for this net were given a priori. This option
@@ -174,13 +196,13 @@ class GenNet(object):
                         name=l_name, W_scale=i_scale)
                 self.mlp_layers.append(new_layer)
                 self.shared_param_dicts.append({'W': new_layer.W, 'b': new_layer.b})
-                if (last_layer and (self.out_type == 'gaussian')):
+                if (last_layer and (self.out_type != 'bernoulli')):
                     # add an extra layer/transform for encoding log-variance
                     lv_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
-                        name=l_name+'_logvar', W_scale=0.2*i_scale)
+                        name=l_name+'_logvar', W_scale=0.1*i_scale)
                     self.logvar_layer = lv_layer
                     self.mlp_layers.append(lv_layer)
                     self.shared_param_dicts.append({'W': lv_layer.W, 'b': lv_layer.b})
@@ -195,7 +217,7 @@ class GenNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
                         name=l_name, W_scale=i_scale))
-                if (last_layer and (self.out_type == 'gaussian')):
+                if (last_layer and (self.out_type != 'bernoulli')):
                     # add an extra layer for predicting log-variance.
                     # we'll shrink the init scale for this layer, to avoid
                     # unreasonably small initial predicted logvars.
@@ -205,7 +227,7 @@ class GenNet(object):
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        name=l_name+'_logvar', W_scale=0.2*i_scale))
+                        name=l_name+'_logvar', W_scale=0.1*i_scale))
             next_input = self.mlp_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1
@@ -233,7 +255,7 @@ class GenNet(object):
             self.mlp_params.extend(layer.params)
         # add the output bias vector to the param list
         self.mlp_params.append(self.output_bias)
-        if (self.out_type == 'gaussian'):
+        if (self.out_type != 'bernoulli'):
             self.mlp_params.append(self.logvar_bias)
 
         # The output of this generator network is given by the noisy output
@@ -245,14 +267,16 @@ class GenNet(object):
         if self.out_type == 'bernoulli':
             self.output = (T.nnet.sigmoid(self.mlp_layers[-1].linear_output + self.output_bias) * \
                     self.output_mask)
-            self.output_mu = self.output
+            self.output_mean = self.output
             self.output_logvar = self.output
             self.output_sigma = self.output
         else:
-            self.output_mu = self.mlp_layers[-2].linear_output + self.output_bias
-            #self.output_mu = T.nnet.sigmoid(self.mlp_layers[-2].linear_output + self.output_bias)
+            # get the predicted mean
+            output_mean = self.mlp_layers[-2].linear_output + self.output_bias
+            # apply a transform (it's just identity if none was given)
+            self.output_mean = self.mean_transform(output_mean)
             # WE BOUND LOG VARIANCE -- TO KEEP SIGMA BOUNDED AWAY FROM 0...
-            self.output_logvar = (4.0 * T.tanh(self.mlp_layers[-1].linear_output / 4.0)) - \
+            self.output_logvar = (3.0 * T.tanh(self.mlp_layers[-1].linear_output / 3.0)) - \
                     (3.0 * T.tanh(self.logvar_bias[0] / 3.0))
             self.output_sigma = T.exp(0.5 * self.output_logvar)
             self.output = self._construct_post_samples() * self.output_mask
@@ -275,7 +299,41 @@ class GenNet(object):
         # Construct a function for passing points from the latent/prior space
         # through the transform induced by the current model parameters.
         self.transform_prior = self._construct_transform_prior()
+
+        ########################################################
+        # CONSTRUCT FUNCTIONS FOR RICA PRETRAINING OUTPUT MEAN #
+        ########################################################
+        self.rica_func = None
+        if ('gaussian' in self.out_type):
+            self.W_rica = self.mlp_layers[-2].W
+        else:
+            self.W_rica = self.mlp_layers[-1].W
         return
+
+    def train_rica(self, X, lr, lam):
+        """
+        CONSTRUCT FUNCTIONS FOR RICA PRETRAINING OUTPUT MEAN
+        """
+        if self.rica_func is None:
+            l_rate = T.scalar()
+            lam_l1 = T.scalar()
+            W_out = self.W_rica + self.rng.normal(size=self.W_rica.shape, \
+                avg=0.0, std=0.01, dtype=theano.config.floatX)
+            X_out = T.matrix('gn_X_out')
+            X_enc = self.encoder(X_out)
+            H_rec = T.dot(X_enc, W_out.T)
+            X_rec = T.dot(H_rec, W_out)
+            recon_cost = T.sum((X_enc - X_rec)**2.0) / X_enc.shape[0]
+            spars_cost = lam_l1 * (T.sum(soft_abs(H_rec)) / H_rec.shape[0])
+            rica_cost = recon_cost + spars_cost
+            dW = T.grad(rica_cost, self.W_rica)
+            rica_updates = {self.W_rica: self.W_rica - (l_rate * dW)}
+            rica_outputs = [rica_cost, recon_cost, spars_cost]
+            self.rica_func = theano.function([X_out, l_rate, lam_l1], \
+                    outputs=rica_outputs, \
+                    updates=rica_updates)
+        outputs = self.rica_func(X, lr, lam)
+        return outputs
 
     def _act_reg_cost(self):
         """
@@ -290,9 +348,9 @@ class GenNet(object):
     def _construct_post_samples(self):
         """
         Draw a single sample from each of the approximate posteriors encoded
-        in self.output_mu and self.output_sigma.
+        in self.output_mean and self.output_sigma.
         """
-        post_samples = self.output_mu + (self.output_sigma * \
+        post_samples = self.output_mean + (self.output_sigma * \
                 self.rng.normal(size=self.output_sigma.shape, avg=0.0, std=1.0, \
                 dtype=theano.config.floatX))
         return post_samples
@@ -349,7 +407,7 @@ class GenNet(object):
         sigma = T.dot((self.output.T - mu.T), (self.output - mu))
         return [mu, sigma]
 
-    def init_biases(self, b_init=0.0):
+    def init_biases(self, b_init=0.0, b_std=1e-2):
         """
         Initialize the biases in all hidden layers to some constant.
         """
@@ -357,12 +415,14 @@ class GenNet(object):
             # Always start with 0 bias on the pre-sigmoid output
             for layer in self.mlp_layers[:-1]:
                 b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
-                layer.b.set_value(b_vec)
+                b_vec = b_vec + (b_std * npr.randn(*b_vec.shape))
+                layer.b.set_value(b_vec.astype(theano.config.floatX))
         else:
             # Always start with 0 bias on the output mean and log-variance
             for layer in self.mlp_layers[:-2]:
                 b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
-                layer.b.set_value(b_vec)
+                b_vec = b_vec + (b_std * npr.randn(*b_vec.shape))
+                layer.b.set_value(b_vec.astype(theano.config.floatX))
         return
 
     def init_moments(self, X_noise):
@@ -403,8 +463,8 @@ class GenNet(object):
         if (self.out_type == 'bernoulli'):
             log_prob_cost = log_prob_bernoulli(Xd, self.output, mask=self.output_mask)
         else:
-            log_prob_cost = log_prob_gaussian2(Xd, self.output_mu, \
-                    les_logvars=self.output_logvar, mask=self.output_mask)
+            log_prob_cost = log_prob_gaussian2(Xd, self.output_mean, \
+                    log_vars=self.output_logvar, mask=self.output_mask)
         return log_prob_cost
 
     def masked_log_prob(self, Xc=None, Xm=None):
@@ -422,8 +482,8 @@ class GenNet(object):
         if (self.out_type == 'bernoulli'):
             log_prob_cost = log_prob_bernoulli(Xc, self.output, mask=Xm_inv)
         else:
-            log_prob_cost = log_prob_gaussian2(Xc, self.output_mu, \
-                    les_logvars=self.output_logvar, mask=Xm_inv)
+            log_prob_cost = log_prob_gaussian2(Xc, self.output_mean, \
+                    log_vars=self.output_logvar, mask=Xm_inv)
         return log_prob_cost
 
     def shared_param_clone(self, rng=None, Xp=None):

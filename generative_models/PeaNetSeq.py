@@ -149,10 +149,12 @@ class PeaNetSeq(object):
         pea_net: The PeaNet instance that will spawn the clone sequence
         seq_len: length of the sequence w.r.t. to compute PEAR cost
         seq_Xd: optional list of symbolic inputs to the clone sequence
+        no_noise: boolean switch for whether to use noisy PeaNets
         params: dict for passing additional parameters
+        shared_param_dict: dict for making clones with shared lambdas
     """
     def __init__(self, rng=None, pea_net=None, seq_len=2, seq_Xd=None, \
-            params=None):
+            no_noise=False, params=None, shared_param_dict=None):
         assert(not (rng is None))
         assert(not (pea_net is None))
         assert(seq_len >= 2)
@@ -160,11 +162,25 @@ class PeaNetSeq(object):
             # if symbolic inputs for the sequence to receive are given when
             # the sequence is created, check if it's the right amount.
             assert(len(seq_Xd) == seq_len)
+        self.params = params
         # setup a rng for this PeaNetSeq
         self.rng = RandStream(rng.randint(100000))
+        if shared_param_dict is None:
+            self.is_clone = False
+            self.shared_param_dict = {}
+        else:
+            print("Inititalizing a PeaNetSeq clone...")
+            self.is_clone = True
+            self.shared_param_dict = shared_param_dict
+        # make param dict for a noiseless version of the PNSeq
+        new_pn_params = pea_net.params.copy()
+        if no_noise:
+            for sc in new_pn_params['spawn_configs']:
+                sc['input_noise'] = 0.0
+                sc['bias_noise'] = 0.0
+                sc['do_dropout'] = False
 
         # setup the sequence of PeaNet clones
-        self.PN = pea_net
         self.seq_len = seq_len
         self.Xd_seq = []
         self.Yd_seq = []
@@ -181,34 +197,58 @@ class PeaNetSeq(object):
             # add observation/label inputs and the clone to the sequence
             self.Xd_seq.append(Xd_i)
             self.Yd_seq.append(Yd_i)
-            self.PN_seq.append(self.PN.shared_param_clone(rng=rng, Xd=Xd_i))
+            self.PN_seq.append(pea_net.shared_param_clone(rng=rng, Xd=Xd_i, \
+                    params=new_pn_params))
+        self.PN = self.PN_seq[0]
         # create the full list of symbolic inputs required for training
         self.seq_inputs = self.Xd_seq + self.Yd_seq
 
-        # shared var learning rate for the base network
-        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-        self.lr_pn = theano.shared(value=zero_ary, name='pnseq_lr_pn')
-        # shared var momentum parameters for the base network
-        self.mom_1 = theano.shared(value=zero_ary, name='pnseq_mom_1')
-        self.mom_2 = theano.shared(value=zero_ary, name='pnseq_mom_2')
-        self.it_count = theano.shared(value=zero_ary, name='pnseq_it_count')
-        # init parameters for controlling learning dynamics
-        self.set_pn_sgd_params()
-        # init shared var for weighting PEA cost on supervised inputs
-        self.lam_pea_su = theano.shared(value=zero_ary, name='pnseq_lam_pea_su')
-        self.set_lam_pea_su(lam_pea_su=1.0)
-        # init shared var for weighting PEA cost on unsupervised inputs
-        self.lam_pea_un = theano.shared(value=zero_ary, name='pnseq_lam_pea_un')
-        self.set_lam_pea_un(lam_pea_un=1.0)
-        # init shared var for weighting entropy cost on unsupervised inputs
-        self.lam_ent = theano.shared(value=zero_ary, name='pnseq_lam_ent')
-        self.set_lam_ent(lam_ent=0.0)
-        # init shared var for weighting classification cost on supervised inputs
-        self.lam_class = theano.shared(value=zero_ary, name='pnseq_lam_class')
-        self.set_lam_class(lam_class=1.0)
-        # init shared var for controlling l2 regularization on params
-        self.lam_l2w = theano.shared(value=zero_ary, name='pnseq_lam_l2w')
-        self.set_lam_l2w(1e-4)
+        if not self.is_clone:
+            # shared var learning rate for the base network
+            zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+            self.lr_pn = theano.shared(value=zero_ary, name='pnseq_lr_pn')
+            # shared var momentum parameters for the base network
+            self.mom_1 = theano.shared(value=zero_ary, name='pnseq_mom_1')
+            self.mom_2 = theano.shared(value=zero_ary, name='pnseq_mom_2')
+            self.it_count = theano.shared(value=zero_ary, name='pnseq_it_count')
+            # init parameters for controlling learning dynamics
+            self.set_pn_sgd_params()
+            # init shared var for weighting PEA cost on supervised inputs
+            self.lam_pea_su = theano.shared(value=zero_ary, name='pnseq_lam_pea_su')
+            self.set_lam_pea_su(lam_pea_su=1.0)
+            # init shared var for weighting PEA cost on unsupervised inputs
+            self.lam_pea_un = theano.shared(value=zero_ary, name='pnseq_lam_pea_un')
+            self.set_lam_pea_un(lam_pea_un=1.0)
+            # init shared var for weighting entropy cost on unsupervised inputs
+            self.lam_ent = theano.shared(value=zero_ary, name='pnseq_lam_ent')
+            self.set_lam_ent(lam_ent=0.0)
+            # init shared var for weighting classification cost on supervised inputs
+            self.lam_class = theano.shared(value=zero_ary, name='pnseq_lam_class')
+            self.set_lam_class(lam_class=1.0)
+            # init shared var for controlling l2 regularization on params
+            self.lam_l2w = theano.shared(value=zero_ary, name='pnseq_lam_l2w')
+            self.set_lam_l2w(1e-4)
+            # make the dict for passing around shared lambdas
+            self.shared_param_dict['lr_pn'] = self.lr_pn
+            self.shared_param_dict['mom_1'] = self.mom_1
+            self.shared_param_dict['mom_2'] = self.mom_2
+            self.shared_param_dict['it_count'] = self.it_count
+            self.shared_param_dict['lam_pea_su'] = self.lam_pea_su
+            self.shared_param_dict['lam_pea_un'] = self.lam_pea_un
+            self.shared_param_dict['lam_ent'] = self.lam_ent
+            self.shared_param_dict['lam_class'] = self.lam_class
+            self.shared_param_dict['lam_l2w'] = self.lam_l2w
+        else:
+            # copy shared lambdas from the cloning dict
+            self.lr_pn = self.shared_param_dict['lr_pn']
+            self.mom_1 = self.shared_param_dict['mom_1']
+            self.mom_2 = self.shared_param_dict['mom_2']
+            self.it_count = self.shared_param_dict['it_count']
+            self.lam_pea_su = self.shared_param_dict['lam_pea_su']
+            self.lam_pea_un = self.shared_param_dict['lam_pea_un']
+            self.lam_ent = self.shared_param_dict['lam_ent']
+            self.lam_class = self.shared_param_dict['lam_class']
+            self.lam_l2w = self.shared_param_dict['lam_l2w']
 
         # grab the full set of "optimizable" parameters from the base network
         self.mlp_params = [p for p in self.PN.proto_params]
@@ -413,6 +453,16 @@ class PeaNetSeq(object):
         err_rate = np.sum(((Y_d != Y_c) * Y_mask)) / np.sum(Y_mask)
         return err_rate
 
+    def shared_param_clone(self, rng=None, seq_len=2, seq_Xd=None, \
+            no_noise=False):
+        """
+        Create a clone of this PeaNetSeq that shares its cost lambdas.
+        """
+        pns_clone = PeaNetSeq(rng=rng, pea_net=self.PN, seq_len=seq_len, \
+                seq_Xd=seq_Xd, no_noise=no_noise, params=self.params, \
+                shared_param_dict=self.shared_param_dict)
+        return pns_clone
+
 def zmuv(X, axis=1):
     X = X - np.mean(X, axis=axis, keepdims=True)
     X = X / np.std(X, axis=axis, keepdims=True)
@@ -472,7 +522,6 @@ if __name__=="__main__":
     pn_params['spawn_weights'] = [ 1.0 ]
     # Set remaining params
     pn_params['activation'] = relu_actfun
-    pn_params['ear_type'] = 6
     pn_params['lam_l2a'] = 1e-3
     pn_params['vis_drop'] = 0.2
     pn_params['hid_drop'] = 0.5
@@ -483,6 +532,7 @@ if __name__=="__main__":
 
     # Initialize the PeaNetSeq
     PNS = PeaNetSeq(rng=rng, pea_net=PN, seq_len=2, seq_Xd=None, params=None)
+    PNS1 = PNS.shared_param_clone(rng=rng, seq_len=2, seq_Xd=None)
 
     # set weighting parameters for the various costs...
     PNS.set_lam_class(1.0)
@@ -491,7 +541,7 @@ if __name__=="__main__":
     PNS.set_lam_ent(0.0)
     PNS.set_lam_l2w(1e-5)
 
-    out_file = open("PNS_TEST_ZMUV.txt", 'wb')
+    out_file = open("PNS_TEST_ADAM.txt", 'wb')
     learn_rate = 0.1
     PNS.set_pn_sgd_params(lr_pn=learn_rate, mom_1=0.9, mom_2=0.999)
     for i in range(300000):
@@ -511,7 +561,7 @@ if __name__=="__main__":
         # set learning parameters for this update
         PNS.set_pn_sgd_params(lr_pn=learn_rate, mom_1=0.9, mom_2=0.999)
         # do a minibatch update of all PeaNet parameters
-        outputs = PNS.train_joint(Xd_batch, Xd_batch, Yd_batch, Yd_batch)
+        outputs = PNS1.train_joint(Xd_batch, Xd_batch, Yd_batch, Yd_batch)
         joint_cost = 1.0 * outputs[0]
         class_cost = 1.0 * outputs[1]
         pea_cost = 1.0 * outputs[2]
