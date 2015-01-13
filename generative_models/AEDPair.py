@@ -39,15 +39,8 @@ def max_normalize(x, axis=1):
     x_normed = x / row_scales
     return x_normed
 
-def apply_sigmoid(x):
-    """
-    Apply sigmoid to all values in x.
-    """
-    x_sigm = T.nnet.sigmoid(x)
-    return x_sigm
 
-
-class ADPair(object):
+class AEDPair(object):
     """
     Controller for training an adversarial example generator.
 
@@ -67,29 +60,40 @@ class ADPair(object):
         data_dim: dimension of the "observable data" variables
         prior_dim: dimension of the "latent prior" variables
         params: dict for passing additional parameters
+            match_type: "grad_sign" matches the sign of the PEA gradient and
+                        "grad_dir" matches the direction of the PEA gradient
     """
     def __init__(self, rng=None, Xd=None, \
             g_net=None, i_net=None, pn_seq=None, \
             data_dim=None, prior_dim=None, \
             params=None):
-        # setup a rng for this ADPair
+        # setup a rng for this AEDPair
         self.rng = RandStream(rng.randint(100000))
 
         if (params is None):
             self.params = {}
         else:
             self.params = params
-        if 'mean_transform' in self.params:
-            # apply a user-defined transform to the GenNet output prior to
-            # rescaling by self.lam_mnb...
-            self.mean_transform = self.params['mean_transform']
+        if 'match_type' in params:
+            self.match_type = params['match_type']
         else:
-            # default transform is sigmoid -> shift -> scale so that
-            # perturbations (for each dimension) are in range -1 --> 1.
-            self.mean_transform = lambda x: 2.0 * (apply_sigmoid(x) - 0.5)
+            self.match_type = 'grad_sign'
+        # we can only try to match sign or direction...
+        assert((self.match_type == 'grad_dir') or \
+                (self.match_type == 'grad_sign'))
+        if self.match_type == 'grad_dir':
+            # we match the direction of the gradient under the assumption
+            # of gaussian observation noise
+            self.mean_transform = lambda x: max_normalize(x, axis=1)
+            assert(g_net.out_type == 'gaussian')
+        else:
+            # we match the sign of the gradient as if it were a collection
+            # of independent binary variables
+            self.mean_transform = lambda x: 2.0 * (x - 0.5)
+            assert(g_net.out_type == 'bernoulli')
 
         # record the symbolic variables that will provide inputs to the
-        # computation graph created to describe this ADPair
+        # computation graph created to describe this AEDPair
         self.Xd = Xd
         self.Yd = T.icol('adp_Yd') # labels to pass to the PeaNetSeq
         self.Xc = 0.0 * self.Xd
@@ -100,20 +104,22 @@ class ADPair(object):
         # receive input from the appropriate symbolic variables.
         self.IN = i_net.shared_param_clone(rng=rng, \
                 Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
+        self.policy_mean = self.IN.output_mean
+        self.policy_logvar = self.IN.output_logvar
         # capture a handle for samples from the variational posterior
         self.Xp = self.IN.output
         # create a "shared-parameter" clone of the generator, set up to
         # receive input from samples from the variational posterior
         self.GN = g_net.shared_param_clone(rng=rng, Xp=self.IN.output)
-        assert(self.GN.out_type == 'gaussian') # check for right output
         # set up a var for controlling the max-norm bound on perturbations
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         self.lam_mnb = theano.shared(value=zero_ary, \
                 name='adp_lam_mnb')
         self.set_lam_mnb(lam_mnb=0.1)
 
-        # rescale the perturbations, to make them adjustably norm-bounded
-        self.Xg = self.lam_mnb[0] * self.mean_transform(self.GN.output_mean)
+        # get the perturbations output by the generator network
+        self.Pg = self.mean_transform(self.GN.output)
+        self.Pg_samples = self.mean_transform(self.GN.output_samples)
 
         # record and validate the data dimensionality parameters
         self.data_dim = data_dim
@@ -130,7 +136,15 @@ class ADPair(object):
 
         # make a clone of the target PeaNetSeq that takes perturbed inputs
         self.PNS = pn_seq.shared_param_clone(rng=rng, seq_len=2, \
-                seq_Xd=[self.Xd, (self.Xd + self.Xg)])
+                seq_Xd=[self.Xd, self.Xd], seq_Yd=[self.Yd, self.Yd], \
+                no_funcs=True)
+        self.grad_pea_Xd = T.grad(self.PNS.joint_cost, self.Xd)
+        if self.match_type == 'grad_dir':
+            # turn gradient into a unit max-normalized vector
+            self.match_target = max_normalize(self.grad_pea_Xd)
+        else:
+            # transform gradient into binary indicators of sign
+            self.match_target = (self.grad_pea_Xd > 0.0)
         # get the symbolic vars for passing inputs to self.PNS
         self.Xd_seq = self.PNS.Xd_seq
         self.Yd_seq = self.PNS.Yd_seq
@@ -148,9 +162,10 @@ class ADPair(object):
         # init shared var for weighting nll of data given posterior sample
         self.lam_adv = theano.shared(value=zero_ary, name='adp_lam_adv')
         self.set_lam_adv(lam_adv=1.0)
-        # init shared var for weighting Gaussian prior over the policy
+        # init shared vars for weighting a penalty on the norms of our learned
+        # policies and a reward to encourage maximizing their entropy.
         self.lam_kld = theano.shared(value=zero_ary, name='adp_lam_kld')
-        self.set_lam_kld(lam_kld=1.0)
+        self.set_lam_kld(lam_kld=0.1)
         # init shared var for controlling l2 regularization on params
         self.lam_l2w = theano.shared(value=zero_ary, name='adp_lam_l2w')
         self.set_lam_l2w(1e-4)
@@ -173,7 +188,7 @@ class ADPair(object):
         # Get the gradient of the joint cost for all optimizable parameters
         self.joint_grads = OrderedDict()
         for p in self.joint_params:
-            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.05, 0.05)
+            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1, 0.1)
 
         # Construct the updates for the generator and inferencer networks
         self.gn_updates = get_adam_updates(params=self.gn_params, \
@@ -236,13 +251,13 @@ class ADPair(object):
         self.lam_adv.set_value(new_adv.astype(theano.config.floatX))
         return
 
-    def set_lam_kld(self, lam_kld=0.1):
+    def set_lam_kld(self, lam_kld=1.0):
         """
-        Set the relative weight of the Gaussian prior over policies.
+        Set the weight of cost for KL-divergence from the prior policy.
         """
         zero_ary = np.zeros((1,))
-        new_kld = zero_ary + lam_kld
-        self.lam_kld.set_value(new_kld.astype(theano.config.floatX))
+        new_lam = zero_ary + lam_kld
+        self.lam_kld.set_value(new_lam.astype(theano.config.floatX))
         return
 
     def set_lam_l2w(self, lam_l2w=1e-3):
@@ -259,7 +274,8 @@ class ADPair(object):
         Construct the adversarial cost to minimize. Minimizing this cost
         should be roughly like maximizing the PeaNetSeq's cost.
         """
-        adv_cost = -1.0 * self.PNS.joint_cost
+        match_cost = self.GN.compute_log_prob(Xd=self.match_target)
+        adv_cost = -T.sum(match_cost) / self.obs_count
         return adv_cost
 
     def _construct_kld_cost(self):
@@ -287,7 +303,7 @@ class ADPair(object):
         """
         outputs = [self.joint_cost, self.adv_cost, self.kld_cost, \
                 self.other_reg_cost]
-        func = theano.function(inputs=self.seq_inputs, \
+        func = theano.function(inputs=[self.Xd, self.Yd], \
                 outputs=outputs, \
                 updates=self.joint_updates)
         return func
@@ -297,7 +313,8 @@ class ADPair(object):
         Construct a theano function for sampling adversarial perturbations
         conditioned on some set of inputs.
         """
-        samp_func = theano.function([self.Xd], outputs=self.Xg)
+        bounded_perturbation = self.lam_mnb[0] * self.Pg
+        samp_func = theano.function([self.Xd], outputs=bounded_perturbation)
         return samp_func
 
 
@@ -349,6 +366,13 @@ if __name__=="__main__":
     prior_sigma = 1.0
     batch_size = 100 # we'll take 2x this per batch, for sup and unsup
 
+    ####################################
+    # Setup parameters for the AEDPair #
+    ####################################
+    aedp_params = {}
+    #aedp_params['match_type'] = 'grad_dir'
+    aedp_params['match_type'] = 'grad_sign'
+
     #################################################################
     # Construct the generator and inferencer to use for conditional #
     # generation of adversarial examples.                           #
@@ -358,8 +382,12 @@ if __name__=="__main__":
     gn_config = [prior_dim, 800, 800, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
-    gn_params['out_type'] = 'gaussian'
-    gn_params['init_scale'] = 1.0
+    if aedp_params['match_type'] == 'grad_dir':
+        gn_params['out_type'] = 'gaussian'
+        gn_params['mean_transform'] = lambda x: max_normalize(x, axis=1)
+    if aedp_params['match_type'] == 'grad_sign':
+        gn_params['out_type'] = 'bernoulli'
+    gn_params['init_scale'] = 1.3
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -372,13 +400,13 @@ if __name__=="__main__":
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.0
+    in_params['init_scale'] = 1.3
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.0
     in_params['input_noise'] = 0.0
-    # Initialize the base networks for this ADPair
+    # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
             params=in_params, shared_param_dicts=None)
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
@@ -406,7 +434,7 @@ if __name__=="__main__":
     pn_params['hid_drop'] = 0.5
 
     LOAD_FROM_FILE = True
-    PN_PARAM_FILE = 'ADP_TEST_PN_PARAMS.pkl'
+    PN_PARAM_FILE = 'AEDP_TEST_PN_PARAMS.pkl'
     # Initialize the base network for this PNSeq
     if LOAD_FROM_FILE:
         PN = PNet.load_peanet_from_file(f_name=PN_PARAM_FILE, \
@@ -426,16 +454,12 @@ if __name__=="__main__":
     PNS.set_lam_ent(0.0)
     PNS.set_lam_l2w(1e-5)
 
-    # initialize an ADPair that antagonizes PNS
+    # initialize an AEDPair that antagonizes PNS
     print("Initializing adversarial generator...")
-    adp_params = {}
-    #adp_params['mean_transform'] = lambda x: max_normalize(x, axis=1)
-    adp_params['mean_transform'] = lambda x: 2.0 * (apply_sigmoid(x) - 0.5)
-    ADP = ADPair(rng=rng, Xd=Xd, g_net=GN, i_net=IN, pn_seq=PNS, \
-            data_dim=data_dim, prior_dim=prior_dim, params=adp_params)
-    #ADP.set_lam_mnb(2.0) # for unit l2 norm transform
-    ADP.set_lam_mnb(0.1) # for sigmoid transform 
-    ADP.set_lam_l2w(1e-4)
+    AEDP = AEDPair(rng=rng, Xd=Xd, g_net=GN, i_net=IN, pn_seq=PNS, \
+            data_dim=data_dim, prior_dim=prior_dim, params=aedp_params)
+    AEDP.set_lam_mnb(1.0)
+    AEDP.set_lam_l2w(1e-4)
 
     if not LOAD_FROM_FILE:
         # train the PeaNetSeq for some number of updates
@@ -475,19 +499,19 @@ if __name__=="__main__":
                 print(o_str)
             if ((i % 1000) == 0):
                 # draw the main PeaNet's first-layer filters/weights
-                file_name = "ADP_TEST_PNS_WEIGHTS.png".format(i)
+                file_name = "AEDP_TEST_PNS_WEIGHTS.png".format(i)
                 utils.visualize_net_layer(PNS.PN.proto_nets[0][0], file_name)
         PN.save_to_file(f_name=PN_PARAM_FILE)
 
     # train the adversarial generator for number of iterations
-    learn_rate = 0.001
-    ADP.set_all_sgd_params(lr_gn=learn_rate, lr_in=learn_rate, \
+    learn_rate = 0.0003
+    AEDP.set_all_sgd_params(lr_gn=learn_rate, lr_in=learn_rate, \
             mom_1=0.9, mom_2=0.999)
     mean_costs = [0. for i in range(10)]
     print("TRAINING ADVERSARIAL GENERATOR....")
     for i in range(100000):
-        if i < 1000:
-            scale = float(i + 1) / 1000.0
+        if i < 5000:
+            scale = float(i + 1) / 5000.0
         # get some data to train with
         su_idx = npr.randint(low=0,high=su_samples,size=(batch_size,))
         Xd_su = Xtr_su.take(su_idx, axis=0)
@@ -498,12 +522,12 @@ if __name__=="__main__":
         Xd_batch = np.vstack((Xd_su, Xd_un))
         Yd_batch = np.vstack((Yd_su, Yd_un))
         # set learning parameters for this update
-        ADP.set_all_sgd_params(lr_gn=learn_rate, lr_in=learn_rate, \
+        AEDP.set_all_sgd_params(lr_gn=learn_rate, lr_in=learn_rate, \
                 mom_1=0.9, mom_2=0.999)
-        ADP.set_lam_adv(10.0)
-        ADP.set_lam_kld(0.001)
-        # do a minibatch update of all ADPair parameters
-        outputs = ADP.train_joint(Xd_batch, Xd_batch, Yd_batch, Yd_batch)
+        AEDP.set_lam_adv(lam_adv=1.0)
+        AEDP.set_lam_kld(lam_kld=0.05 + 0.95*scale)
+        # do a minibatch update of all AEDPair parameters
+        outputs = AEDP.train_joint(Xd_batch, Yd_batch)
         mean_costs = [(mean_costs[k] + 1.*outputs[k]) for k in range(len(outputs))]
         if ((i % 1000) == 0):
             mean_costs = [(v / 1000.) for v in mean_costs]
@@ -514,10 +538,10 @@ if __name__=="__main__":
         if ((i % 1000) == 0):
             tr_idx = npr.randint(low=0,high=un_samples,size=(20,))
             Xd_batch = Xtr_un.take(tr_idx, axis=0)
-            file_name = "ADP_ADVERSARIAL_SAMPLES_b{0:d}.png".format(i)
+            file_name = "AEDP_ADVERSARIAL_SAMPLES_b{0:d}.png".format(i)
             sample_lists = [Xd_batch]
             for j in range(9):
-                sample_lists.append(ADP.sample_from_Xd(Xd_batch))
+                sample_lists.append(AEDP.sample_from_Xd(Xd_batch))
             Xs = np.vstack(sample_lists)
             utils.mat_to_img(Xs, file_name, (28,28), num_rows=10, \
                     scale=True, colorImg=False, tile_spacing=(1,1))

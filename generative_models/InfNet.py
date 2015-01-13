@@ -150,6 +150,7 @@ class InfNet(object):
         layer_num = 0
         # Construct input by combining data input and control input, taking
         # unmasked values from data input and others from the control input
+        # I.e., when Xm[i] == 1 use Xc[i] and when Xm[i] == 0 use Xd[i].
         masked_input = ((1.0 - self.Xm) * self.Xd) + \
                 (self.Xm * self.Xc)
         if self.use_encoder:
@@ -429,9 +430,9 @@ class InfNet(object):
         """
         prior_sigma_sq = self.prior_sigma**2.0
         prior_log_sigma_sq = np.log(prior_sigma_sq)
-        kld_cost = 0.5 * T.sum(((self.output_mean**2.0 / prior_sigma_sq) + \
-                (T.exp(self.output_logvar) / prior_sigma_sq) - \
-                (self.output_logvar - prior_log_sigma_sq) - 1.0), axis=1, keepdims=True)
+        kld_cost = 0.5 * T.sum((prior_log_sigma_sq - self.output_logvar + \
+                (T.exp(self.output_logvar) / prior_sigma_sq) + \
+                (self.output_mean**2.0 / prior_sigma_sq) - 1.0), axis=1, keepdims=True)
         return kld_cost
 
     def _construct_sample_posterior(self):

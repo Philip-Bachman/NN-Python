@@ -134,6 +134,7 @@ def get_adadelta_updates(params=None, grads=None, \
 
     # make an OrderedDict to hold the updates
     updates = OrderedDict()
+    lr_t = alpha[0]
     
     for p in params:
         # get gradient for parameter p
@@ -147,7 +148,7 @@ def get_adadelta_updates(params=None, grads=None, \
         mom1_new = (beta1[0] * mom1) + ((1. - beta1[0]) * T.sqr(grad_p))
         
         # compute the effective gradient
-        effgrad = grad_p / (T.sqrt(mom1_new) + 1e-5)
+        effgrad = grad_p / (T.sqrt(mom1_new) + 1e-6)
         
         # do update
         p_new = p - (lr_t * effgrad)

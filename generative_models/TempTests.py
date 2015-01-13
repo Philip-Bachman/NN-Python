@@ -93,25 +93,16 @@ def test_gi_pair_mnist():
     dataset = 'data/mnist.pkl.gz'
     datasets = load_udm(dataset, zero_mean=False)
     Xtr_shared = datasets[0][0]
+    Xva_shared = datasets[1][0]
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
+    Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     #Xtr = Xtr - np.mean(Xtr, axis=0, keepdims=True)
     #Xtr = Xtr / Xtr.std()
-    Xtr_shared.set_value(Xtr)
-    Zer_shared= theano.shared(value=(0.0 * Xtr), name='Z_shared')
     #Xtr = Xtr / np.std(Xtr, axis=1, keepdims=True)
     tr_samples = Xtr.shape[0]
-    b_size = 200
-    b_reps = 5
-    max_bs_idx = tr_samples - b_size - 1
-
-    def shuffle_and_set(shared_mat):
-        numpy_mat = shared_mat.get_value(borrow=False)
-        shuf_idx = np.arange(numpy_mat.shape[0])
-        npr.shuffle(shuf_idx)
-        numpy_mat = numpy_mat[shuf_idx]
-        shared_mat.set_value(numpy_mat)
-        return
-    shuffle_and_set(Xtr_shared)
+    batch_size = 100
+    batch_reps = 5
+    max_bs_idx = tr_samples - batch_size - 1
 
     # Construct a GenNet and an InfNet, then test constructor for GIPair.
     # Do basic testing, to make sure classes aren't completely broken.
@@ -129,7 +120,7 @@ def test_gi_pair_mnist():
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
     gn_params['mean_transform'] = lambda x: T.nnet.sigmoid(x)
-    gn_params['init_scale'] = 1.3
+    gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -142,10 +133,10 @@ def test_gi_pair_mnist():
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.3
+    in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
-    in_params['vis_drop'] = 0.0
-    in_params['hid_drop'] = 0.0
+    in_params['vis_drop'] = 0.2
+    in_params['hid_drop'] = 0.5
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
@@ -154,23 +145,24 @@ def test_gi_pair_mnist():
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
             params=gn_params, shared_param_dicts=None)
     # Initialize biases in IN and GN
-    IN.init_biases(0.0)
-    GN.init_biases(0.0)
+    IN.init_biases(0.2)
+    GN.init_biases(0.2)
     # Initialize the GIPair
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
     GIP.set_lam_l2w(1e-4)
 
-    IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
+    #IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
     GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
-    for i in range(5000):
+    for i in range(2500):
         scale = min(1.0, (float(i+1) / 5000.0))
         l_rate = 0.001 * scale
         lam_l1 = 0.05
         tr_idx = npr.randint(low=0,high=tr_samples,size=(1000,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
+        #inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
         gnr_out = GN.train_rica(Xd_batch, l_rate, lam_l1)
+        inr_out = [v for v in gnr_out]
         if ((i % 1000) == 0):
             print("rica batch {0:d}: in_recon={1:.4f}, in_spars={2:.4f}, gn_recon={3:.4f}, gn_spars={4:.4f}".format( \
                     i, 1.*inr_out[1], 1.*inr_out[2], 1.*gnr_out[1], 1.*gnr_out[2]))
@@ -186,42 +178,43 @@ def test_gi_pair_mnist():
                     lay_num = -1
                 utils.visualize_samples(GN.W_rica.get_value(borrow=False), file_name, num_rows=20)
 
-    start_idx = T.lscalar()
-    outputs = [GIP.joint_cost, GIP.data_nll_cost, GIP.post_kld_cost, \
-                GIP.other_reg_cost]
-    train_func = theano.function(inputs=[ start_idx ], \
-            outputs=outputs, \
-            updates=GIP.joint_updates, \
-            givens={ GIP.Xd: T.repeat(Xtr_shared[start_idx:(start_idx+b_size)], b_reps, axis=0), \
-                     GIP.Xc: T.repeat(Zer_shared[start_idx:(start_idx+b_size)], b_reps, axis=0), \
-                     GIP.Xm: T.repeat(Zer_shared[start_idx:(start_idx+b_size)], b_reps, axis=0)})
-
     out_file = open("GIP_MNIST_AAA.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
+    cost_1 = [0. for i in range(10)]
     learn_rate = 0.0005
     for i in range(750000):
-        scale = min(1.0, float(i) / 10000.0)
+        scale = min(1.0, float(i) / 25000.0)
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.8
+        # do a minibatch update of the model, and compute some costs
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
+        Xd_batch = Xtr.take(tr_idx, axis=0)
+        Xd_batch = np.repeat(Xd_batch, batch_reps, axis=0)
+        Xc_batch = 0.0 * Xd_batch
+        Xm_batch = 0.0 * Xd_batch
+        # do a minibatch update of the model, and compute some costs
         GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP.set_lam_nll(1.0)
-        GIP.set_lam_kld(1.0)
-        # do a minibatch update of the model, and compute some costs
-        bs_idx = npr.randint(low=0, high=max_bs_idx)
-        outputs = train_func(bs_idx)
-        joint_cost = 1.0 * outputs[0]
-        data_nll_cost = 1.0 * outputs[1]
-        post_kld_cost = 1.0 * outputs[2]
-        other_reg_cost = 1.0 * outputs[3]
+        GIP.set_lam_kld(1.0 + 1.5*scale)
+        outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
+        cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         if ((i % 1000) == 0):
+            cost_1 = [(v / 1000.) for v in cost_1]
             o_str = "batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
-                    i, joint_cost, data_nll_cost, post_kld_cost, other_reg_cost)
+                    i, cost_1[0], cost_1[1], cost_1[2], cost_1[3])
+            print(o_str)
+            out_file.write(o_str+"\n")
+            out_file.flush()
+            cost_1 = [0. for v in cost_1]
+        if ((i % 5000) == 0):
+            cost_2 = GIP.compute_costs(Xva, 0.*Xva, 0.*Xva)
+            o_str = "--val: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
+                    i, 1.*cost_2[0], 1.*cost_2[1], 1.*cost_2[2], 1.*cost_2[3])
             print(o_str)
             out_file.write(o_str+"\n")
             out_file.flush()
         if ((i % 5000) == 0):
-            shuffle_and_set(Xtr_shared)
             tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
             Xd_batch = Xtr.take(tr_idx, axis=0)
             file_name = "GIP_MNIST_CHAIN_SAMPLES_b{0:d}.png".format(i)

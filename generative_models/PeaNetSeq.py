@@ -93,13 +93,13 @@ def cat_entropy(p):
     row_ents = -T.sum((p_sm * safe_log(p_sm)), axis=1, keepdims=True)
     return row_ents
 
-def cat_cost_xent(Yp, Yd):
+def cat_cost_xent(Yp, Yd, lam_smooth=1e-4):
     """
     Compute cross-entropy classification cost given the target labels in Yd
     and the log-space predictions in Yp. Unsupervised points are indicated by
     Yd[i] == 0, and labels for supervised points need to be shifted -1.
     """
-    Yp_sm = smooth_softmax(Yp, lam_smooth=1e-5)
+    Yp_sm = smooth_softmax(Yp, lam_smooth=lam_smooth)
     # construct a mask that zeros-out unsupervised rows
     row_idx = T.arange(Yd.shape[0])
     row_mask = T.neq(Yd, 0).reshape((Yd.shape[0], 1))
@@ -154,7 +154,8 @@ class PeaNetSeq(object):
         shared_param_dict: dict for making clones with shared lambdas
     """
     def __init__(self, rng=None, pea_net=None, seq_len=2, seq_Xd=None, \
-            no_noise=False, params=None, shared_param_dict=None):
+            seq_Yd=None, no_noise=False, no_funcs=False, params=None, \
+            shared_param_dict=None):
         assert(not (rng is None))
         assert(not (pea_net is None))
         assert(seq_len >= 2)
@@ -162,6 +163,10 @@ class PeaNetSeq(object):
             # if symbolic inputs for the sequence to receive are given when
             # the sequence is created, check if it's the right amount.
             assert(len(seq_Xd) == seq_len)
+        if not (seq_Yd is None):
+            # if symbolic inputs for the sequence to receive are given when
+            # the sequence is created, check if it's the right amount.
+            assert(len(seq_Yd) == seq_len)
         self.params = params
         # setup a rng for this PeaNetSeq
         self.rng = RandStream(rng.randint(100000))
@@ -192,8 +197,12 @@ class PeaNetSeq(object):
             else:
                 # otherwise, use the given symbolic inputs
                 Xd_i = seq_Xd[i]
-            # create a label vector to be associated with this clone
-            Yd_i = T.icol(name="Yd_{0:d}".format(i))
+            if seq_Yd is None:
+                # create a label vector to be associated with this clone
+                Yd_i = T.icol(name="Yd_{0:d}".format(i))
+            else:
+                # otherwise, use the given symbolic inputs
+                Yd_i = seq_Yd[i]
             # add observation/label inputs and the clone to the sequence
             self.Xd_seq.append(Xd_i)
             self.Yd_seq.append(Yd_i)
@@ -279,10 +288,14 @@ class PeaNetSeq(object):
 
         # Construct a function for training the base network to minimize the
         # sequential PEAR cost
-        self.train_joint = self._construct_train_joint()
-        # make a function for computing outputs of the main PeaNet
-        self.get_pn_output = theano.function([self.PN.Xd], \
-                outputs=self.PN.output_proto)
+        if no_funcs:
+            self.train_joint = None
+            self.get_pn_output = None
+        else:
+            self.train_joint = self._construct_train_joint()
+            # make a function for computing outputs of the main PeaNet
+            self.get_pn_output = theano.function([self.PN.Xd], \
+                    outputs=self.PN.output_proto)
         return
 
     def set_pn_sgd_params(self, lr_pn=0.01, mom_1=0.9, mom_2=0.999):
@@ -360,8 +373,8 @@ class PeaNetSeq(object):
             row_idx = T.arange(Yd_i.shape[0])
             row_mask = T.neq(Yd_i, 0).reshape((Yd_i.shape[0], 1))
             # compute PEAR costs for supervised and unsupervised points
-            pea_costs_i = (smooth_kl_divergence(x1, x2, lam_smooth=1e-3) + \
-                    smooth_kl_divergence(x2, x1, lam_smooth=1e-3)) / 2.0
+            pea_costs_i = (smooth_kl_divergence(x1, x2, lam_smooth=5e-3) + \
+                    smooth_kl_divergence(x2, x1, lam_smooth=5e-3)) / 2.0
             pea_cost_su = T.sum(row_mask * pea_costs_i) / \
                     (T.sum(row_mask) + 1e-4)
             pea_cost_un = T.sum((1.0 - row_mask) * pea_costs_i) / \
@@ -405,7 +418,7 @@ class PeaNetSeq(object):
             # get the clone-provided predicted class probs for each input
             Yp_i = self.PN_seq[i].output_spawn[0]
             # get the classification cost on supervised points
-            cat_cost = cat_cost_xent(Yp_i, Yd_i)
+            cat_cost = cat_cost_xent(Yp_i, Yd_i, lam_smooth=5e-4)
             class_costs.append(cat_cost)
         class_cost = sum(class_costs) / float(self.seq_len)
         return class_cost
@@ -454,13 +467,13 @@ class PeaNetSeq(object):
         return err_rate
 
     def shared_param_clone(self, rng=None, seq_len=2, seq_Xd=None, \
-            no_noise=False):
+            seq_Yd=None, no_noise=False, no_funcs=False):
         """
         Create a clone of this PeaNetSeq that shares its cost lambdas.
         """
         pns_clone = PeaNetSeq(rng=rng, pea_net=self.PN, seq_len=seq_len, \
-                seq_Xd=seq_Xd, no_noise=no_noise, params=self.params, \
-                shared_param_dict=self.shared_param_dict)
+                seq_Xd=seq_Xd, seq_Yd=seq_Yd, no_noise=no_noise, no_funcs=no_funcs, \
+                params=self.params, shared_param_dict=self.shared_param_dict)
         return pns_clone
 
 def zmuv(X, axis=1):

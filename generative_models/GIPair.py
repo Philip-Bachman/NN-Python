@@ -187,6 +187,7 @@ class GIPair(object):
 
         # Construct a function for jointly training the generator/inferencer
         self.train_joint = self._construct_train_joint()
+        self.compute_costs = self._construct_compute_costs()
 
         # Construct a function for computing the outputs of the generator
         # network for a batch of noise. Presumably, the noise will be drawn
@@ -281,13 +282,17 @@ class GIPair(object):
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
-        COMMENT="""
-        theano.printing.pydotprint(func, \
-            outfile='GIPair_train_joint.png', compact=True, format='png', with_ids=False, \
-            high_contrast=True, cond_highlight=None, colorCodes=None, \
-            max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
-            print_output_file=True, assert_nb_all_strings=-1)
+        return func
+
+    def _construct_compute_costs(self):
         """
+        Construct theano function to compute the assorted costs without
+        applying any updates (e.g. to use with a validation set).
+        """
+        outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
+                self.other_reg_cost]
+        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+                outputs=outputs)
         return func
 
     def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None):

@@ -265,21 +265,22 @@ class GenNet(object):
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
         if self.out_type == 'bernoulli':
-            self.output = (T.nnet.sigmoid(self.mlp_layers[-1].linear_output + self.output_bias) * \
-                    self.output_mask)
-            self.output_mean = self.output
-            self.output_logvar = self.output
-            self.output_sigma = self.output
+            
+            self.output = (T.nnet.sigmoid(self.mlp_layers[-1].linear_output + \
+                    self.output_bias) * self.output_mask)
+            self.output_logvar = 0.0 * self.output
+            self.output_sigma = 0.0 * self.output
         else:
             # get the predicted mean
-            output_mean = self.mlp_layers[-2].linear_output + self.output_bias
+            raw_mean = self.mlp_layers[-2].linear_output + self.output_bias
             # apply a transform (it's just identity if none was given)
-            self.output_mean = self.mean_transform(output_mean)
+            self.output = self.mean_transform(raw_mean)
             # WE BOUND LOG VARIANCE -- TO KEEP SIGMA BOUNDED AWAY FROM 0...
-            self.output_logvar = (3.0 * T.tanh(self.mlp_layers[-1].linear_output / 3.0)) - \
-                    (3.0 * T.tanh(self.logvar_bias[0] / 3.0))
+            #self.output_logvar = (2.0 * T.tanh(self.mlp_layers[-1].linear_output / 2.0)) - \
+            #        (2.0 * T.tanh(self.logvar_bias[0] / 2.0))
+            self.output_logvar = 4.0 * (T.tanh(self.logvar_bias[0] / 4.0))
             self.output_sigma = T.exp(0.5 * self.output_logvar)
-            self.output = self._construct_post_samples() * self.output_mask
+            self.output_samples = self._construct_post_samples() * self.output_mask
         # apply a decoder (or a no-op if the user didn't provide a decoder)
         if self.use_decoder:
             self.output_decoded = self.decoder(self.output)
@@ -348,9 +349,9 @@ class GenNet(object):
     def _construct_post_samples(self):
         """
         Draw a single sample from each of the approximate posteriors encoded
-        in self.output_mean and self.output_sigma.
+        in self.output (e.g. the Gaussian's mean) and self.output_sigma.
         """
-        post_samples = self.output_mean + (self.output_sigma * \
+        post_samples = self.output + (self.output_sigma * \
                 self.rng.normal(size=self.output_sigma.shape, avg=0.0, std=1.0, \
                 dtype=theano.config.floatX))
         return post_samples
@@ -463,7 +464,7 @@ class GenNet(object):
         if (self.out_type == 'bernoulli'):
             log_prob_cost = log_prob_bernoulli(Xd, self.output, mask=self.output_mask)
         else:
-            log_prob_cost = log_prob_gaussian2(Xd, self.output_mean, \
+            log_prob_cost = log_prob_gaussian2(Xd, self.output, \
                     log_vars=self.output_logvar, mask=self.output_mask)
         return log_prob_cost
 
@@ -482,7 +483,7 @@ class GenNet(object):
         if (self.out_type == 'bernoulli'):
             log_prob_cost = log_prob_bernoulli(Xc, self.output, mask=Xm_inv)
         else:
-            log_prob_cost = log_prob_gaussian2(Xc, self.output_mean, \
+            log_prob_cost = log_prob_gaussian2(Xc, self.output, \
                     log_vars=self.output_logvar, mask=Xm_inv)
         return log_prob_cost
 
