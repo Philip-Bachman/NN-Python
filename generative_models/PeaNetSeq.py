@@ -535,6 +535,7 @@ if __name__=="__main__":
     pn_params['spawn_weights'] = [ 1.0 ]
     # Set remaining params
     pn_params['activation'] = relu_actfun
+    pn_params['init_scale'] = 0.5
     pn_params['lam_l2a'] = 1e-3
     pn_params['vis_drop'] = 0.2
     pn_params['hid_drop'] = 0.5
@@ -545,7 +546,6 @@ if __name__=="__main__":
 
     # Initialize the PeaNetSeq
     PNS = PeaNetSeq(rng=rng, pea_net=PN, seq_len=2, seq_Xd=None, params=None)
-    PNS1 = PNS.shared_param_clone(rng=rng, seq_len=2, seq_Xd=None)
 
     # set weighting parameters for the various costs...
     PNS.set_lam_class(1.0)
@@ -574,7 +574,7 @@ if __name__=="__main__":
         # set learning parameters for this update
         PNS.set_pn_sgd_params(lr_pn=learn_rate, mom_1=0.9, mom_2=0.999)
         # do a minibatch update of all PeaNet parameters
-        outputs = PNS1.train_joint(Xd_batch, Xd_batch, Yd_batch, Yd_batch)
+        outputs = PNS.train_joint(Xd_batch, Xd_batch, Yd_batch, Yd_batch)
         joint_cost = 1.0 * outputs[0]
         class_cost = 1.0 * outputs[1]
         pea_cost = 1.0 * outputs[2]

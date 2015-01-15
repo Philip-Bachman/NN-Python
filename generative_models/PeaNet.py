@@ -167,6 +167,7 @@ class PeaNet(object):
                     # Not applying any pooling in this layer...
                     out_dim = out_def
                     pool_size = 0
+                i_scale = (1.0 / np.sqrt(in_dim)) * self.init_scale
                 # Add a new layer to the regular model
                 if not self.is_clone:
                     ##########################################
@@ -176,7 +177,7 @@ class PeaNet(object):
                             activation=None, pool_size=pool_size, \
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
-                            name=pnl_name, W_scale=self.init_scale)
+                            name=pnl_name, W_scale=i_scale)
                     proto_net.append(new_layer)
                     self.shared_param_dicts.append( \
                             {'W': new_layer.W, 'b': new_layer.b})
@@ -190,7 +191,7 @@ class PeaNet(object):
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
                             W=init_params['W'], b=init_params['b'], \
-                            name=pnl_name, W_scale=self.init_scale)
+                            name=pnl_name, W_scale=i_scale)
                     proto_net.append(new_layer)
                 next_input = proto_net[-1].output
                 layer_num = layer_num + 1

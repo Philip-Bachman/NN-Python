@@ -187,7 +187,7 @@ class InfNet(object):
                 i_noise = 0.0
                 b_noise = self.bias_noise
             # set in-bound weights to have norm self.init_scale
-            i_scale = (100.0 / np.sqrt(in_dim)) * self.init_scale
+            i_scale = (1.0 / np.sqrt(in_dim)) * self.init_scale
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -245,7 +245,7 @@ class InfNet(object):
             i_noise = 0.0
             b_noise = self.bias_noise
             # set in-bound weights to have norm self.init_scale
-            i_scale = (100.0 / np.sqrt(in_dim)) * self.init_scale
+            i_scale = (1.0 / np.sqrt(in_dim)) * self.init_scale
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -303,7 +303,7 @@ class InfNet(object):
             i_noise = 0.0
             b_noise = self.bias_noise
             # set in-bound weights to have norm self.init_scale
-            i_scale = (100.0 / np.sqrt(in_dim)) * self.init_scale
+            i_scale = (1.0 / np.sqrt(in_dim)) * self.init_scale
             if last_layer:
                 # set in-bound weights for logvar predictions to 0
                 i_scale = 0.0

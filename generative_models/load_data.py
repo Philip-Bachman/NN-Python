@@ -217,3 +217,62 @@ def load_svhn(tr_file, te_file, ex_file=None, ex_count=None):
                  'Xte': Xte, 'Yte': Yte, \
                  'Xex': Xex}
     return data_dict
+
+def load_svhn_gray(tr_file, te_file, ex_file=None, ex_count=None):
+    """
+    Load pickle files with grayscale versions of the SVHN data.
+    """
+    # load the training set as a numpy arrays
+    pickle_file = open(tr_file)
+    data_dict = cPickle.load(pickle_file)
+    Xtr = data_dict['X']
+    print("Xtr.shape: {0:s}".format(str(Xtr.shape)))
+    Ytr = data_dict['y'].astype(np.int32) + 1
+    Xtr_vec = np.zeros((Xtr.shape[2], 32*32), dtype=theano.config.floatX)
+    for i in range(Xtr.shape[2]):
+        c_pix = 32*32
+        Xtr_vec[i,:] = Xtr[:,:,i].reshape((32*32,)).astype(theano.config.floatX)
+    del Xtr
+    Xtr = Xtr_vec
+    pickle_file.close()
+
+    # load the test set as numpy arrays
+    pickle_file = open(te_file)
+    data_dict = cPickle.load(pickle_file)
+    pickle_file.close()
+    Xte = data_dict['X']
+    print("Xte.shape: {0:s}".format(str(Xte.shape)))
+    Yte = data_dict['y'].astype(np.int32) + 1
+    Xte_vec = np.zeros((Xte.shape[2], 32*32), dtype=theano.config.floatX)
+    for i in range(Xte.shape[2]):
+        c_pix = 32*32
+        Xte_vec[i,:] = Xte[:,:,i].reshape((32*32,)).astype(theano.config.floatX)
+    del Xte
+    Xte = Xte_vec
+
+    # process extra data as desired
+    if ex_file is None:
+        Xex = None
+    else:
+        if ex_count is None:
+            ex_count = 100000000
+        # load the extra digit examples and only keep a subset
+        pickle_file = open(ex_file)
+        data_dict = cPickle.load(pickle_file)
+        pickle_file.close()
+        Xex = data_dict['X']
+        print("Xex.shape: {0:s}".format(str(Xex.shape)))
+        max_idx = min(ex_count, Xex.shape[2])
+        Xex_vec = np.zeros((max_idx, 32*32)).astype(theano.config.floatX)
+        for i in range(max_idx):
+            c_pix = 32*32
+            Xex_vec[i,:] = Xex[:,:,i].reshape((32*32,)).astype(theano.config.floatX)
+        del Xex
+        Xex = Xex_vec
+
+    # package data up for easy returnage
+    data_dict = {'Xtr': Xtr, 'Ytr': Ytr, \
+                 'Xte': Xte, 'Yte': Yte, \
+                 'Xex': Xex}
+    return data_dict
+    

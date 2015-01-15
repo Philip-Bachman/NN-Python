@@ -22,6 +22,15 @@ def col_normalize(x):
     x_normed = x / T.sqrt(T.sum(x**2.,axis=0,keepdims=1)+1e-8)
     return x_normed
 
+def max_normalize(x, axis=1):
+    """
+    Normalize matrix x to max unit (L2) norm along some axis.
+    """
+    row_norms = T.sqrt(T.sum(x**2., axis=axis, keepdims=1))
+    row_scales = T.maximum(1.0, row_norms)
+    x_normed = x / row_scales
+    return x_normed
+
 def rehu_actfun(x):
     """Compute rectified huberized activation for x."""
     M_quad = (x > 0.0) * (x < 0.5)
@@ -159,7 +168,7 @@ class HiddenLayer(object):
         if W is None:
             if self.pool_size <= 10000:
                 # Generate random initial filters in a typical way
-                W_init = 0.01 * np.asarray(rng.normal( \
+                W_init = 1.0 * np.asarray(rng.normal( \
                           size=(self.in_dim, self.filt_count)), \
                           dtype=theano.config.floatX)
             else:
@@ -169,11 +178,12 @@ class HiddenLayer(object):
                 filters = []
                 f_size = (self.in_dim, 1)
                 for g_num in range(self.pool_count):
-                    g_filt = 0.01 * rng.normal(size=f_size)
+                    g_filt = 1.0 * rng.normal(size=f_size)
                     for f_num in range(self.pool_size):
-                        f_filt = g_filt + 0.005 * rng.normal(size=f_size)
+                        f_filt = g_filt + 0.2 * rng.normal(size=f_size)
                         filters.append(f_filt)
                 W_init = np.hstack(filters).astype(theano.config.floatX)
+            print("W_scale: {0:.4f}".format(W_scale))
             W = theano.shared(value=(W_scale*W_init), name="{0:s}_W".format(name))
         if b is None:
             b_init = np.zeros((self.filt_count,), dtype=theano.config.floatX)
@@ -271,7 +281,7 @@ class ConvPoolLayer(object):
             self.activation = lambda x: relu_actfun(x)
 
         # initialize weights with random weights
-        W_init = 0.01 * np.asarray(rng.normal( \
+        W_init = 1.0 * np.asarray(rng.normal( \
                 size=filt_def), dtype=theano.config.floatX)
         self.W = theano.shared(value=(W_scale*W_init), \
                 name="{0:s}_W".format(name))
@@ -383,7 +393,7 @@ class Reshape4D2DLayer(object):
 #####################################################
 
 class DiscLayer(object):
-    def __init__(self, rng, input, in_dim, W=None, b=None):
+    def __init__(self, rng, input, in_dim, W=None, b=None, W_scale=1.0):
         # Setup a shared random generator for this layer
         self.rng = RandStream(rng.randint(1000000))
 
@@ -393,10 +403,10 @@ class DiscLayer(object):
         # Get some random initial weights and biases, if not given
         if W is None:
             # Generate random initial filters in a typical way
-            W_init = 0.01 * np.asarray(rng.normal( \
+            W_init = 1.0 * np.asarray(rng.normal( \
                       size=(self.in_dim, 1)), \
                       dtype=theano.config.floatX)
-            W = theano.shared(value=W_init)
+            W = theano.shared(value=(W_scale*W_init))
         if b is None:
             b_init = np.zeros((1,), dtype=theano.config.floatX)
             b = theano.shared(value=b_init)
@@ -432,7 +442,7 @@ class DiscLayer(object):
 class DAELayer(object):
     def __init__(self, rng, clean_input=None, fuzzy_input=None, \
             in_dim=0, out_dim=0, activation=None, input_noise=0., \
-            W=None, b_h=None, b_v=None):
+            W=None, b_h=None, b_v=None, W_scale=1.0):
 
         # Setup a shared random generator for this layer
         self.rng = RandStream(rng.randint(1000000))
@@ -449,9 +459,9 @@ class DAELayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            W_init = np.asarray(0.01 * rng.standard_normal( \
+            W_init = np.asarray(1.0 * rng.standard_normal( \
                       size=(in_dim, out_dim)), dtype=theano.config.floatX)
-            W = theano.shared(value=W_init, name='W')
+            W = theano.shared(value=(W_scale*W_init), name='W')
         if b_h is None:
             b_init = np.zeros((out_dim,), dtype=theano.config.floatX)
             b_h = theano.shared(value=b_init, name='b_h')

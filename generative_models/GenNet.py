@@ -15,7 +15,8 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun, safe_log
+from NetLayers import HiddenLayer, DiscLayer, relu_actfun, safe_log, \
+                      max_normalize
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2
 
 #####################################
@@ -56,8 +57,9 @@ class GenNet(object):
             out_type: set this to "bernoulli" for generating outputs to match
                       bernoulli-valued observations and set it to "gaussian" to
                       match general real-valued observations.
-            mean_transform: an optional transform, e.g. the sigmoid or a norm
-                            constraint, to apply to output gaussian's mean.
+            mean_transform: an optional transform, indicated by a string, to
+                            apply to output gaussian's mean.
+                            -- string must be "sigmoid" or "max_normalize"
             activation: "function handle" for the desired non-linearity
             init_scale: scaling factor for hidden layer weights (__ * 0.01)
         shared_param_dicts: parameters for the MLP controlled by this GenNet
@@ -108,7 +110,12 @@ class GenNet(object):
             # default to bernoulli-valued outputs
             self.out_type = 'bernoulli'
         if 'mean_transform' in params:
-            self.mean_transform = params['mean_transform']
+            trans = params['mean_transform']
+            assert((trans == 'sigmoid') or (trans == 'max_normalize'))
+            if trans == 'sigmoid':
+                self.mean_transform = lambda x: T.nnet.sigmoid(x)
+            else:
+                self.mean_transform = lambda x: max_normalize(x, axis=1)
         else:
             self.mean_transform = lambda x: x
         # Get the configuration/prototype for this network. The config is a
@@ -183,7 +190,8 @@ class GenNet(object):
                 d_rate = self.vis_drop
             else:
                 d_rate = self.hid_drop
-            i_scale = (100.0 / np.sqrt(in_dim)) * self.init_scale
+            # set in-bound weights to have norm self.init_scale
+            i_scale = (1.0 / np.sqrt(in_dim)) * self.init_scale
             b_noise = self.bias_noise
             if not self.is_clone:
                 ##########################################

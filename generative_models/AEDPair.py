@@ -16,7 +16,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      safe_log
+                      safe_log, max_normalize
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
@@ -29,15 +29,6 @@ from DKCode import get_adam_updates, get_adadelta_updates
 #   Xd: Xd represents input to which to apply perturbations
 #
 #
-
-def max_normalize(x, axis=1):
-    """
-    Normalize matrix x to max unit (L2) norm along some axis.
-    """
-    row_norms = T.sqrt(T.sum(x**2., axis=axis, keepdims=1))
-    row_scales = T.maximum(1.0, row_norms)
-    x_normed = x / row_scales
-    return x_normed
 
 
 class AEDPair(object):
@@ -119,7 +110,12 @@ class AEDPair(object):
 
         # get the perturbations output by the generator network
         self.Pg = self.mean_transform(self.GN.output)
-        self.Pg_samples = self.mean_transform(self.GN.output_samples)
+        if self.match_type == 'grad_dir':
+            # samples because we're matching gradient via squared error
+            self.Pg_samples = self.mean_transform(self.GN.output_samples)
+        else:
+            # no samples, because we're matching gradient sign
+            self.Pg_samples = self.mean_transform(self.GN.output)
 
         # record and validate the data dimensionality parameters
         self.data_dim = data_dim
@@ -384,10 +380,10 @@ if __name__=="__main__":
     gn_params['activation'] = relu_actfun
     if aedp_params['match_type'] == 'grad_dir':
         gn_params['out_type'] = 'gaussian'
-        gn_params['mean_transform'] = lambda x: max_normalize(x, axis=1)
+        gn_params['mean_transform'] = 'max_normalize'
     if aedp_params['match_type'] == 'grad_sign':
         gn_params['out_type'] = 'bernoulli'
-    gn_params['init_scale'] = 1.3
+    gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -400,7 +396,7 @@ if __name__=="__main__":
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.3
+    in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0

@@ -18,6 +18,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, safe_log, softplus_actfun
 from DKCode import get_adam_updates, get_adadelta_updates
+from GIPair import GIPair
 
 #################
 # FOR PROFILING #
@@ -139,7 +140,7 @@ def sample_patch_masks(X, im_shape, patch_shape):
         mask[i,:] = dummy.ravel()
     return mask.astype(theano.config.floatX)
 
-class VCGChain(object):
+class VCGLoop(object):
     """
     Controller for training a self-looping VAE using guidance provided by a
     classifier. The classifier tries to discriminate between samples generated
@@ -319,9 +320,9 @@ class VCGChain(object):
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
         self.chain_nll_cost = self.lam_chain_nll[0] * \
-                self._construct_chain_nll_cost(data_weight=0.1)
+                self._construct_chain_nll_cost(data_weight=0.2)
         self.chain_kld_cost = self.lam_chain_kld[0] * \
-                self._construct_chain_kld_cost(data_weight=0.1)
+                self._construct_chain_kld_cost(data_weight=0.2)
         self.chain_vel_cost = self.lam_chain_vel[0] * \
                 self._construct_chain_vel_cost()
         self.mask_nll_cost = self.lam_mask_nll[0] * \
@@ -510,12 +511,15 @@ class VCGChain(object):
         """
         self.disc_layers = []
         self.disc_outputs = []
+        dn_init_scale = self.DN.init_scale
         for sn in self.DN.spawn_nets:
             # construct a "binary discriminator" layer to sit on top of each
             # spawn net in the discriminator pseudo-ensemble
             sn_fl = sn[-1]
+            init_scale = dn_init_scale * (1. / np.sqrt(sn_fl.in_dim))
             self.disc_layers.append(DiscLayer(rng=rng, \
-                    input=sn_fl.noisy_input, in_dim=sn_fl.in_dim))
+                    input=sn_fl.noisy_input, in_dim=sn_fl.in_dim, \
+                    W_scale=dn_init_scale))
             # capture the (linear) output of the DiscLayer, for possible reuse
             self.disc_outputs.append(self.disc_layers[-1].linear_output)
             # get the params of this DiscLayer, for convenient optimization
@@ -669,11 +673,6 @@ class VCGChain(object):
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Xt ], \
                 outputs=outputs, updates=self.joint_updates) # , \
                 #mode=profmode)
-        #theano.printing.pydotprint(func, \
-        #    outfile='VCG_train_joint.png', compact=True, format='png', with_ids=False, \
-        #    high_contrast=True, cond_highlight=None, colorCodes=None, \
-        #    max_label_size=70, scan_graphs=False, var_with_name_simple=False, \
-        #    print_output_file=True, assert_nb_all_strings=-1)
         return func
 
     def sample_from_prior(self, samp_count):
@@ -722,7 +721,7 @@ if __name__=="__main__":
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
     batch_size = 100
-    prior_dim = 75
+    prior_dim = 64
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
@@ -751,7 +750,7 @@ if __name__=="__main__":
         dn_params['spawn_configs'] = [sc0]
         dn_params['spawn_weights'] = [1.0]
         # Set remaining params
-        dn_params['init_scale'] = 1.5
+        dn_params['init_scale'] = 0.5
         dn_params['lam_l2a'] = 1e-2
         dn_params['vis_drop'] = 0.2
         dn_params['hid_drop'] = 0.5
@@ -770,33 +769,34 @@ if __name__=="__main__":
         in_params['mu_config'] = top_config
         in_params['sigma_config'] = top_config
         in_params['activation'] = relu_actfun
-        in_params['init_scale'] = 1.3
+        in_params['init_scale'] = 1.0
         in_params['lam_l2a'] = 1e-2
-        in_params['vis_drop'] = 0.0
-        in_params['hid_drop'] = 0.0
+        in_params['vis_drop'] = 0.2
+        in_params['hid_drop'] = 0.5
         in_params['bias_noise'] = 0.1
         in_params['input_noise'] = 0.0
         IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
                 prior_sigma=prior_sigma, params=in_params)
-        IN.init_biases(0.0)
+        IN.init_biases(0.1)
 
         ###########################
         # Setup generator network #
         ###########################
-        # Choose some parameters for the generative network
+        # choose some parameters for the generator network
         gn_params = {}
         gn_config = [prior_dim, 1000, 1000, data_dim]
         gn_params['mlp_config'] = gn_config
         gn_params['activation'] = relu_actfun
-        gn_params['out_type'] = 'bernoulli'
-        gn_params['init_scale'] = 1.3
+        gn_params['out_type'] = 'gaussian'
+        gn_params['mean_transform'] = 'sigmoid'
+        gn_params['init_scale'] = 1.0
         gn_params['lam_l2a'] = 1e-2
         gn_params['vis_drop'] = 0.0
         gn_params['hid_drop'] = 0.0
         gn_params['bias_noise'] = 0.1
         # Initialize a generator network object
         GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, params=gn_params)
-        GN.init_biases(0.0)
+        GN.init_biases(0.1)
     else:
         # Give file names for loading previously trained networks
         dn_file = "VCG_PARAMS_DN.pkl"
@@ -807,31 +807,46 @@ if __name__=="__main__":
         IN = INet.load_infnet_from_file(f_name=in_file, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_file, rng=rng, Xp=Xp)
 
-    ################################
-    # Initialize the main VCGChain #
-    ################################
+    ###############################
+    # Initialize the main VCGLoop #
+    ###############################
     vcg_params = {}
     vcg_params['lam_l2d'] = 1e-2
-    VCG = VCGChain(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
+    VCG = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
                  g_net=GN, d_net=DN, chain_len=5, data_dim=data_dim, \
                  prior_dim=prior_dim, params=vcg_params)
     VCG.set_lam_l2w(1e-4)
 
-    if False: #not LOAD_FROM_FILE:
-        # Pretrain a bit with RICA at input and output
-        IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
+    if not LOAD_FROM_FILE:
+        ####################
+        # RICA PRETRAINING #
+        ####################
+        #IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
         GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
-        for i in range(5000):
+        for i in range(3000):
             scale = min(1.0, (float(i+1) / 5000.0))
-            l_rate = 0.001 * scale
+            l_rate = 0.0001 * scale
             lam_l1 = 0.05
             tr_idx = npr.randint(low=0,high=tr_samples,size=(1000,))
             Xd_batch = Xtr.take(tr_idx, axis=0)
-            inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
+            #inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
             gnr_out = GN.train_rica(Xd_batch, l_rate, lam_l1)
+            inr_out = [v for v in gnr_out]
             if ((i % 1000) == 0):
                 print("rica batch {0:d}: in_recon={1:.4f}, in_spars={2:.4f}, gn_recon={3:.4f}, gn_spars={4:.4f}".format( \
                         i, 1.*inr_out[1], 1.*inr_out[2], 1.*gnr_out[1], 1.*gnr_out[2]))
+                            # draw inference net first layer weights
+        file_name = "VCG_AAA_RICA_INF_WEIGHTS.png".format(i)
+        utils.visualize_samples(IN.W_rica.get_value(borrow=False).T, file_name, num_rows=20)
+        # draw generator net final layer weights
+        file_name = "VCG_AAA_RICA_GEN_WEIGHTS.png".format(i)
+        if ('gaussian' in gn_params['out_type']):
+            lay_num = -2
+        else:
+            lay_num = -1
+        utils.visualize_samples(GN.W_rica.get_value(borrow=False), file_name, num_rows=20)
+        ####################
+        ####################
 
     ###################################
     # TRAIN AS MARKOV CHAIN WITH BPTT #
@@ -840,7 +855,7 @@ if __name__=="__main__":
     cost_1 = [0. for i in range(10)]
     cost_2 = [0. for i in range(10)]
     for i in range(1000000):
-        scale = float(min((i+1), 10000)) / 10000.0
+        scale = float(min((i+1), 25000)) / 25000.0
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.75
         if True:
@@ -852,7 +867,7 @@ if __name__=="__main__":
             VCG.set_dn_sgd_params(learn_rate=0.5*scale*learn_rate)
             VCG.set_disc_weights(dweight_gn=5.0, dweight_dn=5.0)
             VCG.set_lam_chain_nll(1.0)
-            VCG.set_lam_chain_kld(0.1 + 0.9*scale)
+            VCG.set_lam_chain_kld(1.0 + 2.0*scale)
             VCG.set_lam_chain_vel(0.0)
             VCG.set_lam_mask_nll(0.0)
             VCG.set_lam_mask_kld(0.0)
@@ -884,7 +899,7 @@ if __name__=="__main__":
             VCG.set_lam_chain_kld(0.0)
             VCG.set_lam_chain_vel(0.0)
             VCG.set_lam_mask_nll(1.0)
-            VCG.set_lam_mask_kld(0.1 + 0.9*scale)
+            VCG.set_lam_mask_kld(0.2)
             # get some data to train with
             tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
             Xd_batch = Xc_mean
@@ -945,14 +960,16 @@ if __name__=="__main__":
             utils.visualize_net_layer(VCG.IN.shared_layers[0], file_name)
             # draw generator net final layer weights
             file_name = "VCG_AAA_GEN_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_net_layer(VCG.GN.mlp_layers[-1], file_name, use_transpose=True)
+            if GN.out_type == 'sigmoid':
+                utils.visualize_net_layer(VCG.GN.mlp_layers[-1], file_name, use_transpose=True)
+            else:
+                utils.visualize_net_layer(VCG.GN.mlp_layers[-2], file_name, use_transpose=True)
         # DUMP PARAMETERS FROM TIME-TO-TIME
         if (i % 10000 == 0):
             DN.save_to_file(f_name="VCG_PARAMS_DN.pkl")
             IN.save_to_file(f_name="VCG_PARAMS_IN.pkl")
             GN.save_to_file(f_name="VCG_PARAMS_GN.pkl")
     print("TESTING COMPLETE!")
-    profmode.print_summary()
 
 
 

@@ -111,15 +111,15 @@ def test_gi_pair_mnist():
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 50
+    prior_dim = 64
     prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
+    gn_config = [prior_dim, 1000, 1000, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
-    gn_params['mean_transform'] = lambda x: T.nnet.sigmoid(x)
+    gn_params['mean_transform'] = 'sigmoid'
     gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
@@ -127,7 +127,7 @@ def test_gi_pair_mnist():
     gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 800, 800]
+    shared_config = [data_dim, 1000, 1000]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
@@ -152,11 +152,14 @@ def test_gi_pair_mnist():
             data_dim=data_dim, prior_dim=prior_dim, params=None)
     GIP.set_lam_l2w(1e-4)
 
+    ####################
+    # RICA PRETRAINING #
+    ####################
     #IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
     GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
-    for i in range(2500):
+    for i in range(4000):
         scale = min(1.0, (float(i+1) / 5000.0))
-        l_rate = 0.001 * scale
+        l_rate = 0.0001 * scale
         lam_l1 = 0.05
         tr_idx = npr.randint(low=0,high=tr_samples,size=(1000,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
@@ -167,16 +170,17 @@ def test_gi_pair_mnist():
             print("rica batch {0:d}: in_recon={1:.4f}, in_spars={2:.4f}, gn_recon={3:.4f}, gn_spars={4:.4f}".format( \
                     i, 1.*inr_out[1], 1.*inr_out[2], 1.*gnr_out[1], 1.*gnr_out[2]))
                         # draw inference net first layer weights
-            if ((i % 2000) == 0):
-                file_name = "GIP_MNIST_RICA_INF_WEIGHTS_b{0:d}.png".format(i)
-                utils.visualize_samples(IN.W_rica.get_value(borrow=False).T, file_name, num_rows=20)
-                # draw generator net final layer weights
-                file_name = "GIP_MNIST_RICA_GEN_WEIGHTS_b{0:d}.png".format(i)
-                if ('gaussian' in gn_params['out_type']):
-                    lay_num = -2
-                else:
-                    lay_num = -1
-                utils.visualize_samples(GN.W_rica.get_value(borrow=False), file_name, num_rows=20)
+    file_name = "GIP_MNIST_RICA_INF_WEIGHTS.png".format(i)
+    utils.visualize_samples(IN.W_rica.get_value(borrow=False).T, file_name, num_rows=20)
+    # draw generator net final layer weights
+    file_name = "GIP_MNIST_RICA_GEN_WEIGHTS.png".format(i)
+    if ('gaussian' in gn_params['out_type']):
+        lay_num = -2
+    else:
+        lay_num = -1
+    utils.visualize_samples(GN.W_rica.get_value(borrow=False), file_name, num_rows=20)
+    ####################
+    ####################
 
     out_file = open("GIP_MNIST_AAA.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
@@ -196,7 +200,7 @@ def test_gi_pair_mnist():
         GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP.set_lam_nll(1.0)
-        GIP.set_lam_kld(1.0 + 1.5*scale)
+        GIP.set_lam_kld(1.0 + 2.0*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         if ((i % 1000) == 0):
@@ -397,7 +401,7 @@ def test_gi_pair_svhn_pca():
 
     # get pca transformation to use as "preprocessing"
     f_enc, f_dec, pca_shared_params = \
-            PCA_theano(Xtr, cutoff=750, global_sd=True)
+            PCA_theano(Xtr, cutoff=600, global_sd=True)
     pca_dim = pca_shared_params['pca_dim']
     # make numpy versions of encoder and decoder
     sym_mat = T.matrix('sym_mat')
@@ -421,14 +425,14 @@ def test_gi_pair_svhn_pca():
     gn_config = [prior_dim, 800, 800, pca_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
+    gn_params['out_type'] = 'gaussian'
     gn_params['encoder'] = f_enc
     gn_params['decoder'] = f_dec
-    gn_params['out_type'] = 'gaussian'
-    gn_params['init_scale'] = 1.3
+    gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-3
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.0
+    gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
     shared_config = [pca_dim, 800, 800]
@@ -439,11 +443,11 @@ def test_gi_pair_svhn_pca():
     in_params['activation'] = relu_actfun
     in_params['encoder'] = f_enc
     in_params['decoder'] = f_dec
-    in_params['init_scale'] = 1.3
+    in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-3
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.0
+    in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
@@ -451,13 +455,14 @@ def test_gi_pair_svhn_pca():
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
             params=gn_params, shared_param_dicts=None)
     # Initialize biases in IN and GN
-    IN.init_biases(0.0)
-    GN.init_biases(0.0)
+    IN.init_biases(0.1)
+    GN.init_biases(0.1)
     # Initialize the GIPair
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=pca_dim, prior_dim=prior_dim, params=None)
     GIP.set_lam_l2w(1e-5)
 
+    COMMENT="""
     IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
     GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
     for i in range(50000):
@@ -484,10 +489,12 @@ def test_gi_pair_svhn_pca():
                     lay_num = -1
                 utils.mat_to_img(f_dec_np(GN.W_rica.get_value(borrow=False)), file_name, \
                         (32,32), num_rows=20, scale=True, colorImg=True, tile_spacing=(1,1))
+    """
 
     out_file = open("GIP_SVHN_PCA_AAA.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
-    learn_rate = 0.0002
+    learn_rate = 0.0003
+    cost_1 = [0. for i in range(10)]
     for i in range(750000):
         scale = min(1.0, float(i) / 5000.0)
         if ((i+1 % 100000) == 0):
@@ -497,7 +504,7 @@ def test_gi_pair_svhn_pca():
         GIP.set_lam_kld(0.1)
         GIP.set_lam_nll(1.0)
         # get some data to train with
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(500,))
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
         Xd_batch = np.repeat(Xd_batch, 5, axis=0)
         Xc_batch = 0.0 * Xd_batch
@@ -505,16 +512,15 @@ def test_gi_pair_svhn_pca():
 
         # do a minibatch update of the model, and compute some costs
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
-        joint_cost = 1.0 * outputs[0]
-        data_nll_cost = 1.0 * outputs[1]
-        post_kld_cost = 1.0 * outputs[2]
-        other_reg_cost = 1.0 * outputs[3]
+        cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         if ((i % 1000) == 0):
+            cost_1 = [(v / 1000.) for v in cost_1]
             o_str = "batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
-                    i, joint_cost, data_nll_cost, post_kld_cost, other_reg_cost)
+                    i, cost_1[0], cost_1[1], cost_1[2], cost_1[3])
             print(o_str)
             out_file.write(o_str+"\n")
             out_file.flush()
+            cost_1 = [0. for v in cost_1]
         if ((i % 5000) == 0):
             tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
             Xd_batch = Xtr.take(tr_idx, axis=0)
@@ -550,7 +556,7 @@ def test_gi_pair_svhn_pca():
 ###################
 
 if __name__=="__main__":
-    #test_gi_pair_svhn_pca()
+    test_gi_pair_svhn_pca()
     #test_gi_pair_mnist_pca()
-    test_gi_pair_mnist()
+    #test_gi_pair_mnist()
     
