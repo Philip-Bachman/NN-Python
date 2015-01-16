@@ -546,6 +546,7 @@ class GIStack(object):
             else:
                 Y_p += preds
         Y_p = Y_p / float(samples)
+        Y_p = np.exp(Y_p) / np.sum(np.exp(Y_p), axis=1, keepdims=True)
         return Y_p
 
 def mnist_prob_embed(X, Y):
@@ -558,7 +559,7 @@ def mnist_prob_embed(X, Y):
     for i in range(obs_count):
         x_sq = X[i,:].reshape((28,28))
         for j in range(class_count):
-            x_sq[(2*j):(2*j+2),0:2] = Y[i,j]
+            x_sq[(2*j):(2*j+2),0:3] = Y[i,j]
             x_sq[(2*j):(2*j+2),3] = 0.33
         x_sq[2*class_count,0:3] = 0.33
         Xy[i,:] = x_sq.flatten()
@@ -618,7 +619,7 @@ if __name__=="__main__":
 
     # choose some parameters for the categorical inferencer
     pn_params = {}
-    pc0 = [prior_dim, 500, 500, label_dim]
+    pc0 = [prior_dim, 512, label_dim]
     pn_params['proto_configs'] = [pc0]
     # Set up some spawn networks
     sc0 = {'proto_key': 0, 'input_noise': 0.0, 'bias_noise': 0.1, 'do_dropout': True}
@@ -626,7 +627,7 @@ if __name__=="__main__":
     pn_params['spawn_weights'] = [1.0]
     # Set remaining params
     pn_params['activation'] = relu_actfun
-    pn_params['init_scale'] = 1.0
+    pn_params['init_scale'] = 0.5
     pn_params['lam_l2a'] = 1e-3
     pn_params['vis_drop'] = 0.0
     pn_params['hid_drop'] = 0.5
@@ -673,11 +674,11 @@ if __name__=="__main__":
             Xm_un = 0.0 * Xd_un
             # do a minibatch update of the model, and compute some costs
             GIS.set_all_sgd_params(learn_rate=0.0005, mom_1=0.9, mom_2=0.999)
-            GIS.set_pn_sgd_params(learn_rate=0.1)
+            GIS.set_pn_sgd_params(learn_rate=0.001)
             GIS.set_lam_nll(1.0)
             GIS.set_lam_kld(3.0)
-            GIS.set_lam_cat(1.0)
-            GIS.set_lam_pea(lam_pea_su=0.0, lam_pea_un=2.0)
+            GIS.set_lam_cat(100.0)
+            GIS.set_lam_pea(lam_pea_su=0.0, lam_pea_un=200.0)
             outputs = GIS.train_joint(Xd_un, Xc_un, Xm_un, Yd_un)
             cost_un = [(cost_un[k] + 1.*outputs[k]) for k in range(len(outputs))]
         # do another minibatch update incorporating label information
@@ -690,11 +691,11 @@ if __name__=="__main__":
             Xm_su = 0.0 * Xd_su
             # update only based on the label-based classification cost
             GIS.set_all_sgd_params(learn_rate=0.0005, mom_1=0.9, mom_2=0.999)
-            GIS.set_pn_sgd_params(learn_rate=0.1)
+            GIS.set_pn_sgd_params(learn_rate=0.001)
             GIS.set_lam_nll(0.01) # turn down observation generation term
             GIS.set_lam_kld(0.03) # turn down latent posterior kld term
-            GIS.set_lam_cat(1.0)
-            GIS.set_lam_pea(lam_pea_su=0.0, lam_pea_un=2.0)
+            GIS.set_lam_cat(100.0)
+            GIS.set_lam_pea(lam_pea_su=0.0, lam_pea_un=200.0)
             outputs = GIS.train_joint(Xd_su, Xc_su, Xm_su, Yd_su)
             cost_su = [(cost_su[k] + 1.*outputs[k]) for k in range(len(outputs))]
         if ((i % 500) == 0):
@@ -727,7 +728,6 @@ if __name__=="__main__":
             Ys = GIS.class_probs(Xs)
             Xs = mnist_prob_embed(Xs, Ys)
             utils.visualize_samples(Xs, file_name, num_rows=20)
-            utils.visualize_samples(Xs, file_name)
     out_file.close()
     print("TESTING COMPLETE!")
 

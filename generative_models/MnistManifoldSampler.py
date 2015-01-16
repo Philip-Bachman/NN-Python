@@ -254,35 +254,48 @@ def train_vcgl_from_pretrained_gip():
     Xt = T.matrix(name='Xt')
     Xp = T.matrix(name='Xp')
 
-    ###############################
-    # Setup discriminator network #
-    ###############################
-    # Set some reasonable mlp parameters
-    dn_params = {}
-    # Set up some proto-networks
-    pc0 = [data_dim, (300, 4), (300, 4), 10]
-    dn_params['proto_configs'] = [pc0]
-    # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    dn_params['spawn_configs'] = [sc0]
-    dn_params['spawn_weights'] = [1.0]
-    # Set remaining params
-    dn_params['init_scale'] = 0.5
-    dn_params['lam_l2a'] = 1e-2
-    dn_params['vis_drop'] = 0.2
-    dn_params['hid_drop'] = 0.5
-    # Initialize a network object to use as the discriminator
-    DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
-    DN.init_biases(0.0)
+    START_FRESH = False
+    if START_FRESH:
+        ###############################
+        # Setup discriminator network #
+        ###############################
+        # Set some reasonable mlp parameters
+        dn_params = {}
+        # Set up some proto-networks
+        pc0 = [data_dim, (300, 4), (300, 4), 10]
+        dn_params['proto_configs'] = [pc0]
+        # Set up some spawn networks
+        sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+        #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+        dn_params['spawn_configs'] = [sc0]
+        dn_params['spawn_weights'] = [1.0]
+        # Set remaining params
+        dn_params['init_scale'] = 0.5
+        dn_params['lam_l2a'] = 1e-2
+        dn_params['vis_drop'] = 0.2
+        dn_params['hid_drop'] = 0.5
+        # Initialize a network object to use as the discriminator
+        DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
+        DN.init_biases(0.0)
 
-    #######################################################
-    # Load inferencer and generator from saved parameters #
-    #######################################################
-    gn_fname = RESULT_PATH+"pt60k_params_GN.pkl"
-    in_fname = RESULT_PATH+"pt60k_params_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
-    GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
+        #######################################################
+        # Load inferencer and generator from saved parameters #
+        #######################################################
+        gn_fname = RESULT_PATH+"pt60k_params_GN.pkl"
+        in_fname = RESULT_PATH+"pt60k_params_IN.pkl"
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
+    else:
+        ###########################################################
+        # Load all networks from partially-trained VCGLoop params #
+        ###########################################################
+        gn_fname = RESULT_PATH+"pt60k_vcgl_params_b100k_GN.pkl"
+        in_fname = RESULT_PATH+"pt60k_vcgl_params_b100k_IN.pkl"
+        dn_fname = RESULT_PATH+"pt60k_vcgl_params_b100k_DN.pkl"
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
+        DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
+
 
     ###############################
     # Initialize the main VCGLoop #
@@ -301,7 +314,7 @@ def train_vcgl_from_pretrained_gip():
     learn_rate = 0.0005
     cost_1 = [0. for i in range(10)]
     cost_2 = [0. for i in range(10)]
-    for i in range(1000000):
+    for i in range(100000, 1000000):
         scale = float(min((i+1), 25000)) / 25000.0
         if ((i+1 % 100000) == 0):
             learn_rate = learn_rate * 0.75

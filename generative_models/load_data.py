@@ -227,7 +227,7 @@ def load_svhn_gray(tr_file, te_file, ex_file=None, ex_count=None):
     data_dict = cPickle.load(pickle_file)
     Xtr = data_dict['X']
     print("Xtr.shape: {0:s}".format(str(Xtr.shape)))
-    Ytr = data_dict['y'].astype(np.int32) + 1
+    Ytr = data_dict['y'].astype(np.int32)
     Xtr_vec = np.zeros((Xtr.shape[2], 32*32), dtype=theano.config.floatX)
     for i in range(Xtr.shape[2]):
         c_pix = 32*32
@@ -242,7 +242,7 @@ def load_svhn_gray(tr_file, te_file, ex_file=None, ex_count=None):
     pickle_file.close()
     Xte = data_dict['X']
     print("Xte.shape: {0:s}".format(str(Xte.shape)))
-    Yte = data_dict['y'].astype(np.int32) + 1
+    Yte = data_dict['y'].astype(np.int32)
     Xte_vec = np.zeros((Xte.shape[2], 32*32), dtype=theano.config.floatX)
     for i in range(Xte.shape[2]):
         c_pix = 32*32
@@ -274,5 +274,14 @@ def load_svhn_gray(tr_file, te_file, ex_file=None, ex_count=None):
     data_dict = {'Xtr': Xtr, 'Ytr': Ytr, \
                  'Xte': Xte, 'Yte': Yte, \
                  'Xex': Xex}
+    return data_dict
+
+def load_svhn_all_gray_zca(all_file):
+    """
+    Load a pickle file with whitened grayscale versions of the SVHN data.
+    """
+    # load the training set as a numpy arrays
+    pickle_file = open(all_file)
+    data_dict = cPickle.load(pickle_file)
     return data_dict
     
