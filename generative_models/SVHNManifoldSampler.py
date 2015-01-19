@@ -232,7 +232,7 @@ def pretrain_gip_gray():
     prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 1000, 1000, data_dim]
+    gn_config = [prior_dim, 1200, 1200, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
@@ -244,8 +244,8 @@ def pretrain_gip_gray():
     gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 1000, 1000]
-    top_config = [shared_config[-1], prior_dim]
+    shared_config = [data_dim, 1200, 1200]
+    top_config = [shared_config[-1], 400, prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
@@ -253,7 +253,7 @@ def pretrain_gip_gray():
     in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.5
+    in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
@@ -272,15 +272,15 @@ def pretrain_gip_gray():
     ####################
     # RICA PRETRAINING #
     ####################
-    #IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
+    IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
     GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
-    for i in range(4000):
+    for i in range(5000):
         scale = min(1.0, (float(i+1) / 5000.0))
         l_rate = 0.0001 * scale
         lam_l1 = 0.05
         tr_idx = npr.randint(low=0,high=tr_samples,size=(1000,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        #inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
+        inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
         gnr_out = GN.train_rica(Xd_batch, l_rate, lam_l1)
         inr_out = [v for v in gnr_out]
         if ((i % 1000) == 0):
@@ -302,7 +302,7 @@ def pretrain_gip_gray():
     out_file = open(RESULT_PATH+"pt_gray_gip_results.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
-    learn_rate = 0.0005
+    learn_rate = 0.0002
     for i in range(1000000):
         scale = min(1.0, float(i) / 10000.0)
         # do a minibatch update of the model, and compute some costs

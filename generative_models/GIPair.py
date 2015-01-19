@@ -307,7 +307,8 @@ class GIPair(object):
             params=self.params, shared_param_dicts=self.shared_param_dicts)
         return clone_gip
 
-    def sample_gil_from_data(self, X_d, X_c=None, X_m=None, loop_iters=5):
+    def sample_gil_from_data(self, X_d, X_c=None, X_m=None, loop_iters=5, \
+            sigma_scale=1.0):
         """
         Sample for several rounds through the I<->G loop, initialized with the
         the "data variable" samples in X_d.
@@ -318,6 +319,9 @@ class GIPair(object):
             X_c = 0.0 * X_d
         if X_m is None:
             X_m = 0.0 * X_d
+        # set sigma_scale on our InfNet
+        old_scale = self.IN.sigma_scale.get_value(borrow=False)
+        self.IN.set_sigma_scale(sigma_scale)
         for i in range(loop_iters):
             # apply mask, mixing foreground and background data
             X_d = ((1.0 - X_m) * X_d) + (X_m * X_c)
@@ -329,6 +333,8 @@ class GIPair(object):
             prior_samples.append(1.0 * X_p)
             # get next data samples by transforming the prior-space points
             X_d = self.GN.transform_prior(X_p)
+        # reset sigma_scale on our InfNet
+        self.IN.set_sigma_scale(old_scale[0])
         result = {"data samples": data_samples, "prior samples": prior_samples}
         return result
 

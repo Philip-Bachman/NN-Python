@@ -111,3 +111,66 @@ def log_gamma_lanczos_sub(z): #expanded version
         x += p[i]/(z+i)
     t = z + g + 0.5
     return LOG_SQRT_2PI + (z + 0.5) * T.log(t) - t + T.log(x)
+
+############################
+# PARZEN DENSITY ESTIMATOR #
+############################
+import time
+import gc
+
+def get_nll(x, parzen, batch_size=100):
+    """
+    Credit: Yann N. Dauphin
+    """
+
+    inds = range(x.shape[0])
+    n_batches = int(np.ceil(float(len(inds)) / batch_size))
+
+    times = []
+    nlls = []
+    for i in range(n_batches):
+        begin = time.time()
+        nll = parzen(x[inds[i::n_batches]])
+        end = time.time()
+        times.append(end-begin)
+        nlls.extend(nll)
+        if i % 10 == 0:
+            print i, np.mean(times), np.mean(nlls)
+    return np.array(nlls)
+
+
+def log_mean_exp(a):
+    """
+    Credit: Yann N. Dauphin
+    """
+    max_ = a.max(1)
+    result = max_ + T.log(T.exp(a - max_.dimshuffle(0, 'x')).mean(1))
+    return result 
+
+
+def theano_parzen(mu, sigma):
+    """
+    Credit: Yann N. Dauphin
+    """
+    x = T.matrix()
+    mu = theano.shared(mu)
+    a = ( x.dimshuffle(0, 'x', 1) - mu.dimshuffle('x', 0, 1) ) / sigma
+    E = log_mean_exp(-0.5*(a**2).sum(2))
+    Z = mu.shape[1] * T.log(sigma * np.sqrt(np.pi * 2))
+    parzen_func = theano.function([x], E - Z)
+    return parzen_func
+
+
+def cross_validate_sigma(samples, data, sigmas, batch_size):
+
+    lls = []
+    for sigma in sigmas:
+        print sigma
+        parzen = theano_parzen(samples, sigma)
+        tmp = get_nll(data, parzen, batch_size = batch_size)
+        lls.append(np.asarray(tmp).mean())
+        del parzen
+        gc.collect()
+
+    ind = np.argmax(lls)
+    return sigmas[ind]

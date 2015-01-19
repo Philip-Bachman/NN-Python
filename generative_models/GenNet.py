@@ -118,6 +118,18 @@ class GenNet(object):
                 self.mean_transform = lambda x: max_normalize(x, axis=1)
         else:
             self.mean_transform = lambda x: x
+        if 'logvar_type' in params:
+            # single_shared: one bias shared between all output distros
+            # multi_shared: per-dim biases shared between all output distros
+            # single_estimate: one bias, estimated per output distro
+            # multi_estimate: per-dim biases, estimated per output distro
+            self.logvar_type = params['logvar_type']
+            assert((self.logvar_type == 'single_shared') or \
+                    (self.logvar_type == 'multi_shared') or \
+                    (self.logvar_type == 'single_estimate') or \
+                    (self.logvar_type == 'multi_estimate'))
+        else:
+            self.logvar_type = 'single_shared'
         # Get the configuration/prototype for this network. The config is a
         # list of layer descriptions, including a description for the input
         # layer, which is typically just the dimension of the inputs. So, the
@@ -273,7 +285,6 @@ class GenNet(object):
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
         if self.out_type == 'bernoulli':
-            
             self.output = (T.nnet.sigmoid(self.mlp_layers[-1].linear_output + \
                     self.output_bias) * self.output_mask)
             self.output_logvar = 0.0 * self.output
@@ -283,10 +294,21 @@ class GenNet(object):
             raw_mean = self.mlp_layers[-2].linear_output + self.output_bias
             # apply a transform (it's just identity if none was given)
             self.output = self.mean_transform(raw_mean)
-            # WE BOUND LOG VARIANCE -- TO KEEP SIGMA BOUNDED AWAY FROM 0...
-            #self.output_logvar = (2.0 * T.tanh(self.mlp_layers[-1].linear_output / 2.0)) - \
-            #        (2.0 * T.tanh(self.logvar_bias[0] / 2.0))
-            self.output_logvar = 4.0 * (T.tanh(self.logvar_bias[0] / 4.0))
+            # set self.output_logvar based on self.logvar_type
+            if self.logvar_type == 'single_shared':
+                # one logvar, shared by all output distros
+                self.output_logvar = 6.0 * (T.tanh(self.logvar_bias[0] / 6.0))
+            elif self.logvar_type == 'multi_shared':
+                # diagonal logvar, shared by all output distros
+                self.output_logvar = 6.0 * (T.tanh(self.logvar_bias / 6.0))
+            elif self.logvar_type == 'single_estimate':
+                # one logvar, estimated per output distro
+                self.output_logvar = 6.0 * \
+                        T.tanh(T.mean(self.mlp_layers[-1].linear_output) / 6.0)
+            else: # here, self.logvar_type == 'multi_estimate'
+                # diagonal logvar, estimated per output distro
+                self.output_logvar = 6.0 * \
+                        T.tanh(self.mlp_layers[-1].linear_output / 6.0)
             self.output_sigma = T.exp(0.5 * self.output_logvar)
             self.output_samples = self._construct_post_samples() * self.output_mask
         # apply a decoder (or a no-op if the user didn't provide a decoder)
