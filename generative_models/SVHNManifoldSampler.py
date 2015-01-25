@@ -228,14 +228,15 @@ def pretrain_gip_gray():
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 100
+    prior_dim = 150
     prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 1200, 1200, data_dim]
+    gn_config = [prior_dim, 1500, 1500, 1500, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
+    gn_params['logvar_type'] = 'single_shared'
     gn_params['mean_transform'] = 'sigmoid'
     gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-2
@@ -244,8 +245,8 @@ def pretrain_gip_gray():
     gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 1200, 1200]
-    top_config = [shared_config[-1], 400, prior_dim]
+    shared_config = [data_dim, 1500, 1500]
+    top_config = [shared_config[-1], 500, prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
@@ -269,6 +270,7 @@ def pretrain_gip_gray():
             data_dim=data_dim, prior_dim=prior_dim, params=None)
     GIP.set_lam_l2w(1e-4)
 
+    COMMENT="""
     ####################
     # RICA PRETRAINING #
     ####################
@@ -298,11 +300,12 @@ def pretrain_gip_gray():
     utils.visualize_samples(GN.W_rica.get_value(borrow=False), file_name, num_rows=20)
     ####################
     ####################
+    """
 
     out_file = open(RESULT_PATH+"pt_gray_gip_results.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
-    learn_rate = 0.0002
+    learn_rate = 0.0003
     for i in range(1000000):
         scale = min(1.0, float(i) / 10000.0)
         # do a minibatch update of the model, and compute some costs
@@ -366,7 +369,7 @@ def pretrain_gip_gray():
 # Train a VCGLoop starting from a pretrained GIPair #
 #####################################################
 
-def train_vcgl_from_pretrained_gip():
+def train_walk_from_pretrained_gip():
     # Simple test code, to check that everything is basically functional.
     print("TESTING...")
 
@@ -439,11 +442,11 @@ def train_vcgl_from_pretrained_gip():
                  prior_dim=prior_dim, params=vcgl_params)
     VCGL.set_lam_l2w(1e-4)
 
-    out_file = open(RESULT_PATH+"pt60k_vcgl_results.txt", 'wb')
+    out_file = open(RESULT_PATH+"pt60k_walk_results.txt", 'wb')
     ####################################################
     # Train the VCGLoop by unrolling and applying BPTT #
     ####################################################
-    learn_rate = 0.0005
+    learn_rate = 0.0004
     cost_1 = [0. for i in range(10)]
     cost_2 = [0. for i in range(10)]
     for i in range(1000000):
@@ -529,13 +532,13 @@ def train_vcgl_from_pretrained_gip():
             va_idx = npr.randint(low=0,high=Xva.shape[0],size=(5,))
             Xd_batch = np.vstack([Xtr.take(tr_idx, axis=0), Xva.take(va_idx, axis=0)])
             # draw some chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt60k_vcgl_chain_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt60k_walk_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch, 3, axis=0)
             sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some masked chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt60k_vcgl_mask_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt60k_walk_mask_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
             Xc_samps = np.repeat(Xd_batch, 3, axis=0)
             Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
@@ -546,29 +549,29 @@ def train_vcgl_from_pretrained_gip():
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some samples independently from the GenNet's prior
-            file_name = RESULT_PATH+"pt60k_vcgl_prior_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt60k_walk_prior_samples_b{0:d}.png".format(i)
             Xs = VCGL.sample_from_prior(20*20)
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw discriminator network's weights
-            file_name = RESULT_PATH+"pt60k_vcgl_dis_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt60k_walk_dis_weights_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCGL.DN.proto_nets[0][0], file_name)
             # draw inference net first layer weights
-            file_name = RESULT_PATH+"pt60k_vcgl_inf_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt60k_walk_inf_weights_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCGL.IN.shared_layers[0], file_name)
             # draw generator net final layer weights
-            file_name = RESULT_PATH+"pt60k_vcgl_gen_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt60k_walk_gen_weights_b{0:d}.png".format(i)
             if GN.out_type == 'sigmoid':
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-1], file_name, use_transpose=True)
             else:
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-2], file_name, use_transpose=True)
         # DUMP PARAMETERS FROM TIME-TO-TIME
         if (i % 10000 == 0):
-            DN.save_to_file(f_name=RESULT_PATH+"pt60k_vcgl_params_DN.pkl")
-            IN.save_to_file(f_name=RESULT_PATH+"pt60k_vcgl_params_IN.pkl")
-            GN.save_to_file(f_name=RESULT_PATH+"pt60k_vcgl_params_GN.pkl")
+            DN.save_to_file(f_name=RESULT_PATH+"pt60k_walk_params_DN.pkl")
+            IN.save_to_file(f_name=RESULT_PATH+"pt60k_walk_params_IN.pkl")
+            GN.save_to_file(f_name=RESULT_PATH+"pt60k_walk_params_GN.pkl")
     return
 
 if __name__=="__main__":
 	pretrain_gip_gray()
-	#train_vcgl_from_pretrained_gip_gray()
+	#train_walk_from_pretrained_gip_gray()
     #test_semisupervised()

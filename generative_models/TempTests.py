@@ -94,7 +94,7 @@ def test_gip_sigma_scale():
     print("TESTING...")
 
     # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
+    rng = np.random.RandomState(12345)
 
     # Load some data to train/validate/test with
     dataset = 'data/mnist.pkl.gz'
@@ -109,7 +109,7 @@ def test_gip_sigma_scale():
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
     batch_size = 100
-    prior_dim = 32
+    prior_dim = 50
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
@@ -123,26 +123,26 @@ def test_gip_sigma_scale():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MMS_RESULTS_32D/pt60k_vcgl_params_b100000_GN.pkl"
-    in_fname = "MMS_RESULTS_32D/pt60k_vcgl_params_b100000_IN.pkl"
+    gn_fname = "pt60k_params_b300000_GN.pkl"
+    in_fname = "pt60k_params_b300000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     # construct a GIPair with the loaded InfNet and GenNet
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
     # draw many samples from the GIP
-    for sigma_scale in [1.0, 1.5, 2.0]:
+    for sigma_scale in [1.0, 1.2, 1.4, 1.5, 2.0]:
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
         ss_int = int(10. * sigma_scale)
-        sample_lists = GIP.sample_gil_from_data(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=500, \
-                sigma_scale=sigma_scale)
+        sample_lists = GIP.sample_gil_from_data(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=1000, \
+                sigma_scale=1.0)
         Xs = np.vstack(sample_lists["data samples"])
         file_name = "AAA_TEST_{0:d}.png".format(ss_int)
-        utils.visualize_samples(Xs, file_name, num_rows=20)
+        utils.visualize_samples(Xs, file_name, num_rows=30)
     file_name = "AAA_TEST_PRIOR.png"
-    Xs = GIP.sample_from_gn(25*25)
-    utils.visualize_samples(Xs, file_name, num_rows=25)
+    Xs = GIP.sample_from_gn(32*32)
+    utils.visualize_samples(Xs, file_name, num_rows=32)
     # test Parzen density estimator built from prior samples
     Xs = GIP.sample_from_gn(10000)
     cross_validate_sigma(Xs, Xva, [0.1, 0.13, 0.15, 0.18, 0.2], 100)
@@ -159,10 +159,10 @@ def test_gip_mnist_60k():
     Xva_shared = datasets[1][0]
     Xtr = Xtr_shared.get_value(borrow=False)
     Xva = Xva_shared.get_value(borrow=False)
-    Xtr = Xtr + ((1. / 256.) * npr.rand(Xtr.shape[0], Xtr.shape[1]))
-    Xva = Xva + ((1. / 256.) * npr.rand(Xva.shape[0], Xva.shape[1]))
-    Xtr = Xtr / np.max(Xtr, axis=1, keepdims=True)
-    Xva = Xva / np.max(Xva, axis=1, keepdims=True)
+    #Xtr = Xtr + ((1. / 256.) * npr.rand(Xtr.shape[0], Xtr.shape[1]))
+    #Xva = Xva + ((1. / 256.) * npr.rand(Xva.shape[0], Xva.shape[1]))
+    #Xtr = Xtr / np.max(Xtr, axis=1, keepdims=True)
+    #Xva = Xva / np.max(Xva, axis=1, keepdims=True)
     Xtr = Xtr.astype(theano.config.floatX)
     Xva = Xva.astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
@@ -182,30 +182,30 @@ def test_gip_mnist_60k():
 
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
+    gn_config = [prior_dim, 1200, 1200, 1200, data_dim]
     gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = relu_actfun
+    gn_params['activation'] = relu_actfun #lambda x: softplus_actfun(x, scale=2.0)
     gn_params['out_type'] = 'gaussian'
-    gn_params['logvar_type'] = 'multi_shared'
+    gn_params['logvar_type'] = 'single_shared'
     gn_params['mean_transform'] = 'sigmoid'
     gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.1
+    gn_params['bias_noise'] = 0.2
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 800, 800]
-    top_config = [shared_config[-1], 200, prior_dim]
+    shared_config = [data_dim, 1200, 1200, 1200]
+    top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
-    in_params['activation'] = relu_actfun
+    in_params['activation'] = relu_actfun #lambda x: softplus_actfun(x, scale=2.0)
     in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
-    in_params['vis_drop'] = 0.0
-    in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.1
+    in_params['vis_drop'] = 0.2
+    in_params['hid_drop'] = 0.5
+    in_params['bias_noise'] = 0.2
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
@@ -216,6 +216,8 @@ def test_gip_mnist_60k():
     IN.init_biases(0.1)
     GN.init_biases(0.1)
     # Initialize the GIPair
+    gip_params = {}
+    #gip_params['latent_transform'] = lambda x: softplus_actfun(x-0.5, 2.0)
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
     GIP.set_lam_l2w(1e-4)
@@ -223,16 +225,17 @@ def test_gip_mnist_60k():
     ####################
     # RICA PRETRAINING #
     ####################
-    IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
+    #IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
     GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
-    for i in range(4000):
+    for i in range(5000):
         scale = min(1.0, (float(i+1) / 5000.0))
         l_rate = 0.0001 * scale
         lam_l1 = 0.05
         tr_idx = npr.randint(low=0,high=tr_samples,size=(1000,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
+        #inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
         gnr_out = GN.train_rica(Xd_batch, l_rate, lam_l1)
+        inr_out = gnr_out
         if ((i % 1000) == 0):
             print("rica batch {0:d}: in_recon={1:.4f}, in_spars={2:.4f}, gn_recon={3:.4f}, gn_spars={4:.4f}".format( \
                     i, 1.*inr_out[1], 1.*inr_out[2], 1.*gnr_out[1], 1.*gnr_out[2]))
@@ -254,7 +257,7 @@ def test_gip_mnist_60k():
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.0004
     for i in range(500000):
-        scale = min(1.0, float(i) / 30000.0)
+        scale = min(1.0, float(i) / 50000.0)
         if ((i+1) % 100000) == 0:
             learn_rate = learn_rate * 0.5
         # do a minibatch update of the model, and compute some costs
@@ -267,7 +270,7 @@ def test_gip_mnist_60k():
         GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP.set_lam_nll(1.0)
-        GIP.set_lam_kld(1.0 + 1.0*scale)
+        GIP.set_lam_kld(1.0 + 3.0*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         if ((i % 1000) == 0):
@@ -285,7 +288,7 @@ def test_gip_mnist_60k():
             print(o_str)
             out_file.write(o_str+"\n")
             out_file.flush()
-        if ((i % 5000) == 0):
+        if ((i % 10000) == 0):
             tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
             Xd_batch = Xtr.take(tr_idx, axis=0)
             file_name = "pt60k_gip_chain_samples_b{0:d}.png".format(i)
@@ -308,6 +311,9 @@ def test_gip_mnist_60k():
                 lay_num = -1
             utils.visualize_net_layer(GIP.GN.mlp_layers[lay_num], file_name, \
                     colorImg=False, use_transpose=True)
+            # Dump params to disk
+            IN.save_to_file(f_name="pt60k_params_b{0:d}_IN.pkl".format(i))
+            GN.save_to_file(f_name="pt60k_params_b{0:d}_GN.pkl".format(i))
     return
 
 def test_gi_pair_svhn_pca():
@@ -479,6 +485,6 @@ def test_gi_pair_svhn_pca():
 
 if __name__=="__main__":
     #test_gi_pair_svhn_pca()
-    #test_gip_sigma_scale()
-    test_gip_mnist_60k()
+    test_gip_sigma_scale()
+    #test_gip_mnist_60k()
     

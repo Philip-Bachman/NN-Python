@@ -60,7 +60,14 @@ class GIPair(object):
             params=None, shared_param_dicts=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
-        self.params = {}
+        if params is None:
+            self.params = {}
+        else:
+            self.params = params
+        if 'latent_transform' in self.params:
+            self.latent_transform = self.params['latent_transform']
+        else:
+            self.latent_transform = lambda x: (1.0 * x)
 
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this GIPair
@@ -80,7 +87,8 @@ class GIPair(object):
         self.Xp = self.IN.output
         # create a "shared-parameter" clone of the generator, set up to
         # receive input from samples from the variational posterior
-        self.GN = g_net.shared_param_clone(rng=rng, Xp=self.IN.output)
+        self.GN = g_net.shared_param_clone(rng=rng, \
+                Xp=self.latent_transform(self.IN.output))
         # capture a handle for sampled reconstructions from the generator
         self.Xg = self.GN.output
 

@@ -43,10 +43,10 @@ def relu_actfun(x):
     x_relu = T.maximum(0., x)
     return x_relu
 
-def softplus_actfun(x):
-    """Compute softplus activation for x."""
+def softplus_actfun(x, scale=1.0):
+    """Compute rescaled softplus activation for x."""
     #x_softplus = safe_log(1.0 + T.exp(x))
-    x_softplus = T.nnet.softplus(x)
+    x_softplus = (1.0 / scale) * T.nnet.softplus(scale*x)
     return x_softplus
 
 def maxout_actfun(input, pool_size, filt_count):
@@ -75,9 +75,9 @@ def noop_actfun(x):
 
 def safe_softmax(x):
     """Softmax that shouldn't overflow."""
-    #e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
-    #x_sm = e_x / T.sum(e_x, axis=1, keepdims=True)
-    x_sm = T.nnet.softmax(x)
+    e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
+    x_sm = e_x / T.sum(e_x, axis=1, keepdims=True)
+    #x_sm = T.nnet.softmax(x)
     return x_sm
 
 def smooth_softmax(x):

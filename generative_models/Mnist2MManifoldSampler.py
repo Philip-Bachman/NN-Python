@@ -23,7 +23,7 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "MMS_RESULTS_50D/"
+RESULT_PATH = "M2MMS_RESULTS_50D/"
 
 
 #####################################
@@ -66,12 +66,10 @@ def pretrain_gip_60k():
     rng = np.random.RandomState(1234)
 
     # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr_shared = datasets[0][0]
-    Xva_shared = datasets[1][0]
-    Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
-    Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
+    Xtr_file = 'data/mnist3m_Xtr.npy'
+    Ytr_file = 'data/mnist3m_Ytr.npy'
+    Xtr = np.load(Xtr_file)
+    Ytr = np.load(Ytr_file)
     tr_samples = Xtr.shape[0]
     batch_size = 100
     batch_reps = 5
@@ -87,7 +85,7 @@ def pretrain_gip_60k():
     prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 1200, 1200, data_dim]
+    gn_config = [prior_dim, 1600, 1600, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
@@ -100,7 +98,7 @@ def pretrain_gip_60k():
     gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 1200, 1200]
+    shared_config = [data_dim, 1600, 1600]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
@@ -143,10 +141,10 @@ def pretrain_gip_60k():
             print("rica batch {0:d}: in_recon={1:.4f}, in_spars={2:.4f}, gn_recon={3:.4f}, gn_spars={4:.4f}".format( \
                     i, 1.*inr_out[1], 1.*inr_out[2], 1.*gnr_out[1], 1.*gnr_out[2]))
                         # draw inference net first layer weights
-    file_name = RESULT_PATH+"pt60k_rica_inf_weights.png".format(i)
+    file_name = RESULT_PATH+"pt2m_rica_inf_weights.png".format(i)
     utils.visualize_samples(IN.W_rica.get_value(borrow=False).T, file_name, num_rows=20)
     # draw generator net final layer weights
-    file_name = RESULT_PATH+"pt60k_rica_gen_weights.png".format(i)
+    file_name = RESULT_PATH+"pt2m_rica_gen_weights.png".format(i)
     if ('gaussian' in gn_params['out_type']):
         lay_num = -2
     else:
@@ -155,7 +153,7 @@ def pretrain_gip_60k():
     ####################
     ####################
 
-    out_file = open(RESULT_PATH+"pt60k_gip_results.txt", 'wb')
+    out_file = open(RESULT_PATH+"pt2m_gip_results.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.0003
@@ -183,39 +181,32 @@ def pretrain_gip_60k():
             out_file.flush()
             cost_1 = [0. for v in cost_1]
         if ((i % 5000) == 0):
-            cost_2 = GIP.compute_costs(Xva, 0.*Xva, 0.*Xva)
-            o_str = "--val: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
-                    i, 1.*cost_2[0], 1.*cost_2[1], 1.*cost_2[2], 1.*cost_2[3])
-            print(o_str)
-            out_file.write(o_str+"\n")
-            out_file.flush()
-        if ((i % 5000) == 0):
             tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
             Xd_batch = Xtr.take(tr_idx, axis=0)
-            file_name = RESULT_PATH+"pt60k_gip_chain_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_gip_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
             sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw samples freely from the generative model's prior
-            file_name = RESULT_PATH+"pt60k_gip_prior_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_gip_prior_samples_b{0:d}.png".format(i)
             Xs = GIP.sample_from_gn(20*20)
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw inference net first layer weights
-            file_name = RESULT_PATH+"pt60k_gip_inf_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_gip_inf_weights_b{0:d}.png".format(i)
             utils.visualize_net_layer(GIP.IN.shared_layers[0], file_name)
             # draw generator net final layer weights
-            file_name = RESULT_PATH+"pt60k_gip_gen_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_gip_gen_weights_b{0:d}.png".format(i)
             if (gn_params['out_type'] == 'gaussian'):
                 lay_num = -2
             else:
                 lay_num = -1
             utils.visualize_net_layer(GIP.GN.mlp_layers[lay_num], file_name, \
                     colorImg=False, use_transpose=True)
-            IN.save_to_file(f_name=RESULT_PATH+"pt60k_params_IN.pkl")
-            GN.save_to_file(f_name=RESULT_PATH+"pt60k_params_GN.pkl")
-    IN.save_to_file(f_name=RESULT_PATH+"pt60k_params_IN.pkl")
-    GN.save_to_file(f_name=RESULT_PATH+"pt60k_params_GN.pkl")
+            IN.save_to_file(f_name=RESULT_PATH+"pt2m_params_IN.pkl")
+            GN.save_to_file(f_name=RESULT_PATH+"pt2m_params_GN.pkl")
+    IN.save_to_file(f_name=RESULT_PATH+"pt2m_params_IN.pkl")
+    GN.save_to_file(f_name=RESULT_PATH+"pt2m_params_GN.pkl")
     return
 
 #####################################################
@@ -230,12 +221,11 @@ def train_walk_from_pretrained_gip():
     rng = np.random.RandomState(1234)
 
     # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0]
-    Xtr = Xtr.get_value(borrow=False)
-    Xva = datasets[1][0]
-    Xva = Xva.get_value(borrow=False)
+    Xtr_file = 'data/mnist3m_Xtr.npy'
+    Ytr_file = 'data/mnist3m_Ytr.npy'
+    Xtr = np.load(Xtr_file)
+    Ytr = np.load(Ytr_file)
+    Xva = Xtr
     print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
 
     # get and set some basic dataset information
@@ -282,17 +272,17 @@ def train_walk_from_pretrained_gip():
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt60k_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt60k_params_IN.pkl"
+        gn_fname = RESULT_PATH+"pt2m_params_GN.pkl"
+        in_fname = RESULT_PATH+"pt2m_params_IN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
         ###########################################################
         # Load all networks from partially-trained VCGLoop params #
         ###########################################################
-        gn_fname = RESULT_PATH+"pt60k_walk_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt60k_walk_params_IN.pkl"
-        dn_fname = RESULT_PATH+"pt60k_walk_params_DN.pkl"
+        gn_fname = RESULT_PATH+"pt2m_walk_params_GN.pkl"
+        in_fname = RESULT_PATH+"pt2m_walk_params_IN.pkl"
+        dn_fname = RESULT_PATH+"pt2m_walk_params_DN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
         DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
@@ -308,7 +298,7 @@ def train_walk_from_pretrained_gip():
                  prior_dim=prior_dim, params=vcgl_params)
     VCGL.set_lam_l2w(1e-4)
 
-    out_file = open(RESULT_PATH+"pt60k_walk_results.txt", 'wb')
+    out_file = open(RESULT_PATH+"pt2m_walk_results.txt", 'wb')
     ####################################################
     # Train the VCGLoop by unrolling and applying BPTT #
     ####################################################
@@ -358,13 +348,13 @@ def train_walk_from_pretrained_gip():
             va_idx = npr.randint(low=0,high=Xva.shape[0],size=(5,))
             Xd_batch = np.vstack([Xtr.take(tr_idx, axis=0), Xva.take(va_idx, axis=0)])
             # draw some chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt60k_walk_chain_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_walk_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch, 3, axis=0)
             sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some masked chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt60k_walk_mask_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_walk_mask_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
             Xc_samps = np.repeat(Xd_batch, 3, axis=0)
             Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
@@ -375,26 +365,26 @@ def train_walk_from_pretrained_gip():
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some samples independently from the GenNet's prior
-            file_name = RESULT_PATH+"pt60k_walk_prior_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_walk_prior_samples_b{0:d}.png".format(i)
             Xs = VCGL.sample_from_prior(20*20)
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw discriminator network's weights
-            file_name = RESULT_PATH+"pt60k_walk_dis_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_walk_dis_weights_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCGL.DN.proto_nets[0][0], file_name)
             # draw inference net first layer weights
-            file_name = RESULT_PATH+"pt60k_walk_inf_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_walk_inf_weights_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCGL.IN.shared_layers[0], file_name)
             # draw generator net final layer weights
-            file_name = RESULT_PATH+"pt60k_walk_gen_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_walk_gen_weights_b{0:d}.png".format(i)
             if GN.out_type == 'sigmoid':
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-1], file_name, use_transpose=True)
             else:
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-2], file_name, use_transpose=True)
         # DUMP PARAMETERS FROM TIME-TO-TIME
         if (i % 10000 == 0):
-            DN.save_to_file(f_name=RESULT_PATH+"pt60k_walk_params_b{0:d}_DN.pkl".format(i))
-            IN.save_to_file(f_name=RESULT_PATH+"pt60k_walk_params_b{0:d}_IN.pkl".format(i))
-            GN.save_to_file(f_name=RESULT_PATH+"pt60k_walk_params_b{0:d}_GN.pkl".format(i))
+            DN.save_to_file(f_name=RESULT_PATH+"pt2m_walk_params_b{0:d}_DN.pkl".format(i))
+            IN.save_to_file(f_name=RESULT_PATH+"pt2m_walk_params_b{0:d}_IN.pkl".format(i))
+            GN.save_to_file(f_name=RESULT_PATH+"pt2m_walk_params_b{0:d}_GN.pkl".format(i))
     return
 
 def train_recon_from_pretrained_gip():
@@ -405,12 +395,11 @@ def train_recon_from_pretrained_gip():
     rng = np.random.RandomState(1234)
 
     # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0]
-    Xtr = Xtr.get_value(borrow=False)
-    Xva = datasets[1][0]
-    Xva = Xva.get_value(borrow=False)
+    Xtr_file = 'data/mnist3m_Xtr.npy'
+    Ytr_file = 'data/mnist3m_Ytr.npy'
+    Xtr = np.load(Xtr_file)
+    Ytr = np.load(Ytr_file)
+    Xva = Xtr
     print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
 
     # get and set some basic dataset information
@@ -457,17 +446,17 @@ def train_recon_from_pretrained_gip():
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt60k_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt60k_params_IN.pkl"
+        gn_fname = RESULT_PATH+"pt2m_params_GN.pkl"
+        in_fname = RESULT_PATH+"pt2m_params_IN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
         ###########################################################
         # Load all networks from partially-trained VCGLoop params #
         ###########################################################
-        gn_fname = RESULT_PATH+"pt60k_recon_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt60k_recon_params_IN.pkl"
-        dn_fname = RESULT_PATH+"pt60k_recon_params_DN.pkl"
+        gn_fname = RESULT_PATH+"pt2m_recon_params_GN.pkl"
+        in_fname = RESULT_PATH+"pt2m_recon_params_IN.pkl"
+        dn_fname = RESULT_PATH+"pt2m_recon_params_DN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
         DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
@@ -483,7 +472,7 @@ def train_recon_from_pretrained_gip():
                  prior_dim=prior_dim, params=vcgl_params)
     VCGL.set_lam_l2w(1e-4)
 
-    out_file = open(RESULT_PATH+"pt60k_recon_results.txt", 'wb')
+    out_file = open(RESULT_PATH+"pt2m_recon_results.txt", 'wb')
     ####################################################
     # Train the VCGLoop by unrolling and applying BPTT #
     ####################################################
@@ -535,13 +524,13 @@ def train_recon_from_pretrained_gip():
             va_idx = npr.randint(low=0,high=Xva.shape[0],size=(5,))
             Xd_batch = np.vstack([Xtr.take(tr_idx, axis=0), Xva.take(va_idx, axis=0)])
             # draw some chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt60k_recon_chain_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_recon_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch, 3, axis=0)
             sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some masked chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt60k_recon_mask_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_recon_mask_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
             Xc_samps = np.repeat(Xd_batch, 3, axis=0)
             Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
@@ -552,26 +541,26 @@ def train_recon_from_pretrained_gip():
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some samples independently from the GenNet's prior
-            file_name = RESULT_PATH+"pt60k_recon_prior_samples_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_recon_prior_samples_b{0:d}.png".format(i)
             Xs = VCGL.sample_from_prior(20*20)
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw discriminator network's weights
-            file_name = RESULT_PATH+"pt60k_recon_dis_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_recon_dis_weights_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCGL.DN.proto_nets[0][0], file_name)
             # draw inference net first layer weights
-            file_name = RESULT_PATH+"pt60k_recon_inf_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_recon_inf_weights_b{0:d}.png".format(i)
             utils.visualize_net_layer(VCGL.IN.shared_layers[0], file_name)
             # draw generator net final layer weights
-            file_name = RESULT_PATH+"pt60k_recon_gen_weights_b{0:d}.png".format(i)
+            file_name = RESULT_PATH+"pt2m_recon_gen_weights_b{0:d}.png".format(i)
             if GN.out_type == 'sigmoid':
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-1], file_name, use_transpose=True)
             else:
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-2], file_name, use_transpose=True)
         # DUMP PARAMETERS FROM TIME-TO-TIME
         if (i % 10000 == 0):
-            DN.save_to_file(f_name=RESULT_PATH+"pt60k_recon_params_b{0:d}_DN.pkl".format(i))
-            IN.save_to_file(f_name=RESULT_PATH+"pt60k_recon_params_b{0:d}_IN.pkl".format(i))
-            GN.save_to_file(f_name=RESULT_PATH+"pt60k_recon_params_b{0:d}_GN.pkl".format(i))
+            DN.save_to_file(f_name=RESULT_PATH+"pt2m_recon_params_b{0:d}_DN.pkl".format(i))
+            IN.save_to_file(f_name=RESULT_PATH+"pt2m_recon_params_b{0:d}_IN.pkl".format(i))
+            GN.save_to_file(f_name=RESULT_PATH+"pt2m_recon_params_b{0:d}_GN.pkl".format(i))
     return
 
 if __name__=="__main__":

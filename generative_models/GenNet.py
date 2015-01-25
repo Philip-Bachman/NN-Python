@@ -382,7 +382,7 @@ class GenNet(object):
         in self.output (e.g. the Gaussian's mean) and self.output_sigma.
         """
         post_samples = self.output + (self.output_sigma * \
-                self.rng.normal(size=self.output_sigma.shape, avg=0.0, std=1.0, \
+                self.rng.normal(size=self.output.shape, avg=0.0, std=1.0, \
                 dtype=theano.config.floatX))
         return post_samples
 
