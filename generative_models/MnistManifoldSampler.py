@@ -87,7 +87,7 @@ def pretrain_gip_60k():
     prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 1200, 1200, data_dim]
+    gn_config = [prior_dim, 1000, 1000, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
@@ -97,10 +97,10 @@ def pretrain_gip_60k():
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.1
+    gn_params['bias_noise'] = 0.2
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 1200, 1200]
+    shared_config = [data_dim, 1000, 1000]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
@@ -109,8 +109,8 @@ def pretrain_gip_60k():
     in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.5
-    in_params['bias_noise'] = 0.1
+    in_params['hid_drop'] = 0.0
+    in_params['bias_noise'] = 0.2
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
@@ -159,7 +159,7 @@ def pretrain_gip_60k():
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.0003
-    for i in range(100000):
+    for i in range(50000):
         scale = min(1.0, float(i) / 30000.0)
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))

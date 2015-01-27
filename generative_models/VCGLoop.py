@@ -320,9 +320,9 @@ class VCGLoop(object):
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
         self.chain_nll_cost = self.lam_chain_nll[0] * \
-                self._construct_chain_nll_cost(data_weight=0.1)
+                self._construct_chain_nll_cost(data_weight=0.2)
         self.chain_kld_cost = self.lam_chain_kld[0] * \
-                self._construct_chain_kld_cost(data_weight=0.1)
+                self._construct_chain_kld_cost(data_weight=0.2)
         self.chain_vel_cost = self.lam_chain_vel[0] * \
                 self._construct_chain_vel_cost()
         self.mask_nll_cost = self.lam_mask_nll[0] * \
@@ -561,6 +561,7 @@ class VCGLoop(object):
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
         nll_costs = []
         step_weight = 1.0
+        step_weights = []
         step_decay = data_weight
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
@@ -574,8 +575,9 @@ class VCGLoop(object):
                 # non-control input to the inferencer
                 c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd)) / obs_count
             nll_costs.append(step_weight * c)
+            step_weights.append(step_weight)
             step_weight = step_weight * step_decay
-        nll_cost = sum(nll_costs)
+        nll_cost = sum(nll_costs) / sum(step_weights)
         return nll_cost
 
     def _construct_chain_kld_cost(self, data_weight=0.2):
@@ -589,13 +591,15 @@ class VCGLoop(object):
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
         kld_costs = []
         step_weight = 1.0
+        step_weights = []
         step_decay = data_weight
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
             c = T.sum(IN_i.kld_cost) / obs_count
             kld_costs.append(step_weight * c)
+            step_weights.append(step_weight)
             step_weight = step_weight * step_decay
-        kld_cost = sum(kld_costs)
+        kld_cost = sum(kld_costs) / sum(step_weights)
         return kld_cost
 
     def _construct_chain_vel_cost(self):
@@ -685,291 +689,9 @@ class VCGLoop(object):
         return Xs
 
 if __name__=="__main__":
-    import time
-    import utils as utils
-    from load_data import load_udm, load_udm_ss, load_mnist
-    from PeaNet import PeaNet
-    from InfNet import InfNet
-    from GenNet import GenNet
-    from GIPair import GIPair
-    from NetLayers import relu_actfun, softplus_actfun, \
-                          safe_softmax, safe_log
-    import GenNet as GNet
-    import InfNet as INet
-    import PeaNet as PNet
+    # TEST CODE IS ELSEWHERE
+    print("NO TEST CODE HERE!")
 
-    import sys, resource
-    resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
-    sys.setrecursionlimit(10**6)
-
-    # Simple test code, to check that everything is basically functional.
-    print("TESTING...")
-
-    # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
-
-    # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0]
-    Xtr = Xtr.get_value(borrow=False)
-    Xva = datasets[1][0]
-    Xva = Xva.get_value(borrow=False)
-    print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
-
-    # get and set some basic dataset information
-    tr_samples = Xtr.shape[0]
-    data_dim = Xtr.shape[1]
-    batch_size = 100
-    prior_dim = 64
-    prior_sigma = 1.0
-    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
-    Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
-    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
-
-    # Symbolic inputs
-    Xd = T.matrix(name='Xd')
-    Xc = T.matrix(name='Xc')
-    Xm = T.matrix(name='Xm')
-    Xt = T.matrix(name='Xt')
-    Xp = T.matrix(name='Xp')
-
-    LOAD_FROM_FILE = False
-    if not LOAD_FROM_FILE:
-        ###############################
-        # Setup discriminator network #
-        ###############################
-        # Set some reasonable mlp parameters
-        dn_params = {}
-        # Set up some proto-networks
-        pc0 = [data_dim, (250, 4), (250, 4), 10]
-        dn_params['proto_configs'] = [pc0]
-        # Set up some spawn networks
-        sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-        #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-        dn_params['spawn_configs'] = [sc0]
-        dn_params['spawn_weights'] = [1.0]
-        # Set remaining params
-        dn_params['init_scale'] = 0.5
-        dn_params['lam_l2a'] = 1e-2
-        dn_params['vis_drop'] = 0.2
-        dn_params['hid_drop'] = 0.5
-        # Initialize a network object to use as the discriminator
-        DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
-        DN.init_biases(0.0)
-
-        ############################
-        # Setup inferencer network #
-        ############################
-        # choose some parameters for the continuous inferencer
-        in_params = {}
-        shared_config = [data_dim, 1000, 1000]
-        top_config = [shared_config[-1], prior_dim]
-        in_params['shared_config'] = shared_config
-        in_params['mu_config'] = top_config
-        in_params['sigma_config'] = top_config
-        in_params['activation'] = relu_actfun
-        in_params['init_scale'] = 1.0
-        in_params['lam_l2a'] = 1e-2
-        in_params['vis_drop'] = 0.2
-        in_params['hid_drop'] = 0.5
-        in_params['bias_noise'] = 0.1
-        in_params['input_noise'] = 0.0
-        IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
-                prior_sigma=prior_sigma, params=in_params)
-        IN.init_biases(0.1)
-
-        ###########################
-        # Setup generator network #
-        ###########################
-        # choose some parameters for the generator network
-        gn_params = {}
-        gn_config = [prior_dim, 1000, 1000, data_dim]
-        gn_params['mlp_config'] = gn_config
-        gn_params['activation'] = relu_actfun
-        gn_params['out_type'] = 'gaussian'
-        gn_params['mean_transform'] = 'sigmoid'
-        gn_params['init_scale'] = 1.0
-        gn_params['lam_l2a'] = 1e-2
-        gn_params['vis_drop'] = 0.0
-        gn_params['hid_drop'] = 0.0
-        gn_params['bias_noise'] = 0.1
-        # Initialize a generator network object
-        GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, params=gn_params)
-        GN.init_biases(0.1)
-    else:
-        # Give file names for loading previously trained networks
-        dn_file = "VCG_PARAMS_DN.pkl"
-        in_file = "VCG_PARAMS_IN.pkl"
-        gn_file = "VCG_PARAMS_GN.pkl"
-        # Load the discriminator, inferencer, and generator from disk
-        DN = PNet.load_peanet_from_file(f_name=dn_file, rng=rng, Xd=Xd)
-        IN = INet.load_infnet_from_file(f_name=in_file, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
-        GN = GNet.load_gennet_from_file(f_name=gn_file, rng=rng, Xp=Xp)
-
-    ###############################
-    # Initialize the main VCGLoop #
-    ###############################
-    vcg_params = {}
-    vcg_params['lam_l2d'] = 1e-2
-    VCG = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
-                 g_net=GN, d_net=DN, chain_len=5, data_dim=data_dim, \
-                 prior_dim=prior_dim, params=vcg_params)
-    VCG.set_lam_l2w(1e-4)
-
-    if not LOAD_FROM_FILE:
-        ####################
-        # RICA PRETRAINING #
-        ####################
-        #IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
-        GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
-        for i in range(3000):
-            scale = min(1.0, (float(i+1) / 5000.0))
-            l_rate = 0.0001 * scale
-            lam_l1 = 0.05
-            tr_idx = npr.randint(low=0,high=tr_samples,size=(1000,))
-            Xd_batch = Xtr.take(tr_idx, axis=0)
-            #inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
-            gnr_out = GN.train_rica(Xd_batch, l_rate, lam_l1)
-            inr_out = [v for v in gnr_out]
-            if ((i % 1000) == 0):
-                print("rica batch {0:d}: in_recon={1:.4f}, in_spars={2:.4f}, gn_recon={3:.4f}, gn_spars={4:.4f}".format( \
-                        i, 1.*inr_out[1], 1.*inr_out[2], 1.*gnr_out[1], 1.*gnr_out[2]))
-                            # draw inference net first layer weights
-        file_name = "VCG_AAA_RICA_INF_WEIGHTS.png".format(i)
-        utils.visualize_samples(IN.W_rica.get_value(borrow=False).T, file_name, num_rows=20)
-        # draw generator net final layer weights
-        file_name = "VCG_AAA_RICA_GEN_WEIGHTS.png".format(i)
-        if ('gaussian' in gn_params['out_type']):
-            lay_num = -2
-        else:
-            lay_num = -1
-        utils.visualize_samples(GN.W_rica.get_value(borrow=False), file_name, num_rows=20)
-        ####################
-        ####################
-
-    ###################################
-    # TRAIN AS MARKOV CHAIN WITH BPTT #
-    ###################################
-    learn_rate = 0.0005
-    cost_1 = [0. for i in range(10)]
-    cost_2 = [0. for i in range(10)]
-    for i in range(1000000):
-        scale = float(min((i+1), 25000)) / 25000.0
-        if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
-        if True:
-            ########################################
-            # TRAIN THE CHAIN IN FREE-RUNNING MODE #
-            ########################################
-            VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), \
-                    mom_1=0.9, mom_2=0.999)
-            VCG.set_dn_sgd_params(learn_rate=0.5*scale*learn_rate)
-            VCG.set_disc_weights(dweight_gn=5.0, dweight_dn=5.0)
-            VCG.set_lam_chain_nll(1.0)
-            VCG.set_lam_chain_kld(1.0 + 2.0*scale)
-            VCG.set_lam_chain_vel(0.0)
-            VCG.set_lam_mask_nll(0.0)
-            VCG.set_lam_mask_kld(0.0)
-            # get some data to train with
-            tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-            Xd_batch = Xtr.take(tr_idx, axis=0)
-            Xc_batch = 0.0 * Xd_batch
-            Xm_batch = 0.0 * Xd_batch
-            tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-            Xt_batch = Xtr.take(tr_idx, axis=0)
-            # do 4 repetitions of the batch
-            Xd_batch = np.repeat(Xd_batch, 5, axis=0)
-            Xc_batch = np.repeat(Xc_batch, 5, axis=0)
-            Xm_batch = np.repeat(Xm_batch, 5, axis=0)
-            Xt_batch = np.repeat(Xt_batch, 5, axis=0)
-            # do a minibatch update of the model, and compute some costs
-            outputs = VCG.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
-            cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
-            #cost_2 = [0. for v in cost_1]
-        if ((i % 4) == 0):
-            #########################################
-            # TRAIN THE CHAIN UNDER PARTIAL CONTROL #
-            #########################################
-            VCG.set_all_sgd_params(learn_rate=(scale*learn_rate), \
-                    mom_1=0.9, mom_2=0.999)
-            VCG.set_dn_sgd_params(learn_rate=0.5*scale*learn_rate)
-            VCG.set_disc_weights(dweight_gn=5.0, dweight_dn=5.0)
-            VCG.set_lam_chain_nll(0.0)
-            VCG.set_lam_chain_kld(0.0)
-            VCG.set_lam_chain_vel(0.0)
-            VCG.set_lam_mask_nll(1.0)
-            VCG.set_lam_mask_kld(0.2)
-            # get some data to train with
-            tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-            Xd_batch = Xc_mean
-            Xc_batch = Xtr.take(tr_idx, axis=0)
-            Xm_rand = sample_masks(Xc_batch, drop_prob=0.3)
-            Xm_patch = sample_patch_masks(Xc_batch, (28,28), (14,14))
-            Xm_batch = Xm_rand * Xm_patch
-            tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-            Xt_batch = Xtr.take(tr_idx, axis=0)
-            # do 4 repetitions of the batch
-            Xd_batch = np.repeat(Xd_batch, 5, axis=0)
-            Xc_batch = np.repeat(Xc_batch, 5, axis=0)
-            Xm_batch = np.repeat(Xm_batch, 5, axis=0)
-            Xt_batch = np.repeat(Xt_batch, 5, axis=0)
-            # do a minibatch update of the model, and compute some costs
-            outputs = VCG.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
-            cost_2 = [(cost_2[k] + 1.*outputs[k]) for k in range(len(outputs))]
-            # cost_1 = [0. for k in range(10)]
-        if ((i % 1000) == 0):
-            cost_1 = [(v / 1000.0) for v in cost_1]
-            cost_2 = [(v / 250.0) for v in cost_2]
-            print("batch: {0:d}, joint_cost: {1:.4f}, chain_nll_cost: {2:.4f}, chain_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
-                    i, cost_1[0], cost_1[1], cost_1[2], cost_1[6], cost_1[7]))
-            print("------ {0:d}, joint_cost: {1:.4f}, mask_nll_cost: {2:.4f}, mask_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
-                    i, cost_2[0], cost_2[4], cost_2[5], cost_2[6], cost_2[7]))
-            cost_1 = [0. for v in cost_1]
-            cost_2 = [0. for v in cost_2]
-        if ((i % 5000) == 0):
-            tr_idx = npr.randint(low=0,high=Xtr.shape[0],size=(5,))
-            va_idx = npr.randint(low=0,high=Xva.shape[0],size=(5,))
-            Xd_batch = np.vstack([Xtr.take(tr_idx, axis=0), Xva.take(va_idx, axis=0)])
-            # draw some chains of samples from the VAE loop
-            file_name = "VCG_AAA_CHAIN_SAMPLES_b{0:d}.png".format(i)
-            Xd_samps = np.repeat(Xd_batch, 3, axis=0)
-            sample_lists = VCG.GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
-            Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name, num_rows=20)
-            # draw some masked chains of samples from the VAE loop
-            file_name = "VCG_AAA_MASK_SAMPLES_b{0:d}.png".format(i)
-            Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
-            Xc_samps = np.repeat(Xd_batch, 3, axis=0)
-            Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
-            Xm_patch = sample_patch_masks(Xc_samps, (28,28), (14,14))
-            Xm_samps = Xm_rand * Xm_patch
-            sample_lists = VCG.GIP.sample_gil_from_data(Xd_samps, \
-                    X_c=Xc_samps, X_m=Xm_samps, loop_iters=20)
-            Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name, num_rows=20)
-            # draw some samples independently from the GenNet's prior
-            file_name = "VCG_AAA_PRIOR_SAMPLES_b{0:d}.png".format(i)
-            Xs = VCG.sample_from_prior(20*20)
-            utils.visualize_samples(Xs, file_name, num_rows=20)
-            # draw discriminator network's weights
-            file_name = "VCG_AAA_DIS_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_net_layer(VCG.DN.proto_nets[0][0], file_name)
-            # draw inference net first layer weights
-            file_name = "VCG_AAA_INF_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_net_layer(VCG.IN.shared_layers[0], file_name)
-            # draw generator net final layer weights
-            file_name = "VCG_AAA_GEN_WEIGHTS_b{0:d}.png".format(i)
-            if GN.out_type == 'sigmoid':
-                utils.visualize_net_layer(VCG.GN.mlp_layers[-1], file_name, use_transpose=True)
-            else:
-                utils.visualize_net_layer(VCG.GN.mlp_layers[-2], file_name, use_transpose=True)
-        # DUMP PARAMETERS FROM TIME-TO-TIME
-        if (i % 10000 == 0):
-            DN.save_to_file(f_name="VCG_PARAMS_DN.pkl")
-            IN.save_to_file(f_name="VCG_PARAMS_IN.pkl")
-            GN.save_to_file(f_name="VCG_PARAMS_GN.pkl")
-    print("TESTING COMPLETE!")
 
 
 

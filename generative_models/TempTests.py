@@ -109,7 +109,7 @@ def test_gip_sigma_scale():
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
     batch_size = 100
-    prior_dim = 50
+    prior_dim = 32
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
@@ -123,29 +123,28 @@ def test_gip_sigma_scale():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "pt60k_params_b300000_GN.pkl"
-    in_fname = "pt60k_params_b300000_IN.pkl"
+    gn_fname = "MMS_RESULTS_32D/pt60k_walk_params_b300000_GN.pkl"
+    in_fname = "MMS_RESULTS_32D/pt60k_walk_params_b300000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     # construct a GIPair with the loaded InfNet and GenNet
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
     # draw many samples from the GIP
-    for sigma_scale in [1.0, 1.2, 1.4, 1.5, 2.0]:
+    for i in range(10):
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        ss_int = int(10. * sigma_scale)
         sample_lists = GIP.sample_gil_from_data(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=1000, \
-                sigma_scale=1.0)
+                sigma_scale=0.5)
         Xs = np.vstack(sample_lists["data samples"])
-        file_name = "AAA_TEST_{0:d}.png".format(ss_int)
+        file_name = "AAA_TEST_{0:d}.png".format(i)
         utils.visualize_samples(Xs, file_name, num_rows=30)
     file_name = "AAA_TEST_PRIOR.png"
     Xs = GIP.sample_from_gn(32*32)
     utils.visualize_samples(Xs, file_name, num_rows=32)
     # test Parzen density estimator built from prior samples
     Xs = GIP.sample_from_gn(10000)
-    cross_validate_sigma(Xs, Xva, [0.1, 0.13, 0.15, 0.18, 0.2], 100)
+    cross_validate_sigma(Xs, Xva, [0.1, 0.13, 0.15, 0.18, 0.2], 50)
     return
 
 def test_gip_mnist_60k():

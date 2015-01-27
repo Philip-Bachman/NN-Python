@@ -183,7 +183,7 @@ class HiddenLayer(object):
                         f_filt = g_filt + 0.2 * rng.normal(size=f_size)
                         filters.append(f_filt)
                 W_init = np.hstack(filters).astype(theano.config.floatX)
-            print("W_scale: {0:.4f}".format(W_scale))
+            #print("W_scale: {0:.4f}".format(W_scale))
             W = theano.shared(value=(W_scale*W_init), name="{0:s}_W".format(name))
         if b is None:
             b_init = np.zeros((self.filt_count,), dtype=theano.config.floatX)

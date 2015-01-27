@@ -284,4 +284,49 @@ def load_svhn_all_gray_zca(all_file):
     pickle_file = open(all_file)
     data_dict = cPickle.load(pickle_file)
     return data_dict
-    
+
+def load_tfd(tfd_pkl_name='', which_set='', fold=0):
+    """
+    Load TFD dataset, stored as pickled dict rather than a .mat file.
+    """
+    assert(((fold >= 0) and (fold < 5)) or (fold == 'all'))
+    # setup a map for grabbing indices to access the requested images
+    set_type_map = {'unlabeled': 0,
+                    'train': 1,
+                    'valid': 2,
+                    'test': 3}
+    assert(which_set in set_type_map)
+    data = cPickle.load(open(tfd_pkl_name))
+
+    # get indices of images in the requested set
+    set_indices = np.zeros((data['folds'][:,0].shape[0],))
+    for i in range(data['folds'].shape[1]):
+        if ((i == fold) or (fold == 'all')):
+            set_indices = set_indices + \
+                    (data['folds'][:,i] == set_type_map[which_set])
+    set_indices = set_indices > 0.1
+    assert(set_indices.sum() > 0)
+
+    # get the requested images and cast to theano.config.floatX
+    data_x = data['images'][set_indices].astype(theano.config.floatX)
+
+    # scale data into range [0...1]
+    data_x = data_x / 255.
+    # reshape to 1-d images
+    data_x = data_x.reshape((data_x.shape[0], data_x.shape[1]*data_x.shape[2]))
+
+    # get labels if they were requested
+    if which_set != 'unlabeled':
+        data_y = data['labs_ex'][set_indices] - 1
+        data_y_identity = data['labs_id'][set_indices]
+        y_labels = 7
+    else:
+        data_y = None
+        data_y_identity = None
+        y_labels = None
+
+    # check label info
+    mask = data['labs_ex'][set_indices] > -1
+    print("lab_ex > -1: {0:d}".format(np.sum(mask)))
+
+    return [data_x, data_y, data_y_identity, y_labels]
