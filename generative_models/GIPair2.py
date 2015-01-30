@@ -30,13 +30,13 @@ from DKCode import get_adam_updates, get_adadelta_updates
 #
 #
 
-class GIPair(object):
+class GIPair2(object):
     """
-    Controller for training a variational autoencoder.
+    Controller for training a double-stacked variational autoencoder.
 
-    The generator must be an instance of the GenNet class implemented in
-    "GenNet.py". The inferencer must be an instance of the InfNet class
-    implemented in "InfNet.py".
+    The top and bottom generators must both be instances of the GenNet class
+    implemented in "GenNet.py". The top and bottom inferencers must both be
+    instances of the InfNet class implemented in "InfNet.py".
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
@@ -47,6 +47,9 @@ class GIPair(object):
         i_net: The InfNet instance that will serve as the base inferer
         data_dim: dimension of the "observable data" variables
         prior_dim: dimension of the "latent prior" variables
+        g_net_2: The GenNet for the top GIPair
+        i_net_2: The InfNet for the top GIPair
+        prior_dim_2: dimension of the top "latent prior" variables
         params: dict for passing additional parameters
         shared_param_dicts: dict for retrieving some shared parameters required
                             by a GIPair. if this parameter is passed, then this
@@ -57,6 +60,8 @@ class GIPair(object):
             Xd=None, Xc=None, Xm=None, \
             g_net=None, i_net=None, \
             data_dim=None, prior_dim=None, \
+            g_net_2=None, i_net_2=None, \
+            prior_dim_2=None, \
             params=None, shared_param_dicts=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
@@ -90,9 +95,22 @@ class GIPair(object):
         # capture a handle for sampled reconstructions from the generator
         self.Xg = self.GN.output
 
+        # construct a second GIPair stacked on top of the first GIPair, which
+        # learns to model the posterior samples emitted by the inferencer in
+        # the first GIPair
+        self.IN2 = i_net_2.shared_param_clone(rng=rng, \
+                Xd=self.Xp, Xc=T.zeros_like(self.Xp), Xm=T.zeros_like(self.Xp))
+        # capture a handle for samples from the top's variational posterior
+        self.Xp2 = self.IN2.output
+        # feed these variational posterior samples into the top's generator
+        self.GN2 = g_net_2.shared_param_clone(rng=rng, Xp=self.Xp2)
+        # capture a handle for sampled (latent) reconstructions from GN2
+        self.Xg2 = self.GN2.output
+
         # record and validate the data dimensionality parameters
         self.data_dim = data_dim
         self.prior_dim = prior_dim
+        self.prior_dim_2 = prior_dim_2
         # output of the generator and input to the inferencer should both be
         # equal to self.data_dim
         assert(self.data_dim == self.GN.mlp_layers[-1].out_dim)
@@ -102,6 +120,11 @@ class GIPair(object):
         assert(self.prior_dim == self.GN.mlp_layers[0].in_dim)
         assert(self.prior_dim == self.IN.mu_layers[-1].out_dim)
         assert(self.prior_dim == self.IN.sigma_layers[-1].out_dim)
+        # input of the generator and mu/sigma outputs of the inferencer should
+        # both be equal to self.prior_dim
+        assert(self.prior_dim_2 == self.GN2.mlp_layers[0].in_dim)
+        assert(self.prior_dim_2 == self.IN2.mu_layers[-1].out_dim)
+        assert(self.prior_dim_2 == self.IN2.sigma_layers[-1].out_dim)
 
         # determine whether this GIPair is a clone or an original
         if shared_param_dicts is None:
@@ -123,7 +146,9 @@ class GIPair(object):
             # shared var momentum parameters for generator and inferencer
             self.mom_1 = theano.shared(value=zero_ary, name='gip_mom_1')
             self.mom_2 = theano.shared(value=zero_ary, name='gip_mom_2')
-            self.it_count = theano.shared(value=zero_ary, name='gip_it_count')
+            self.it_count_bot = theano.shared(value=zero_ary, name='gip_it_count_bot')
+            self.it_count_top = theano.shared(value=zero_ary, name='gip_it_count_top')
+            self.it_count_joint = theano.shared(value=zero_ary, name='gip_it_count_joint')
             # init parameters for controlling learning dynamics
             self.set_all_sgd_params()
             # init shared var for weighting nll of data given posterior sample
@@ -140,7 +165,9 @@ class GIPair(object):
             self.shared_param_dicts['gip_lr_in'] = self.lr_in
             self.shared_param_dicts['gip_mom_1'] = self.mom_1
             self.shared_param_dicts['gip_mom_2'] = self.mom_2
-            self.shared_param_dicts['gip_it_count'] = self.it_count
+            self.shared_param_dicts['gip_it_count_bot'] = self.it_count_bot
+            self.shared_param_dicts['gip_it_count_top'] = self.it_count_top
+            self.shared_param_dicts['gip_it_count_joint'] = self.it_count_joint
             self.shared_param_dicts['gip_lam_nll'] = self.lam_nll
             self.shared_param_dicts['gip_lam_kld'] = self.lam_kld
             self.shared_param_dicts['gip_lam_l2w'] = self.lam_l2w
@@ -151,47 +178,137 @@ class GIPair(object):
             self.lr_in = self.shared_param_dicts['gip_lr_in']
             self.mom_1 = self.shared_param_dicts['gip_mom_1']
             self.mom_2 = self.shared_param_dicts['gip_mom_2']
-            self.it_count = self.shared_param_dicts['gip_it_count']
+            self.it_count_bot = self.shared_param_dicts['gip_it_count_bot']
+            self.it_count_top = self.shared_param_dicts['gip_it_count_top']
+            self.it_count_joint = self.shared_param_dicts['gip_it_count_joint']
             self.lam_nll = self.shared_param_dicts['gip_lam_nll']
             self.lam_kld = self.shared_param_dicts['gip_lam_kld']
             self.lam_l2w = self.shared_param_dicts['gip_lam_l2w']
 
-        # Grab the full set of "optimizable" parameters from the generator
-        # and inferencer networks that we'll be working with.
+        # grab the optimizable parameters in the bottom GIPair
         self.in_params = [p for p in self.IN.mlp_params]
         self.gn_params = [p for p in self.GN.mlp_params]
-        self.joint_params = self.in_params + self.gn_params
+        self.bot_params = self.in_params + self.gn_params
+        # grab the optimizable parameters in the top GIPair
+        self.in2_params = [p for p in self.IN2.mlp_params]
+        self.gn2_params = [p for p in self.GN2.mlp_params]
+        self.top_params = self.in2_params + self.gn2_params
+        # get the optimizable parameters of bottom + top GIPair
+        self.joint_params = self.top_params + self.bot_params
+
 
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
-        self.data_nll_cost = self.lam_nll[0] * self._construct_data_nll_cost()
-        self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
-        self.other_reg_cost = self._construct_other_reg_cost()
-        self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
-                self.other_reg_cost
+        self.data_nll_cost_bot = self.lam_nll[0] * \
+                self._construct_data_nll_cost(which_gip='bot')
+        self.data_nll_cost_top = self.lam_nll[0] * \
+                self._construct_data_nll_cost(which_gip='top')
+        self.post_kld_cost_bot = self.lam_kld[0] * \
+                self._construct_post_kld_cost(which_gip='bot')
+        self.post_kld_cost_top = self.lam_kld[0] * \
+                self._construct_post_kld_cost(which_gip='top')
+        self.other_reg_cost_bot = \
+                self._construct_other_reg_cost(which_gip='bot')
+        self.other_reg_cost_top = \
+                self._construct_other_reg_cost(which_gip='top')
+        # summed costs for bottom, top, and joint objectives
+        self.bot_cost = self.data_nll_cost_bot + self.post_kld_cost_bot + \
+                self.other_reg_cost_bot
+        self.top_cost = self.data_nll_cost_top + self.post_kld_cost_top + \
+                self.other_reg_cost_top
+        self.joint_cost = self.bot_cost + self.top_cost
 
+        #########################################
+        # CONSTRUCT THE GRADIENTS FOR THE COSTS #
+        #########################################
+        self.bot_grads = OrderedDict()
+        for p in self.bot_params:
+            self.bot_grads[p] = T.grad(self.bot_cost, p).clip(-0.1, 0.1)
+        # Get the gradient of the top cost for all relevant parameters
+        self.top_grads = OrderedDict()
+        for p in self.top_params:
+            self.top_grads[p] = T.grad(self.top_cost, p).clip(-0.1, 0.1)
         # Get the gradient of the joint cost for all optimizable parameters
         self.joint_grads = OrderedDict()
         for p in self.joint_params:
             self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1, 0.1)
 
-        # Construct the updates for the generator and inferencer networks
-        self.gn_updates = get_adam_updates(params=self.gn_params, \
+        #######################################
+        # CONSTRUCT THE UPDATES FOR THE COSTS #
+        #######################################
+        # construct updates for the bottom GIPair, for the bottom cost
+        self.gn_updates_bot = get_adam_updates(params=self.gn_params, \
+                grads=self.bot_grads, alpha=self.lr_gn, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                it_count=self.it_count_bot, \
+                mom2_init=1e-3, smoothing=1e-8)
+        self.in_updates_bot = get_adam_updates(params=self.in_params, \
+                grads=self.bot_grads, alpha=self.lr_in, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                it_count=self.it_count_bot, \
+                mom2_init=1e-3, smoothing=1e-8)
+        # construct updates for the top GIPair, for the top cost
+        self.gn2_updates_top = get_adam_updates(params=self.gn2_params, \
+                grads=self.top_grads, alpha=self.lr_gn, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                it_count=self.it_count_top, \
+                mom2_init=1e-3, smoothing=1e-8)
+        self.in2_updates_top = get_adam_updates(params=self.in2_params, \
+                grads=self.top_grads, alpha=self.lr_in, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                it_count=self.it_count_top, \
+                mom2_init=1e-3, smoothing=1e-8)
+        # construct updates for the bottom GIPair, for the joint cost
+        self.gn_updates_joint = get_adam_updates(params=self.gn_params, \
                 grads=self.joint_grads, alpha=self.lr_gn, \
-                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                it_count=self.it_count_joint, \
                 mom2_init=1e-3, smoothing=1e-8)
-        self.in_updates = get_adam_updates(params=self.in_params, \
+        self.in_updates_joint = get_adam_updates(params=self.in_params, \
                 grads=self.joint_grads, alpha=self.lr_in, \
-                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                it_count=self.it_count_joint, \
                 mom2_init=1e-3, smoothing=1e-8)
+        # construct updates for the top GIPair, for the joint cost
+        self.gn2_updates_joint = get_adam_updates(params=self.gn2_params, \
+                grads=self.joint_grads, alpha=self.lr_gn, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                it_count=self.it_count_joint, \
+                mom2_init=1e-3, smoothing=1e-8)
+        self.in2_updates_joint = get_adam_updates(params=self.in2_params, \
+                grads=self.joint_grads, alpha=self.lr_in, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                it_count=self.it_count_joint, \
+                mom2_init=1e-3, smoothing=1e-8)
+
+
+        # Merge the bottom updates for easier application
+        self.bot_updates = OrderedDict()
+        for k in self.gn_updates_bot:
+            self.bot_updates[k] = self.gn_updates_bot[k]
+        for k in self.in_updates_bot:
+            self.bot_updates[k] = self.in_updates_bot[k]
+        # Merge the top updates for easier application
+        self.top_updates = OrderedDict()
+        for k in self.gn2_updates_top:
+            self.top_updates[k] = self.gn2_updates_top[k]
+        for k in self.in2_updates_top:
+            self.top_updates[k] = self.in2_updates_top[k]
+        # Merge the joint updates for easier application
         self.joint_updates = OrderedDict()
-        for k in self.gn_updates:
-            self.joint_updates[k] = self.gn_updates[k]
-        for k in self.in_updates:
-            self.joint_updates[k] = self.in_updates[k]
+        for k in self.gn_updates_joint:
+            self.joint_updates[k] = self.gn_updates_joint[k]
+        for k in self.in_updates_joint:
+            self.joint_updates[k] = self.in_updates_joint[k]
+        for k in self.gn2_updates_joint:
+            self.joint_updates[k] = self.gn2_updates_joint[k]
+        for k in self.in2_updates_joint:
+            self.joint_updates[k] = self.in2_updates_joint[k]
 
         # Construct a function for jointly training the generator/inferencer
+        self.train_bot = self._construct_train_bot()
+        self.train_top = self._construct_train_top()
         self.train_joint = self._construct_train_joint()
         self.compute_costs = self._construct_compute_costs()
         return
@@ -241,48 +358,90 @@ class GIPair(object):
         self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
-    def _construct_data_nll_cost(self):
+    def _construct_data_nll_cost(self, which_gip=None):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
-        if self.use_encoder:
-            # compare the encoded input to the inferencer with the encoded
-            # output of the generator
-            log_prob_cost = self.GN.compute_log_prob(self.IN.Xd_encoded)
+        assert((which_gip == 'bot') or (which_gip == 'top'))
+        obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        if which_gip == 'bot':
+            # get log-probability reconstruction cost in bottom GIPair
+            if self.use_encoder:
+                log_prob_cost = self.GN.compute_log_prob(self.IN.Xd_encoded)
+            else:
+                log_prob_cost = self.GN.compute_log_prob(self.IN.Xd)
         else:
-            log_prob_cost = self.GN.compute_log_prob(self.IN.Xd)
-        nll_cost = -T.sum(log_prob_cost) / T.cast(self.Xd.shape[0], 'floatX')
+            # get log-probability reconstruction cost in top GIPair
+            log_prob_cost = self.GN2.compute_log_prob(self.IN2.Xd)
+        nll_cost = -T.sum(log_prob_cost) / obs_count
         return nll_cost
 
-    def _construct_post_kld_cost(self):
+    def _construct_post_kld_cost(self, which_gip=None):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
-        kld_cost = T.sum(self.IN.kld_cost) / T.cast(self.Xd.shape[0], 'floatX')
+        assert((which_gip == 'bot') or (which_gip == 'top'))
+        obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        if which_gip == 'bot':
+            kld_cost = T.sum(self.IN.kld_cost) / obs_count
+        else:
+            kld_cost = T.sum(self.IN2.kld_cost) / obs_count
         return kld_cost
 
-    def _construct_other_reg_cost(self):
+    def _construct_other_reg_cost(self, which_gip=None):
         """
         Construct the cost for low-level basic regularization. E.g. for
         applying l2 regularization to the network activations and parameters.
         """
-        act_reg_cost = (self.IN.act_reg_cost + self.GN.act_reg_cost)
-        gp_cost = sum([T.sum(par**2.0) for par in self.gn_params])
-        ip_cost = sum([T.sum(par**2.0) for par in self.in_params])
-        param_reg_cost = self.lam_l2w[0] * (gp_cost + ip_cost)
-        other_reg_cost = (act_reg_cost / T.cast(self.Xd.shape[0], 'floatX')) + \
-                param_reg_cost
+        assert((which_gip == 'bot') or (which_gip == 'top'))
+        obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        if which_gip == 'bot':
+            # construct regularization cost for bottom gip
+            act_reg_cost = (self.IN.act_reg_cost + self.GN.act_reg_cost)
+            gp_cost = sum([T.sum(par**2.0) for par in self.gn_params])
+            ip_cost = sum([T.sum(par**2.0) for par in self.in_params])
+            param_reg_cost = self.lam_l2w[0] * (gp_cost + ip_cost)
+            other_reg_cost = (act_reg_cost / obs_count) + param_reg_cost
+        else:
+            # construct regularization cost for top gip
+            act_reg_cost = (self.IN2.act_reg_cost + self.GN2.act_reg_cost)
+            gp_cost = sum([T.sum(par**2.0) for par in self.gn2_params])
+            ip_cost = sum([T.sum(par**2.0) for par in self.in2_params])
+            param_reg_cost = self.lam_l2w[0] * (gp_cost + ip_cost)
+            other_reg_cost = (act_reg_cost / obs_count) + param_reg_cost
         return other_reg_cost
 
     def _construct_train_joint(self):
         """
-        Construct theano function to train inferencer and generator jointly.
+        Construct theano function to train bottom/top GIPairs jointly.
         """
-        outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
-                self.other_reg_cost, self.posterior_norms]
+        outputs = [self.joint_cost, self.data_nll_cost_bot, self.post_kld_cost_bot, \
+                self.other_reg_cost_bot, self.posterior_norms]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
+        return func
+
+    def _construct_train_bot(self):
+        """
+        Construct theano function to train bottom inferencer and generator.
+        """
+        outputs = [self.bot_cost, self.data_nll_cost_bot, self.post_kld_cost_bot, \
+                self.other_reg_cost_bot, self.posterior_norms]
+        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+                outputs=outputs, \
+                updates=self.bot_updates)
+        return func
+
+    def _construct_train_top(self):
+        """
+        Construct theano function to train top inferencer and generator.
+        """
+        outputs = [self.top_cost, self.data_nll_cost_top, self.post_kld_cost_top, \
+                self.other_reg_cost_top, self.posterior_norms]
+        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+                outputs=outputs, \
+                updates=self.top_updates)
         return func
 
     def _construct_compute_costs(self):
@@ -290,26 +449,31 @@ class GIPair(object):
         Construct theano function to compute the assorted costs without
         applying any updates (e.g. to use with a validation set).
         """
-        outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
-                self.other_reg_cost]
+        data_nll_cost = self.data_nll_cost_bot + self.data_nll_cost_top
+        post_kld_cost = self.post_kld_cost_bot + self.post_kld_cost_top
+        other_reg_cost = self.other_reg_cost_bot + self.other_reg_cost_top
+        outputs = [self.joint_cost, data_nll_cost, post_kld_cost, \
+                other_reg_cost]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs)
         return func
 
     def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None):
         """
-        Create a "shared-parameter" clone of this GIPair.
+        Create a "shared-parameter" clone of this GIPair2.
 
         This can be used for chaining VAEs for BPTT.
         """
-        clone_gip = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
+        clone_gip = GIPair2(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
             g_net=self.GN, i_net=self.IN, \
             data_dim=self.data_dim, prior_dim=self.prior_dim, \
+            g_net_2=self.GN2, i_net_2=self.IN2, \
+            prior_dim_2=self.prior_dim_2, \
             params=self.params, shared_param_dicts=self.shared_param_dicts)
         return clone_gip
 
     def sample_from_chain(self, X_d, X_c=None, X_m=None, loop_iters=5, \
-            sigma_scale=None):
+            sigma_scale=1.0, which_gip=None):
         """
         Sample for several rounds through the I<->G loop, initialized with the
         the "data variable" samples in X_d.
@@ -320,47 +484,81 @@ class GIPair(object):
             X_c = 0.0 * X_d
         if X_m is None:
             X_m = 0.0 * X_d
-        if sigma_scale is None:
-            sigma_scale = self.GN.prior_sigma
-        # set sigma_scale on our InfNet
-        old_scale = self.IN.sigma_scale.get_value(borrow=False)
-        self.IN.set_sigma_scale(sigma_scale)
-        for i in range(loop_iters):
-            # apply mask, mixing foreground and background data
-            X_d = ((1.0 - X_m) * X_d) + (X_m * X_c)
-            # record the data samples for this iteration
-            data_samples.append(1.0 * X_d)
-            # sample from their inferred posteriors
-            X_p = self.IN.sample_posterior(X_d, X_c, X_m)
-            # record the sampled points (in the "prior space")
-            prior_samples.append(1.0 * X_p)
-            # get next data samples by transforming the prior-space points
-            X_d = self.GN.transform_prior(X_p)
-        # reset sigma_scale on our InfNet
-        self.IN.set_sigma_scale(old_scale[0])
+        if which_gip is None:
+            which_gip = 'top'
+        else:
+            assert((which_gip == 'bot') or (which_gip == 'top'))
+        if which_gip == 'bot':
+            # set sigma_scale on our InfNet
+            old_scale = self.IN.sigma_scale.get_value(borrow=False)
+            self.IN.set_sigma_scale(sigma_scale)
+            for i in range(loop_iters):
+                # apply mask, mixing foreground and background data
+                X_d = ((1.0 - X_m) * X_d) + (X_m * X_c)
+                # record the data samples for this iteration
+                data_samples.append(1.0 * X_d)
+                # sample from their inferred posteriors
+                X_p = self.IN.sample_posterior(X_d, X_c, X_m)
+                # record the sampled points (in the "prior space")
+                prior_samples.append(1.0 * X_p)
+                # get next data samples by transforming the prior-space points
+                X_d = self.GN.transform_prior(X_p)
+            # reset sigma_scale on our InfNet
+            self.IN.set_sigma_scale(old_scale[0])
+        else:
+            # set sigma_scale on our InfNet
+            old_scale = self.IN.sigma_scale.get_value(borrow=False)
+            self.IN.set_sigma_scale(sigma_scale)
+            old_scale_2 = self.IN2.sigma_scale.get_value(borrow=False)
+            self.IN2.set_sigma_scale(sigma_scale)
+            for i in range(loop_iters):
+                # apply mask, mixing foreground and background data
+                X_d = ((1.0 - X_m) * X_d) + (X_m * X_c)
+                # record the data samples for this iteration
+                data_samples.append(1.0 * X_d)
+                # sample from the bottom's inferred posteriors
+                X_p = self.IN.sample_posterior(X_d, X_c, X_m)
+                # sample from the top's inferred posteriors
+                X_p_2 = self.IN2.sample_posterior(X_p, 0.0*X_p, 0.0*X_p)
+                # record the sampled points (in the "prior space")
+                prior_samples.append(1.0 * X_p_2)
+                # pass down from top's latent space to bottom's latent space
+                X_g_2 = self.GN2.transform_prior(X_p_2)
+                # pass down from bottom's latent space to the data space
+                X_d = self.GN.transform_prior(X_g_2)
+            # reset sigma_scale on our InfNets
+            self.IN.set_sigma_scale(old_scale[0])
+            self.IN2.set_sigma_scale(old_scale_2[0])
         result = {"data samples": data_samples, "prior samples": prior_samples}
         return result
 
-    def sample_from_prior(self, samp_count, sigma=None):
+    def sample_from_prior(self, samp_count, sigma=None, which_gip=None):
         """
-        Draw independent samples from the model's prior, using the gaussian
-        continuous prior of the underlying GenNet.
+        Sample from the generative model using independent samples from either
+        the top GIPair's latent space or the bottom GIPair's latent space.
         """
+        if which_gip is None:
+            which_gip = 'top'
+        else:
+            assert((which_gip == 'bot') or (which_gip == 'top'))
         if sigma is None:
-            sigma = self.GN.prior_sigma
-        # sample from the GenNet, with either the GenNet's prior sigma or some
-        # user-defined sigma
-        Xs = self.GN.scaled_sampler(samp_count, sigma)
-        return Xs
+            # use the default sigma for the appropriate generator if
+            # none was given by the user
+            if which_gip == 'bot':
+                sigma = self.GN.prior_sigma
+            else:
+                sigma = self.GN2.prior_sigma
+        if which_gip == 'bot':
+            # sample directly from the bottom generator's prior
+            Xd_samples = self.GN.scaled_sampler(samp_count, sigma)
+        else:
+            # sample directly from the top generator's prior
+            Xp_samples = self.GN2.scaled_sampler(samp_count, sigma)
+            # transform through the bottom generator
+            Xd_samples = self.GN.transform_prior(Xp_samples)
+        return Xd_samples
 
-def binarize_data(X):
-    """
-    Make a sample of bernoulli variables with probabilities given by X.
-    """
-    X_shape = X.shape
-    probs = npr.rand(*X_shape)
-    X_binary = 1.0 * (probs < X)
-    return X_binary.astype(theano.config.floatX)
+
 
 if __name__=="__main__":
     from load_data import load_udm, load_udm_ss, load_mnist

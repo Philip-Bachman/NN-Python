@@ -23,7 +23,7 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "TMS_RESULTS_50D/"
+RESULT_PATH = "TMS_RESULTS/"
 
 
 #####################################
@@ -86,11 +86,12 @@ def pretrain_gip():
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 64
+    prior_dim = 100
     prior_sigma = 1.0
+
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 1500, 1500, data_dim]
+    gn_config = [prior_dim, 2000, 2000, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
@@ -100,10 +101,10 @@ def pretrain_gip():
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.2
+    gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 1500, 1500]
+    shared_config = [data_dim, 2000, 2000]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
@@ -113,7 +114,7 @@ def pretrain_gip():
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.2
+    in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
     IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
@@ -123,6 +124,12 @@ def pretrain_gip():
     # Initialize biases in IN and GN
     IN.init_biases(0.1)
     GN.init_biases(0.1)
+    # Load the inferencer and generator from disk
+    #gn_fname = RESULT_PATH+"pt_params_b490000_GN.pkl"
+    #in_fname = RESULT_PATH+"pt_params_b490000_IN.pkl"
+    #IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    #GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
+
     # Initialize the GIPair
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
@@ -131,15 +138,15 @@ def pretrain_gip():
     ####################
     # RICA PRETRAINING #
     ####################
-    #IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
+    IN.W_rica.set_value(0.05 * IN.W_rica.get_value(borrow=False))
     GN.W_rica.set_value(0.05 * GN.W_rica.get_value(borrow=False))
-    for i in range(4000):
-        scale = min(1.0, (float(i+1) / 5000.0))
+    for i in range(6000):
+        scale = min(1.0, (float(i+1) / 6000.0))
         l_rate = 0.0001 * scale
-        lam_l1 = 0.05
+        lam_l1 = 0.025
         tr_idx = npr.randint(low=0,high=tr_samples,size=(1000,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        #inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
+        inr_out = IN.train_rica(Xd_batch, l_rate, lam_l1)
         gnr_out = GN.train_rica(Xd_batch, l_rate, lam_l1)
         inr_out = [v for v in gnr_out]
         if ((i % 1000) == 0):
@@ -158,12 +165,22 @@ def pretrain_gip():
     ####################
     ####################
 
+    # sample from model prior to get a distribution over norms for latent
+    # values drawn from the prior (to compare to posteriors)
+    prior_samples = GN.sample_from_prior(20000)
+    prior_norms = np.sqrt(np.sum(prior_samples**2.,axis=1))
+    file_name = RESULT_PATH+"pt_gip_AAA_prior_norms.png"
+    utils.plot_kde_histogram(prior_norms, file_name, bins=30)
+
     out_file = open(RESULT_PATH+"pt_gip_results.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
-    learn_rate = 0.0003
-    for i in range(150000):
+    post_norms = [n for n in npr.rand(5000,1)]
+    learn_rate = 0.0002
+    for i in range(800000):
         scale = min(1.0, float(i) / 30000.0)
+        if ((i + 1) % 100000 == 0):
+            learn_rate = learn_rate * 0.75
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
@@ -177,6 +194,9 @@ def pretrain_gip():
         GIP.set_lam_kld(1.0 + 2.0*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
+        post_norms.extend([n for n in outputs[-1][0:batch_size]])
+        if (len(post_norms) > 25000):
+            post_norms = post_norms[-5000:]
         if ((i % 1000) == 0):
             cost_1 = [(v / 1000.) for v in cost_1]
             o_str = "batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
@@ -197,12 +217,12 @@ def pretrain_gip():
             Xd_batch = Xva.take(tr_idx, axis=0)
             file_name = RESULT_PATH+"pt_gip_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
-            sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
+            sample_lists = GIP.sample_from_chain(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw samples freely from the generative model's prior
             file_name = RESULT_PATH+"pt_gip_prior_samples_b{0:d}.png".format(i)
-            Xs = GIP.sample_from_gn(20*20)
+            Xs = GIP.sample_from_prior(20*20)
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw inference net first layer weights
             file_name = RESULT_PATH+"pt_gip_inf_weights_b{0:d}.png".format(i)
@@ -215,8 +235,13 @@ def pretrain_gip():
                 lay_num = -1
             utils.visualize_net_layer(GIP.GN.mlp_layers[lay_num], file_name, \
                     colorImg=False, use_transpose=True)
-            IN.save_to_file(f_name=RESULT_PATH+"pt_params_IN.pkl")
-            GN.save_to_file(f_name=RESULT_PATH+"pt_params_GN.pkl")
+            # PLOT POSTERIOR NORMS HISTOGRAM
+            file_name = RESULT_PATH+"pt_gip_AAA_post_norms_b{0:d}.png".format(i)
+            utils.plot_kde_histogram2( \
+                    np.asarray(post_norms), prior_norms, file_name, bins=30)
+        if ((i % 10000) == 0):
+            IN.save_to_file(f_name=RESULT_PATH+"pt_params_b{0:d}_IN.pkl".format(i))
+            GN.save_to_file(f_name=RESULT_PATH+"pt_params_b{0:d}_GN.pkl".format(i))
     IN.save_to_file(f_name=RESULT_PATH+"pt_params_IN.pkl")
     GN.save_to_file(f_name=RESULT_PATH+"pt_params_GN.pkl")
     return
@@ -363,7 +388,7 @@ def train_walk_from_pretrained_gip():
             # draw some chains of samples from the VAE loop
             file_name = RESULT_PATH+"pt60k_walk_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch, 3, axis=0)
-            sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
+            sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some masked chains of samples from the VAE loop
@@ -373,7 +398,7 @@ def train_walk_from_pretrained_gip():
             Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
             Xm_patch = sample_patch_masks(Xc_samps, (48,48), (14,14))
             Xm_samps = Xm_rand * Xm_patch
-            sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, \
+            sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, \
                     X_c=Xc_samps, X_m=Xm_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
@@ -540,7 +565,7 @@ def train_recon_from_pretrained_gip():
             # draw some chains of samples from the VAE loop
             file_name = RESULT_PATH+"pt60k_recon_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch, 3, axis=0)
-            sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
+            sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some masked chains of samples from the VAE loop
@@ -550,7 +575,7 @@ def train_recon_from_pretrained_gip():
             Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
             Xm_patch = sample_patch_masks(Xc_samps, (48,48), (14,14))
             Xm_samps = Xm_rand * Xm_patch
-            sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, \
+            sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, \
                     X_c=Xc_samps, X_m=Xm_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)

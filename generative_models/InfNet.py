@@ -118,6 +118,18 @@ class InfNet(object):
             self.use_encoder = False
             self.Xc_encoded = self.encoder(self.Xc)
             self.Xd_encoded = self.encoder(self.Xd)
+        if 'use_kld_squared' in params:
+            # a transform to apply to the KLd cost on the approximate
+            # posterior w.r.t. to the fixed prior. E.g., using the square
+            # of the KLd may force a more equitable allocation of posterior
+            # mass...
+            if params['use_kld_squared']:
+                print("USING SQUARED POSTERIOR KLD!")
+                self.kld_transform = lambda x: x**2.0
+            else:
+                self.kld_transform = lambda x: x
+        else:
+            self.kld_transform = lambda x: x
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
@@ -365,6 +377,7 @@ class InfNet(object):
         self.output_mean = self.mu_layers[-1].noisy_linear
         self.output_logvar = self.sigma_layers[-1].noisy_linear
         self.output_sigma = self.sigma_scale[0] * T.exp(0.5 * self.output_logvar)
+
         # We'll also construct an output containing a single samples from each
         # of the distributions represented by the rows of self.output_mean and
         # self.output_sigma.
@@ -456,9 +469,10 @@ class InfNet(object):
         """
         prior_sigma_sq = self.prior_sigma**2.0
         prior_log_sigma_sq = np.log(prior_sigma_sq)
-        kld_cost = 0.5 * T.sum((prior_log_sigma_sq - self.output_logvar + \
+        post_klds = 0.5 * (prior_log_sigma_sq - self.output_logvar + \
                 (T.exp(self.output_logvar) / prior_sigma_sq) + \
-                (self.output_mean**2.0 / prior_sigma_sq) - 1.0), axis=1, keepdims=True)
+                (self.output_mean**2.0 / prior_sigma_sq) - 1.0)
+        kld_cost = T.sum(self.kld_transform(post_klds), axis=1, keepdims=True)
         return kld_cost
 
     def _construct_sample_posterior(self):

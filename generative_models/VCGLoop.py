@@ -70,6 +70,14 @@ def hinge_loss(Yh, Yt=0.0):
     loss = T.sum((residual * (residual > 0.0)))
     return loss
 
+def hinge_sq_loss(Yh, Yt=0.0):
+    """
+    Unilateral squared-hinge loss for Yh, given target Yt.
+    """
+    residual = Yt - Yh
+    loss = T.sum((residual * (residual > 0.0))**2.0)
+    return loss
+
 def ulh_loss(Yh, Yt=0.0, delta=0.5):
     """
     Unilateral Huberized least-squares loss for Yh, given target Yt.
@@ -383,11 +391,6 @@ class VCGLoop(object):
 
         # construct the function for training on training data
         self.train_joint = self._construct_train_joint()
-
-        # construct a function for computing the ouputs of the generator
-        # network for a batch of noise. Presumably, the noise will be drawn
-        # from the same distribution that was used in training....
-        self.sample_chain_from_data = self.GIP.sample_gil_from_data
         return
 
     def set_dn_sgd_params(self, learn_rate=0.01):
@@ -543,7 +546,7 @@ class VCGLoop(object):
                           (logreg_loss(noise_preds, -1.0) / noise_size)
             # compute the cost with respect to which we will be optimizing
             # the parameters of the generative model
-            dnl_gn_cost = ulh_loss(noise_preds, 0.0) / noise_size
+            dnl_gn_cost = hinge_loss(noise_preds, 0.0) / noise_size
             dn_costs.append(dnl_dn_cost)
             gn_costs.append(dnl_gn_cost)
         dn_cost = self.dw_dn[0] * T.sum(dn_costs)
@@ -679,13 +682,26 @@ class VCGLoop(object):
                 #mode=profmode)
         return func
 
-    def sample_from_prior(self, samp_count):
+    def sample_from_chain(self, X_d, X_c=None, X_m=None, loop_iters=5, \
+            sigma_scale=None):
+        """
+        Sample for several rounds through the I<->G loop, initialized with the
+        the "data variable" samples in X_d.
+        """
+        result = self.GN.sample_from_chain(X_d, X_c=X_c, X_m=X_m, \
+                loop_iters=loop_iters, sigma_scale=sigma_scale)
+        return result
+
+    def sample_from_prior(self, samp_count, sigma=None):
         """
         Draw independent samples from the model's prior, using the gaussian
         continuous prior of the underlying GenNet.
         """
-        Zs = self.GN.sample_from_prior(samp_count).astype(theano.config.floatX)
-        Xs = self.GN.transform_prior(Zs)
+        if sigma is None:
+            sigma = self.GN.prior_sigma
+        # sample from the GenNet, with either the GenNet's prior sigma or some
+        # user-defined sigma
+        Xs = self.GN.scaled_sampler(samp_count, sigma)
         return Xs
 
 if __name__=="__main__":

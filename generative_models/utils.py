@@ -7,8 +7,11 @@ image from a set of samples or weights.
 """
 
 import numpy as np
-import pylab as plt
+#import pylab as plt
 import PIL as PIL
+# Stuff for visualizing diagnostics
+from sklearn.neighbors import KernelDensity
+import matplotlib.pyplot as plt
 
 class batch(object):
     def __init__(self,batch_size):
@@ -205,5 +208,53 @@ def mat_to_img(X, file_name, img_shape, num_rows=10, \
     image.save(file_name)
     return
 
+def plot_kde_histogram(X, f_name, bins=25):
+    """
+    Plot KDE-smoothed histogram of the data in X. Assume data is univariate.
+    """
+    X_samp = X.ravel()[:,np.newaxis]
+    X_min = np.min(X_samp)
+    X_max = np.max(X_samp)
+    X_range = X_max - X_min
+    sigma = X_range / float(bins)
+    plot_min = X_min - (X_range/3.0)
+    plot_max = X_max + (X_range/3.0)
+    plot_X = np.linspace(plot_min, plot_max, 1000)[:,np.newaxis]
+    # make a kernel density estimator for the data in X
+    kde = KernelDensity(kernel='gaussian', bandwidth=sigma).fit(X_samp)
+    # make a figure
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.plot(plot_X, np.exp(kde.score_samples(plot_X)))
+    fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
+        orientation='portrait', papertype=None, format=None, \
+        transparent=False, bbox_inches=None, pad_inches=0.1, \
+        frameon=None)
+    return
 
+def plot_kde_histogram2(X1, X2, f_name, bins=25):
+    """
+    Plot KDE-smoothed histogram of the data in X1/X2. Assume data is 1D.
+    """
+    # make a figure and configure an axis
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.hold(True)
+    for (X, style) in [(X1, '-'), (X2, '--')]:
+        X_samp = X.ravel()[:,np.newaxis]
+        X_min = np.min(X_samp)
+        X_max = np.max(X_samp)
+        X_range = X_max - X_min
+        sigma = X_range / float(bins)
+        plot_min = X_min - (X_range/3.0)
+        plot_max = X_max + (X_range/3.0)
+        plot_X = np.linspace(plot_min, plot_max, 1000)[:,np.newaxis]
+        # make a kernel density estimator for the data in X
+        kde = KernelDensity(kernel='gaussian', bandwidth=sigma).fit(X_samp)
+        ax.plot(plot_X, np.exp(kde.score_samples(plot_X)), linestyle=style)
+    fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
+        orientation='portrait', papertype=None, format=None, \
+        transparent=False, bbox_inches=None, pad_inches=0.1, \
+        frameon=None)
+    return
 

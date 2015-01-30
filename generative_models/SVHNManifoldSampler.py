@@ -341,12 +341,12 @@ def pretrain_gip_gray():
             Xd_batch = Xtr.take(tr_idx, axis=0)
             file_name = RESULT_PATH+"pt_gray_gip_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
-            sample_lists = GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
+            sample_lists = GIP.sample_from_chain(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw samples freely from the generative model's prior
             file_name = RESULT_PATH+"pt_gray_gip_prior_samples_b{0:d}.png".format(i)
-            Xs = GIP.sample_from_gn(20*20)
+            Xs = GIP.sample_from_prior(20*20)
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw inference net first layer weights
             file_name = RESULT_PATH+"pt_gray_gip_inf_weights_b{0:d}.png".format(i)
@@ -534,7 +534,7 @@ def train_walk_from_pretrained_gip():
             # draw some chains of samples from the VAE loop
             file_name = RESULT_PATH+"pt60k_walk_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch, 3, axis=0)
-            sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, loop_iters=20)
+            sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some masked chains of samples from the VAE loop
@@ -544,7 +544,7 @@ def train_walk_from_pretrained_gip():
             Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
             Xm_patch = sample_patch_masks(Xc_samps, (32,32), (14,14))
             Xm_samps = Xm_rand * Xm_patch
-            sample_lists = VCGL.GIP.sample_gil_from_data(Xd_samps, \
+            sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, \
                     X_c=Xc_samps, X_m=Xm_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)

@@ -327,6 +327,7 @@ class GenNet(object):
         # isotropic Gaussian prior, and a sampler for the model distribution.
         self.sample_from_prior = self._construct_prior_sampler()
         self.sample_from_model = self._construct_model_sampler()
+        self.scaled_sampler = self._construct_scaled_sampler()
         # Construct a function for passing points from the latent/prior space
         # through the transform induced by the current model parameters.
         self.transform_prior = self._construct_transform_prior()
@@ -411,6 +412,26 @@ class GenNet(object):
                     givens={self.Xp: prior_samples})
         else:
             prior_sampler = theano.function([samp_count], outputs=self.output, \
+                    givens={self.Xp: prior_samples})
+        return prior_sampler
+
+    def _construct_scaled_sampler(self):
+        """
+        Draw independent samples from this model's distribution. But, but,
+        but, draw latent samples with a user-defined standard deviation!
+        """
+        samp_count = T.lscalar()
+        user_sigma = T.scalar()
+        prior_samples = user_sigma * self.rng.normal( \
+                size=(samp_count, self.latent_dim), avg=0.0, std=1.0, \
+                dtype=theano.config.floatX)
+        if self.use_decoder:
+            prior_sampler = theano.function([samp_count, user_sigma], \
+                    outputs=self.output_decoded, \
+                    givens={self.Xp: prior_samples})
+        else:
+            prior_sampler = theano.function([samp_count, user_sigma], \
+                    outputs=self.output, \
                     givens={self.Xp: prior_samples})
         return prior_sampler
 
