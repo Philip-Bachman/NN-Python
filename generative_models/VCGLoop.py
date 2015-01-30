@@ -695,7 +695,7 @@ class VCGLoop(object):
     def sample_from_prior(self, samp_count, sigma=None):
         """
         Draw independent samples from the model's prior, using the gaussian
-        continuous prior of the underlying GenNet.
+        continuous prior of the underlying GenNet. Use a user-defined sigma.
         """
         if sigma is None:
             sigma = self.GN.prior_sigma

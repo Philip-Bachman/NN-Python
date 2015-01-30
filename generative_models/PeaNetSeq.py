@@ -15,7 +15,7 @@
 # we will treat the input as "unsupervised" and when the label is > 0 we will #
 # treat the input as "supervised". The PEA cost for unsupervised and          #
 # supervised inputs is weighted by different "lambdas", to permit switching   #
-# the cost on or off for each input type.                                     #
+# the cost on or off for each input type separately.                          #
 ###############################################################################
 
 # basic python

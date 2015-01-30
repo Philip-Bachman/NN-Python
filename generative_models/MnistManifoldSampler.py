@@ -96,7 +96,7 @@ def pretrain_gip_60k():
     gn_params['out_type'] = 'gaussian'
     gn_params['mean_transform'] = 'sigmoid'
     gn_params['logvar_type'] = 'single_shared'
-    gn_params['init_scale'] = 1.0
+    gn_params['init_scale'] = 1.2
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -110,7 +110,7 @@ def pretrain_gip_60k():
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
     in_params['use_kld_squared'] = False
-    in_params['init_scale'] = 1.0
+    in_params['init_scale'] = 1.2
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
@@ -173,7 +173,7 @@ def pretrain_gip_60k():
     learn_rate = 0.0003
     post_norms = [n for n in npr.rand(5000,1)]
     for i in range(50000):
-        scale = min(1.0, float(i) / 30000.0)
+        scale = min(1.0, float(i) / 40000.0)
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
@@ -184,7 +184,7 @@ def pretrain_gip_60k():
         GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP.set_lam_nll(1.0)
-        GIP.set_lam_kld(1.0 + 2.0*scale)
+        GIP.set_lam_kld(1.0 + 3.0*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         post_norms.extend([n for n in outputs[-1][0:batch_size]])
@@ -228,14 +228,14 @@ def pretrain_gip_60k():
                 lay_num = -1
             utils.visualize_net_layer(GIP.GN.mlp_layers[lay_num], file_name, \
                     colorImg=False, use_transpose=True)
-            IN.save_to_file(f_name=RESULT_PATH+"pt60k_params_IN.pkl")
-            GN.save_to_file(f_name=RESULT_PATH+"pt60k_params_GN.pkl")
+            IN.save_to_file(f_name=RESULT_PATH+"pt60k_gip_params_IN.pkl")
+            GN.save_to_file(f_name=RESULT_PATH+"pt60k_gip_params_GN.pkl")
             # PLOT POSTERIOR NORMS HISTOGRAM
             file_name = RESULT_PATH+"pt60k_gip_AAA_post_norms_b{0:d}.png".format(i)
             utils.plot_kde_histogram2( \
                     np.asarray(post_norms), prior_norms, file_name, bins=30)
-    IN.save_to_file(f_name=RESULT_PATH+"pt60k_params_IN.pkl")
-    GN.save_to_file(f_name=RESULT_PATH+"pt60k_params_GN.pkl")
+    IN.save_to_file(f_name=RESULT_PATH+"pt60k_gip_params_IN.pkl")
+    GN.save_to_file(f_name=RESULT_PATH+"pt60k_gip_params_GN.pkl")
     return
 
 #####################################################
@@ -302,8 +302,8 @@ def train_walk_from_pretrained_gip():
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt60k_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt60k_params_IN.pkl"
+        gn_fname = RESULT_PATH+"pt60k_gip_params_GN.pkl"
+        in_fname = RESULT_PATH+"pt60k_gip_params_IN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
@@ -345,7 +345,7 @@ def train_walk_from_pretrained_gip():
                 mom_1=0.9, mom_2=0.999)
         VCGL.set_disc_weights(dweight_gn=10.0, dweight_dn=2.0)
         VCGL.set_lam_chain_nll(1.0)
-        VCGL.set_lam_chain_kld(3.0)
+        VCGL.set_lam_chain_kld(4.0)
         VCGL.set_lam_chain_vel(0.0)
         VCGL.set_lam_mask_nll(0.0)
         VCGL.set_lam_mask_kld(0.0)

@@ -100,7 +100,7 @@ def test_gip2_mnist_60k():
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 100
+    batch_size = 500
     batch_reps = 5
 
     # Setup basic symbolic variables and model parameters
@@ -168,8 +168,8 @@ def test_gip2_mnist_60k():
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.0003
-    for i in range(50000):
-        scale = min(1.0, float(i) / 30000.0)
+    for i in range(150000):
+        scale = min(1.0, float(i) / 20000.0)
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
@@ -180,7 +180,7 @@ def test_gip2_mnist_60k():
         GIP2.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP2.set_lam_nll(1.0)
-        GIP2.set_lam_kld(1.0 + 2.0*scale)
+        GIP2.set_lam_kld(2.0*scale)
         outputs = GIP2.train_top(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         # derp?

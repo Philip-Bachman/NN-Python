@@ -97,7 +97,7 @@ def pretrain_gip():
     gn_params['out_type'] = 'gaussian'
     gn_params['mean_transform'] = 'sigmoid'
     gn_params['logvar_type'] = 'single_shared'
-    gn_params['init_scale'] = 1.0
+    gn_params['init_scale'] = 1.2
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -110,7 +110,7 @@ def pretrain_gip():
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.0
+    in_params['init_scale'] = 1.2
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
@@ -178,7 +178,7 @@ def pretrain_gip():
     post_norms = [n for n in npr.rand(5000,1)]
     learn_rate = 0.0002
     for i in range(800000):
-        scale = min(1.0, float(i) / 30000.0)
+        scale = min(1.0, float(i) / 40000.0)
         if ((i + 1) % 100000 == 0):
             learn_rate = learn_rate * 0.75
         # do a minibatch update of the model, and compute some costs
@@ -191,7 +191,7 @@ def pretrain_gip():
         GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP.set_lam_nll(1.0)
-        GIP.set_lam_kld(1.0 + 2.0*scale)
+        GIP.set_lam_kld(1.0 + 3.0*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         post_norms.extend([n for n in outputs[-1][0:batch_size]])
