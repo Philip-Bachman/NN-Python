@@ -76,7 +76,7 @@ def pretrain_gip():
     Xva = dataset[0]
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 100
+    batch_size = 200
     batch_reps = 5
 
     # Construct a GenNet and an InfNet, then test constructor for GIPair.
@@ -124,11 +124,6 @@ def pretrain_gip():
     # Initialize biases in IN and GN
     IN.init_biases(0.1)
     GN.init_biases(0.1)
-    # Load the inferencer and generator from disk
-    #gn_fname = RESULT_PATH+"pt_params_b490000_GN.pkl"
-    #in_fname = RESULT_PATH+"pt_params_b490000_IN.pkl"
-    #IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
-    #GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
 
     # Initialize the GIPair
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
@@ -176,6 +171,7 @@ def pretrain_gip():
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
     post_norms = [n for n in npr.rand(5000,1)]
+    post_klds = [n for n in npr.rand(5000,1)]
     learn_rate = 0.0002
     for i in range(800000):
         scale = min(1.0, float(i) / 40000.0)
@@ -191,12 +187,15 @@ def pretrain_gip():
         GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP.set_lam_nll(1.0)
-        GIP.set_lam_kld(1.0 + 3.0*scale)
+        GIP.set_lam_kld(1.0 + 2.0*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
-        post_norms.extend([n for n in outputs[-1][0:batch_size]])
+        post_norms.extend([n for n in outputs[-2][0:batch_size]])
+        post_klds.extend([n for n in outputs[-1][0:batch_size]])
         if (len(post_norms) > 25000):
             post_norms = post_norms[-5000:]
+        if (len(post_klds) > 25000):
+            post_klds = post_klds[-5000:]
         if ((i % 1000) == 0):
             cost_1 = [(v / 1000.) for v in cost_1]
             o_str = "batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
@@ -235,10 +234,14 @@ def pretrain_gip():
                 lay_num = -1
             utils.visualize_net_layer(GIP.GN.mlp_layers[lay_num], file_name, \
                     colorImg=False, use_transpose=True)
-            # PLOT POSTERIOR NORMS HISTOGRAM
+            # PLOT POSTERIOR KLDS HISTOGRAM
             file_name = RESULT_PATH+"pt_gip_AAA_post_norms_b{0:d}.png".format(i)
             utils.plot_kde_histogram2( \
                     np.asarray(post_norms), prior_norms, file_name, bins=30)
+            # PLOT POSTERIOR NORMS HISTOGRAM
+            file_name = RESULT_PATH+"pt_gip_AAA_post_klds_b{0:d}.png".format(i)
+            utils.plot_kde_histogram2( \
+                    np.asarray(post_klds), np.asarray(post_klds), file_name, bins=30)
         if ((i % 10000) == 0):
             IN.save_to_file(f_name=RESULT_PATH+"pt_params_b{0:d}_IN.pkl".format(i))
             GN.save_to_file(f_name=RESULT_PATH+"pt_params_b{0:d}_GN.pkl".format(i))

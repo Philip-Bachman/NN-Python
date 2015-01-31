@@ -82,6 +82,7 @@ class GIPair(object):
         self.posterior_means = self.IN.output_mean
         self.posterior_sigmas = self.IN.output_sigma
         self.posterior_norms = T.sqrt(T.sum(self.posterior_means**2.0, axis=1, keepdims=1))
+        self.posterior_klds = self.IN.kld_cost
         # capture a handle for samples from the variational posterior
         self.Xp = self.IN.output
         # create a "shared-parameter" clone of the generator, set up to
@@ -166,7 +167,7 @@ class GIPair(object):
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
         self.data_nll_cost = self.lam_nll[0] * self._construct_data_nll_cost()
-        self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost()
+        self.post_kld_cost = self.lam_kld[0] * self._construct_post_kld_cost(kc2_scale=0.1)
         self.other_reg_cost = self._construct_other_reg_cost()
         self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
                 self.other_reg_cost
@@ -190,6 +191,7 @@ class GIPair(object):
             self.joint_updates[k] = self.gn_updates[k]
         for k in self.in_updates:
             self.joint_updates[k] = self.in_updates[k]
+        self.joint_updates[self.IN.kld_mean] = self.IN.kld_mean_update
 
         # Construct a function for jointly training the generator/inferencer
         self.train_joint = self._construct_train_joint()
@@ -254,11 +256,20 @@ class GIPair(object):
         nll_cost = -T.sum(log_prob_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return nll_cost
 
-    def _construct_post_kld_cost(self):
+    def _construct_post_kld_cost(self, kc2_scale=0.0):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
-        kld_cost = T.sum(self.IN.kld_cost) / T.cast(self.Xd.shape[0], 'floatX')
+        obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        # basic variational term on KL divergence between post and prior
+        kld_cost_1 = self.IN.kld_cost
+        # extra term for the squre of KLd in excess of the mean
+        kld_mean = self.IN.kld_mean[0]
+        kld_too_big = theano.gradient.consider_constant( \
+            (self.IN.kld_cost > kld_mean))
+        kld_cost_2 = kc2_scale * (kld_too_big * (self.IN.kld_cost - kld_mean))**2.0
+        # combine the two types of KLd costs
+        kld_cost = T.sum(kld_cost_1 + kld_cost_2) / obs_count
         return kld_cost
 
     def _construct_other_reg_cost(self):
@@ -279,7 +290,7 @@ class GIPair(object):
         Construct theano function to train inferencer and generator jointly.
         """
         outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
-                self.other_reg_cost, self.posterior_norms]
+                self.other_reg_cost, self.posterior_norms, self.posterior_klds]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs, \
                 updates=self.joint_updates)

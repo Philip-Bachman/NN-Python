@@ -577,7 +577,7 @@ class GenNet(object):
         f_handle.close()
         return
 
-def load_gennet_from_file(f_name=None, rng=None, Xp=None):
+def load_gennet_from_file(f_name=None, rng=None, Xp=None, no_drop=False):
     """
     Load a clone of some previously trained model.
     """
@@ -585,6 +585,9 @@ def load_gennet_from_file(f_name=None, rng=None, Xp=None):
     pickle_file = open(f_name)
     self_dot_prior_sigma = cPickle.load(pickle_file)
     self_dot_params = cPickle.load(pickle_file)
+    if no_drop:
+        self_dot_params['vis_drop'] = 0.0
+        self_dot_params['hid_drop'] = 0.0
     self_dot_numpy_param_dicts = cPickle.load(pickle_file)
     self_dot_shared_param_dicts = []
     for numpy_dict in self_dot_numpy_param_dicts:

@@ -100,7 +100,7 @@ def test_gip2_mnist_60k():
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 500
+    batch_size = 250
     batch_reps = 5
 
     # Setup basic symbolic variables and model parameters
@@ -109,13 +109,13 @@ def test_gip2_mnist_60k():
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 32
+    prior_dim = 50
     prior_dim_2 = 32
     prior_sigma = 1.0
 
     # Load the bottom inferencer and generator from disk
-    gn_fname = "MMS_RESULTS_32D/pt60k_walk_params_b320000_GN.pkl"
-    in_fname = "MMS_RESULTS_32D/pt60k_walk_params_b320000_IN.pkl"
+    gn_fname = "MMS_RESULTS_50D/pt60k_gip_params_GN.pkl"
+    in_fname = "MMS_RESULTS_50D/pt60k_gip_params_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
 
@@ -123,12 +123,12 @@ def test_gip2_mnist_60k():
     gn2_params = {}
     gn2_config = [prior_dim_2, 500, 500, prior_dim]
     gn2_params['mlp_config'] = gn2_config
-    gn2_params['activation'] = relu_actfun
+    gn2_params['activation'] = softplus_actfun
     gn2_params['out_type'] = 'gaussian'
     gn2_params['mean_transform'] = 'sigmoid'
     gn2_params['logvar_type'] = 'multi_shared'
     gn2_params['init_scale'] = 1.0
-    gn2_params['lam_l2a'] = 1e-2
+    gn2_params['lam_l2a'] = 1e-3
     gn2_params['vis_drop'] = 0.0
     gn2_params['hid_drop'] = 0.0
     gn2_params['bias_noise'] = 0.1
@@ -139,10 +139,9 @@ def test_gip2_mnist_60k():
     in2_params['shared_config'] = shared_config
     in2_params['mu_config'] = top_config
     in2_params['sigma_config'] = top_config
-    in2_params['activation'] = relu_actfun
-    in2_params['use_kld_squared'] = False
+    in2_params['activation'] = softplus_actfun
     in2_params['init_scale'] = 1.0
-    in2_params['lam_l2a'] = 1e-2
+    in2_params['lam_l2a'] = 1e-3
     in2_params['vis_drop'] = 0.0
     in2_params['hid_drop'] = 0.0
     in2_params['bias_noise'] = 0.1
@@ -162,17 +161,18 @@ def test_gip2_mnist_60k():
             g_net_2=GN2, i_net_2=IN2, \
             prior_dim_2=prior_dim_2, \
             params=None, shared_param_dicts=None)
-    GIP2.set_lam_l2w(1e-4)
+    GIP2.set_lam_l2w(1e-5)
 
     out_file = open("pt_gip2_results.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
-    learn_rate = 0.0003
+    learn_rate = 0.0005
     for i in range(150000):
         scale = min(1.0, float(i) / 20000.0)
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-        Xd_batch = Xtr.take(tr_idx, axis=0)
+        Xb = Xtr.take(tr_idx, axis=0)
+        Xd_batch = Xb #IN.sample_posterior(Xb, 0.0*Xb, 0.0*Xb)
         Xd_batch = np.repeat(Xd_batch, batch_reps, axis=0)
         Xc_batch = 0.0 * Xd_batch
         Xm_batch = 0.0 * Xd_batch
@@ -180,8 +180,8 @@ def test_gip2_mnist_60k():
         GIP2.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP2.set_lam_nll(1.0)
-        GIP2.set_lam_kld(2.0*scale)
-        outputs = GIP2.train_top(Xd_batch, Xc_batch, Xm_batch)
+        GIP2.set_lam_kld(2.0)
+        outputs = GIP2.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         # derp?
         if ((i % 1000) == 0):
@@ -202,14 +202,23 @@ def test_gip2_mnist_60k():
         if ((i % 5000) == 0):
             tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
             Xd_batch = Xtr.take(tr_idx, axis=0)
-            file_name = "pt_gip2_chain_samples_b{0:d}.png".format(i)
+            # sample from top/bottom chains
+            file_name = "pt_gip2_chain_samples_b{0:d}_top.png".format(i)
             Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
             sample_lists = GIP2.sample_from_chain(Xd_samps, loop_iters=20, which_gip='top')
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
-            # draw samples freely from the generative model's prior
-            file_name = "pt_gip2_prior_samples_b{0:d}.png".format(i)
+            file_name = "pt_gip2_chain_samples_b{0:d}_bot.png".format(i)
+            Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
+            sample_lists = GIP2.sample_from_chain(Xd_samps, loop_iters=20, which_gip='bot')
+            Xs = np.vstack(sample_lists["data samples"])
+            utils.visualize_samples(Xs, file_name, num_rows=20)
+            # sample from top/bottom priors
+            file_name = "pt_gip2_prior_samples_b{0:d}_top.png".format(i)
             Xs = GIP2.sample_from_prior(20*20, which_gip='top')
+            utils.visualize_samples(Xs, file_name, num_rows=20)
+            file_name = "pt_gip2_prior_samples_b{0:d}_bot.png".format(i)
+            Xs = GIP2.sample_from_prior(20*20, which_gip='bot')
             utils.visualize_samples(Xs, file_name, num_rows=20)
     return
 
@@ -238,7 +247,7 @@ def test_gip_sigma_scale_mnist():
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
     batch_size = 100
-    prior_dim = 32
+    prior_dim = 50
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
@@ -252,10 +261,10 @@ def test_gip_sigma_scale_mnist():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MMS_RESULTS_32D/pt60k_walk_params_b300000_GN.pkl"
-    in_fname = "MMS_RESULTS_32D/pt60k_walk_params_b300000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
-    GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
+    gn_fname = "MMS_RESULTS_50D/pt60k_gip_params_GN.pkl"
+    in_fname = "MMS_RESULTS_50D/pt60k_gip_params_IN.pkl"
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, no_drop=True)
+    GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp, no_drop=True)
     # construct a GIPair with the loaded InfNet and GenNet
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
@@ -264,7 +273,7 @@ def test_gip_sigma_scale_mnist():
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
         sample_lists = GIP.sample_from_chain(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=1000, \
-                sigma_scale=1.5)
+                sigma_scale=0.2)
         Xs = np.vstack(sample_lists["data samples"])
         file_name = "AAA_TEST_{0:d}.png".format(i)
         utils.visualize_samples(Xs, file_name, num_rows=30)
@@ -272,7 +281,7 @@ def test_gip_sigma_scale_mnist():
     Xs = GIP.sample_from_prior(32*32)
     utils.visualize_samples(Xs, file_name, num_rows=32)
     # test Parzen density estimator built from prior samples
-    Xs = GIP.sample_from_prior(10000, sigma=1.0)
+    Xs = GIP.sample_from_prior(10000, sigma=0.8)
     cross_validate_sigma(Xs, Xva, [0.1, 0.13, 0.15, 0.18, 0.2], 50)
     return
 
@@ -342,7 +351,7 @@ def test_gip_sigma_scale_tfd():
 ###################
 
 if __name__=="__main__":
-    test_gip2_mnist_60k()
-    #test_gip_sigma_scale_mnist()
+    #test_gip2_mnist_60k()
+    test_gip_sigma_scale_mnist()
     #test_gip_sigma_scale_tfd()
     

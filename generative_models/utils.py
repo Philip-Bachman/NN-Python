@@ -230,6 +230,7 @@ def plot_kde_histogram(X, f_name, bins=25):
         orientation='portrait', papertype=None, format=None, \
         transparent=False, bbox_inches=None, pad_inches=0.1, \
         frameon=None)
+    plt.close(fig)
     return
 
 def plot_kde_histogram2(X1, X2, f_name, bins=25):
@@ -256,5 +257,6 @@ def plot_kde_histogram2(X1, X2, f_name, bins=25):
         orientation='portrait', papertype=None, format=None, \
         transparent=False, bbox_inches=None, pad_inches=0.1, \
         frameon=None)
+    plt.close(fig)
     return
 

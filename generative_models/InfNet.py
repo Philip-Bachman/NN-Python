@@ -118,18 +118,6 @@ class InfNet(object):
             self.use_encoder = False
             self.Xc_encoded = self.encoder(self.Xc)
             self.Xd_encoded = self.encoder(self.Xd)
-        if 'use_kld_squared' in params:
-            # a transform to apply to the KLd cost on the approximate
-            # posterior w.r.t. to the fixed prior. E.g., using the square
-            # of the KLd may force a more equitable allocation of posterior
-            # mass...
-            if params['use_kld_squared']:
-                print("USING SQUARED POSTERIOR KLD!")
-                self.kld_transform = lambda x: x**2.0
-            else:
-                self.kld_transform = lambda x: x
-        else:
-            self.kld_transform = lambda x: x
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
@@ -363,6 +351,17 @@ class InfNet(object):
             self.sigma_scale = \
                     self.shared_param_dicts['sigma'][-1]['sigma_scale']
 
+        # Create a shared parameter for maintaining an exponentially decaying
+        # estimate of the population mean of posterior KL divergence.
+        if not ('kld_mean' in self.shared_param_dicts['sigma'][-1]):
+            # add a kld_mean if none was already present
+            zero_ary = np.zeros((1,)).astype(theano.config.floatX) + 100.0
+            self.kld_mean = theano.shared(value=zero_ary)
+            self.shared_param_dicts['sigma'][-1]['kld_mean'] = self.kld_mean
+        else:
+            # use a kld_mean that's already present
+            self.kld_mean = self.shared_param_dicts['sigma'][-1]['kld_mean']
+
         # Mash all the parameters together, into a list.
         self.mlp_params = []
         for layer in self.shared_layers:
@@ -389,6 +388,8 @@ class InfNet(object):
         # approximate posteriors produced by this model and some isotropic
         # Gaussian distribution.
         self.kld_cost = self._construct_kld_cost()
+        self.kld_mean_update = T.cast((0.95 * self.kld_mean) + \
+                (0.05 * T.mean(self.kld_cost)), 'floatX')
         # Construct a theano function for sampling from the approximate
         # posteriors inferred by this model for some collection of points
         # in the "data space".
@@ -472,7 +473,7 @@ class InfNet(object):
         post_klds = 0.5 * (prior_log_sigma_sq - self.output_logvar + \
                 (T.exp(self.output_logvar) / prior_sigma_sq) + \
                 (self.output_mean**2.0 / prior_sigma_sq) - 1.0)
-        kld_cost = T.sum(self.kld_transform(post_klds), axis=1, keepdims=True)
+        kld_cost = T.sum(post_klds, axis=1, keepdims=True)
         return kld_cost
 
     def _construct_sample_posterior(self):
@@ -542,7 +543,8 @@ class InfNet(object):
         f_handle.close()
         return
 
-def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None):
+def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None, \
+                          no_drop=False):
     """
     Load a clone of some previously trained model.
     """
@@ -550,6 +552,9 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None):
     pickle_file = open(f_name)
     self_dot_prior_sigma = cPickle.load(pickle_file)
     self_dot_params = cPickle.load(pickle_file)
+    if no_drop:
+        self_dot_params['vis_drop'] = 0.0
+        self_dot_params['hid_drop'] = 0.0
     self_dot_numpy_param_dicts = cPickle.load(pickle_file)
     self_dot_shared_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
     for layer_group in ['shared', 'mu', 'sigma']:

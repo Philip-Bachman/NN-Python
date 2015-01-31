@@ -87,6 +87,7 @@ class GIPair2(object):
         self.posterior_means = self.IN.output_mean
         self.posterior_sigmas = self.IN.output_sigma
         self.posterior_norms = T.sqrt(T.sum(self.posterior_means**2.0, axis=1, keepdims=1))
+        self.posterior_klds = self.IN.kld_cost
         # capture a handle for samples from the variational posterior
         self.Xp = self.IN.output
         # create a "shared-parameter" clone of the generator, set up to
@@ -196,7 +197,6 @@ class GIPair2(object):
         # get the optimizable parameters of bottom + top GIPair
         self.joint_params = self.top_params + self.bot_params
 
-
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
@@ -205,9 +205,9 @@ class GIPair2(object):
         self.data_nll_cost_top = self.lam_nll[0] * \
                 self._construct_data_nll_cost(which_gip='top')
         self.post_kld_cost_bot = self.lam_kld[0] * \
-                self._construct_post_kld_cost(which_gip='bot')
+                self._construct_post_kld_cost(which_gip='bot', kc2_scale=0.1)
         self.post_kld_cost_top = self.lam_kld[0] * \
-                self._construct_post_kld_cost(which_gip='top')
+                self._construct_post_kld_cost(which_gip='top', kc2_scale=0.1)
         self.other_reg_cost_bot = \
                 self._construct_other_reg_cost(which_gip='bot')
         self.other_reg_cost_top = \
@@ -289,12 +289,14 @@ class GIPair2(object):
             self.bot_updates[k] = self.gn_updates_bot[k]
         for k in self.in_updates_bot:
             self.bot_updates[k] = self.in_updates_bot[k]
+        self.bot_updates[self.IN.kld_mean] = self.IN.kld_mean_update
         # Merge the top updates for easier application
         self.top_updates = OrderedDict()
         for k in self.gn2_updates_top:
             self.top_updates[k] = self.gn2_updates_top[k]
         for k in self.in2_updates_top:
             self.top_updates[k] = self.in2_updates_top[k]
+        self.top_updates[self.IN2.kld_mean] = self.IN2.kld_mean_update
         # Merge the joint updates for easier application
         self.joint_updates = OrderedDict()
         for k in self.gn_updates_joint:
@@ -305,7 +307,8 @@ class GIPair2(object):
             self.joint_updates[k] = self.gn2_updates_joint[k]
         for k in self.in2_updates_joint:
             self.joint_updates[k] = self.in2_updates_joint[k]
-
+        self.joint_updates[self.IN.kld_mean] = self.IN.kld_mean_update
+        self.joint_updates[self.IN2.kld_mean] = self.IN2.kld_mean_update
         # Construct a function for jointly training the generator/inferencer
         self.train_bot = self._construct_train_bot()
         self.train_top = self._construct_train_top()
@@ -363,29 +366,43 @@ class GIPair2(object):
         Construct the negative log-likelihood part of cost to minimize.
         """
         assert((which_gip == 'bot') or (which_gip == 'top'))
-        obs_count = T.cast(self.Xd.shape[0], 'floatX')
         if which_gip == 'bot':
+            obs_count = T.cast(self.GN.Xp.shape[0], 'floatX')
             # get log-probability reconstruction cost in bottom GIPair
             if self.use_encoder:
                 log_prob_cost = self.GN.compute_log_prob(self.IN.Xd_encoded)
             else:
                 log_prob_cost = self.GN.compute_log_prob(self.IN.Xd)
         else:
+            obs_count = T.cast(self.GN2.Xp.shape[0], 'floatX')
             # get log-probability reconstruction cost in top GIPair
             log_prob_cost = self.GN2.compute_log_prob(self.IN2.Xd)
         nll_cost = -T.sum(log_prob_cost) / obs_count
         return nll_cost
 
-    def _construct_post_kld_cost(self, which_gip=None):
+    def _construct_post_kld_cost(self, kc2_scale=0.0, which_gip=None):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
         assert((which_gip == 'bot') or (which_gip == 'top'))
-        obs_count = T.cast(self.Xd.shape[0], 'floatX')
         if which_gip == 'bot':
-            kld_cost = T.sum(self.IN.kld_cost) / obs_count
+            obs_count = T.cast(self.IN.Xd.shape[0], 'floatX')
+            # basic variational term on KL divergence between post and prior
+            kld_cost_1 = self.IN.kld_cost
+            # extra term for the squre of KLd in excess of the mean
+            kld_too_big = theano.gradient.consider_constant( \
+                (self.IN.kld_cost > self.IN.kld_mean[0]))
+            kld_cost_2 = kc2_scale * (kld_too_big * self.IN.kld_cost)**2.0
+            # combine the two types of KLd costs
+            kld_cost = T.sum(kld_cost_1 + kld_cost_2) / obs_count
         else:
-            kld_cost = T.sum(self.IN2.kld_cost) / obs_count
+            obs_count = T.cast(self.IN2.Xd.shape[0], 'floatX')
+            # compute cost as above, but for the top inferencer
+            kld_cost_1 = self.IN2.kld_cost
+            kld_too_big = theano.gradient.consider_constant( \
+                (self.IN2.kld_cost > self.IN2.kld_mean[0]))
+            kld_cost_2 = kc2_scale * (kld_too_big * self.IN2.kld_cost)**2.0
+            kld_cost = T.sum(kld_cost_1 + kld_cost_2) / obs_count
         return kld_cost
 
     def _construct_other_reg_cost(self, which_gip=None):
@@ -394,8 +411,9 @@ class GIPair2(object):
         applying l2 regularization to the network activations and parameters.
         """
         assert((which_gip == 'bot') or (which_gip == 'top'))
-        obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        
         if which_gip == 'bot':
+            obs_count = T.cast(self.IN.Xd.shape[0], 'floatX')
             # construct regularization cost for bottom gip
             act_reg_cost = (self.IN.act_reg_cost + self.GN.act_reg_cost)
             gp_cost = sum([T.sum(par**2.0) for par in self.gn_params])
@@ -403,6 +421,7 @@ class GIPair2(object):
             param_reg_cost = self.lam_l2w[0] * (gp_cost + ip_cost)
             other_reg_cost = (act_reg_cost / obs_count) + param_reg_cost
         else:
+            obs_count = T.cast(self.IN2.Xd.shape[0], 'floatX')
             # construct regularization cost for top gip
             act_reg_cost = (self.IN2.act_reg_cost + self.GN2.act_reg_cost)
             gp_cost = sum([T.sum(par**2.0) for par in self.gn2_params])
@@ -416,7 +435,7 @@ class GIPair2(object):
         Construct theano function to train bottom/top GIPairs jointly.
         """
         outputs = [self.joint_cost, self.data_nll_cost_bot, self.post_kld_cost_bot, \
-                self.other_reg_cost_bot, self.posterior_norms]
+                self.other_reg_cost_bot] #, self.posterior_norms]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
@@ -427,7 +446,7 @@ class GIPair2(object):
         Construct theano function to train bottom inferencer and generator.
         """
         outputs = [self.bot_cost, self.data_nll_cost_bot, self.post_kld_cost_bot, \
-                self.other_reg_cost_bot, self.posterior_norms]
+                self.other_reg_cost_bot] #, self.posterior_norms]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs, \
                 updates=self.bot_updates)
@@ -437,11 +456,20 @@ class GIPair2(object):
         """
         Construct theano function to train top inferencer and generator.
         """
+        Xd = T.matrix()
+        Xc = T.matrix()
+        Xm = T.matrix()
         outputs = [self.top_cost, self.data_nll_cost_top, self.post_kld_cost_top, \
-                self.other_reg_cost_top, self.posterior_norms]
-        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+                self.other_reg_cost_top] #, self.posterior_norms]
+        #func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+        #        outputs=outputs, \
+        #        updates=self.top_updates)
+        func = theano.function(inputs=[ Xd, Xc, Xm ], \
                 outputs=outputs, \
-                updates=self.top_updates)
+                updates=self.top_updates, \
+                givens={ self.IN2.Xd: Xd, \
+                         self.IN2.Xc: Xc, \
+                         self.IN2.Xm: Xm })
         return func
 
     def _construct_compute_costs(self):
@@ -452,7 +480,7 @@ class GIPair2(object):
         data_nll_cost = self.data_nll_cost_bot + self.data_nll_cost_top
         post_kld_cost = self.post_kld_cost_bot + self.post_kld_cost_top
         other_reg_cost = self.other_reg_cost_bot + self.other_reg_cost_top
-        outputs = [self.joint_cost, data_nll_cost, post_kld_cost, \
+        outputs = [self.joint_cost, self.data_nll_cost_bot, self.post_kld_cost_bot, \
                 other_reg_cost]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs)

@@ -328,9 +328,9 @@ class VCGLoop(object):
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
         self.chain_nll_cost = self.lam_chain_nll[0] * \
-                self._construct_chain_nll_cost(data_weight=0.2)
+                self._construct_chain_nll_cost(data_weight=0.1)
         self.chain_kld_cost = self.lam_chain_kld[0] * \
-                self._construct_chain_kld_cost(data_weight=0.2)
+                self._construct_chain_kld_cost(data_weight=0.1)
         self.chain_vel_cost = self.lam_chain_vel[0] * \
                 self._construct_chain_vel_cost()
         self.mask_nll_cost = self.lam_mask_nll[0] * \
@@ -388,6 +388,7 @@ class VCGLoop(object):
             self.joint_updates[k] = self.gn_updates[k]
         for k in self.in_updates:
             self.joint_updates[k] = self.in_updates[k]
+        self.joint_updates[self.IN.kld_mean] = self.IN.kld_mean_update
 
         # construct the function for training on training data
         self.train_joint = self._construct_train_joint()
