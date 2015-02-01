@@ -23,8 +23,7 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "TMS_RESULTS/"
-
+RESULT_PATH = "TMS_RESULTS_DROPPY/"
 
 #####################################
 # HELPER FUNCTIONS FOR DATA MASKING #
@@ -76,7 +75,7 @@ def pretrain_gip():
     Xva = dataset[0]
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 200
+    batch_size = 250
     batch_reps = 5
 
     # Construct a GenNet and an InfNet, then test constructor for GIPair.
@@ -91,29 +90,29 @@ def pretrain_gip():
 
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [prior_dim, 2000, 2000, data_dim]
+    gn_config = [prior_dim, 2400, 2400, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
     gn_params['mean_transform'] = 'sigmoid'
     gn_params['logvar_type'] = 'single_shared'
-    gn_params['init_scale'] = 1.2
+    gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
-    gn_params['hid_drop'] = 0.0
+    gn_params['hid_drop'] = 0.5
     gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 2000, 2000]
+    shared_config = [data_dim, 2400, 2400]
     top_config = [shared_config[-1], prior_dim]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.2
+    in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.0
+    in_params['hid_drop'] = 0.5
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this GIPair
@@ -172,11 +171,11 @@ def pretrain_gip():
     cost_1 = [0. for i in range(10)]
     post_norms = [n for n in npr.rand(5000,1)]
     post_klds = [n for n in npr.rand(5000,1)]
-    learn_rate = 0.0002
+    learn_rate = 0.00015
     for i in range(800000):
         scale = min(1.0, float(i) / 40000.0)
         if ((i + 1) % 100000 == 0):
-            learn_rate = learn_rate * 0.75
+            learn_rate = learn_rate * 0.8
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
@@ -187,7 +186,7 @@ def pretrain_gip():
         GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
         GIP.set_lam_nll(1.0)
-        GIP.set_lam_kld(1.0 + 2.0*scale)
+        GIP.set_lam_kld(1.0 + 1.0*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         post_norms.extend([n for n in outputs[-2][0:batch_size]])

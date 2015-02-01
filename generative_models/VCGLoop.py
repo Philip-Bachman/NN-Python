@@ -328,15 +328,15 @@ class VCGLoop(object):
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
         self.chain_nll_cost = self.lam_chain_nll[0] * \
-                self._construct_chain_nll_cost(data_weight=0.1)
+                self._construct_chain_nll_cost(data_weight=0.05)
         self.chain_kld_cost = self.lam_chain_kld[0] * \
-                self._construct_chain_kld_cost(data_weight=0.1)
+                self._construct_chain_kld_cost(data_weight=0.05, kc2_scale=0.05)
         self.chain_vel_cost = self.lam_chain_vel[0] * \
                 self._construct_chain_vel_cost()
         self.mask_nll_cost = self.lam_mask_nll[0] * \
                 self._construct_mask_nll_cost()
         self.mask_kld_cost = self.lam_mask_kld[0] * \
-                self._construct_mask_kld_cost()
+                self._construct_mask_kld_cost(kc2_scale=0.05)
         self.other_reg_cost = self._construct_other_reg_cost()
         self.gip_cost = self.disc_cost_gn + self.chain_nll_cost + \
                 self.chain_kld_cost + self.chain_vel_cost + \
@@ -388,7 +388,11 @@ class VCGLoop(object):
             self.joint_updates[k] = self.gn_updates[k]
         for k in self.in_updates:
             self.joint_updates[k] = self.in_updates[k]
-        self.joint_updates[self.IN.kld_mean] = self.IN.kld_mean_update
+        # construct an update for tracking the mean KL divergence of
+        # approximate posteriors for this chain
+        new_kld_mean = (0.98 * self.IN.kld_mean) + ((0.02 / self.chain_len) * \
+            sum([T.mean(I_N.kld_cost) for I_N in self.IN_chain]))
+        self.joint_updates[self.IN.kld_mean] = T.cast(new_kld_mean, 'floatX')
 
         # construct the function for training on training data
         self.train_joint = self._construct_train_joint()
@@ -554,7 +558,7 @@ class VCGLoop(object):
         gn_cost = self.dw_gn[0] * T.sum(gn_costs)
         return [dn_cost, gn_cost]
 
-    def _construct_chain_nll_cost(self, data_weight=0.2):
+    def _construct_chain_nll_cost(self, data_weight=0.1):
         """
         Construct the negative log-likelihood part of cost to minimize.
 
@@ -584,7 +588,7 @@ class VCGLoop(object):
         nll_cost = sum(nll_costs) / sum(step_weights)
         return nll_cost
 
-    def _construct_chain_kld_cost(self, data_weight=0.2):
+    def _construct_chain_kld_cost(self, data_weight=0.1, kc2_scale=0.0):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
 
@@ -593,13 +597,22 @@ class VCGLoop(object):
         """
         assert((data_weight > 0.0) and (data_weight < 1.0))
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        kld_mean = self.IN.kld_mean[0]
         kld_costs = []
         step_weight = 1.0
         step_weights = []
         step_decay = data_weight
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
-            c = T.sum(IN_i.kld_cost) / obs_count
+            # basic variational term on KL divergence between post and prior
+            kld_cost_1 = IN_i.kld_cost
+            # extra term for the squre of KLd in excess of the mean
+            kld_too_big = theano.gradient.consider_constant( \
+                    (IN_i.kld_cost > kld_mean))
+            kld_cost_2 = kc2_scale * \
+                    (kld_too_big * (IN_i.kld_cost - kld_mean))**2.0
+            # combine the two types of KLd costs
+            c = T.sum(kld_cost_1 + kld_cost_2) / obs_count
             kld_costs.append(step_weight * c)
             step_weights.append(step_weight)
             step_weight = step_weight * step_decay
@@ -645,7 +658,7 @@ class VCGLoop(object):
         nll_cost = sum(nll_costs)
         return nll_cost
 
-    def _construct_mask_kld_cost(self):
+    def _construct_mask_kld_cost(self, kc2_scale=0.0):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
 
@@ -653,10 +666,19 @@ class VCGLoop(object):
         to partial masking.
         """
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        kld_mean = self.IN.kld_mean[0]
         kld_costs = []
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
-            c = T.sum(IN_i.kld_cost) / obs_count
+            # basic variational term on KL divergence between post and prior
+            kld_cost_1 = IN_i.kld_cost
+            # extra term for the squre of KLd in excess of the mean
+            kld_too_big = theano.gradient.consider_constant( \
+                    (IN_i.kld_cost > kld_mean))
+            kld_cost_2 = kc2_scale * \
+                    (kld_too_big * (IN_i.kld_cost - kld_mean))**2.0
+            # combine the two types of KLd costs
+            c = T.sum(kld_cost_1 + kld_cost_2) / obs_count
             kld_costs.append(c)
         kld_cost = sum(kld_costs) / float(self.chain_len)
         return kld_cost

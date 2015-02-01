@@ -49,6 +49,11 @@ def softplus_actfun(x, scale=1.0):
     x_softplus = (1.0 / scale) * T.nnet.softplus(scale*x)
     return x_softplus
 
+def tanh_actfun(x, scale=1.0):
+    """Compute  rescaled tanh activation for x."""
+    x_tanh = scale * T.tanh((1/scale) * x)
+    return x_tanh
+
 def maxout_actfun(input, pool_size, filt_count):
     """Apply maxout over non-overlapping sets of values."""
     last_start = filt_count - pool_size

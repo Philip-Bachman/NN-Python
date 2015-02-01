@@ -25,7 +25,7 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "MMS_RESULTS_50D/"
+RESULT_PATH = "MMS_RESULTS_50D_DROPLESS/"
 
 
 #####################################
@@ -57,6 +57,16 @@ def sample_patch_masks(X, im_shape, patch_shape):
         mask[i,:] = dummy.ravel()
     return mask.astype(theano.config.floatX)
 
+def posterior_klds(IN, Xtr, samp_count):
+    """
+    Get posterior KLd cost for some inputs from Xtr.
+    """
+    tr_samples = Xtr.shape[0]
+    tr_idx = npr.randint(low=0,high=tr_samples,size=(samp_count,))
+    X = Xtr.take(tr_idx, axis=0)
+    post_klds = IN.kld_func(X, 0.0*X, 0.0*X)
+    return post_klds
+
 
 ######################
 ######################
@@ -86,7 +96,7 @@ def pretrain_gip_60k():
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_dim = 32
+    prior_dim = 50
     prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
@@ -173,7 +183,7 @@ def pretrain_gip_60k():
     learn_rate = 0.0003
     post_norms = [n for n in npr.rand(5000,1)]
     post_klds = [n for n in npr.rand(5000,1)]
-    for i in range(60000):
+    for i in range(70000):
         scale = min(1.0, float(i) / 25000.0)
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
@@ -270,7 +280,7 @@ def train_walk_from_pretrained_gip():
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
     batch_size = 100
-    prior_dim = 32
+    prior_dim = 50
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
@@ -325,12 +335,11 @@ def train_walk_from_pretrained_gip():
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
         DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
 
-
     ###############################
     # Initialize the main VCGLoop #
     ###############################
     vcgl_params = {}
-    vcgl_params['lam_l2d'] = 1e-2
+    vcgl_params['lam_l2d'] = 5e-2
     VCGL = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
                  g_net=GN, d_net=DN, chain_len=6, data_dim=data_dim, \
                  prior_dim=prior_dim, params=vcgl_params)
@@ -351,7 +360,7 @@ def train_walk_from_pretrained_gip():
         ########################################
         VCGL.set_all_sgd_params(learn_rate=(scale*learn_rate), \
                 mom_1=0.9, mom_2=0.999)
-        VCGL.set_disc_weights(dweight_gn=40.0, dweight_dn=2.0)
+        VCGL.set_disc_weights(dweight_gn=30.0, dweight_dn=3.0)
         VCGL.set_lam_chain_nll(1.0)
         VCGL.set_lam_chain_kld(3.0)
         VCGL.set_lam_chain_vel(0.0)
@@ -417,6 +426,16 @@ def train_walk_from_pretrained_gip():
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-1], file_name, use_transpose=True)
             else:
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-2], file_name, use_transpose=True)
+            ##########################################
+            # Check posterior KLds, hit it and quit. #
+            ##########################################
+            post_klds = []
+            for p in range(5):
+                samp_klds = posterior_klds(IN, Xtr, 5000)
+                post_klds.extend([k for k in samp_klds])
+            file_name = RESULT_PATH+"pt60k_walk_post_klds_b{0:d}.png".format(i)
+            utils.plot_kde_histogram2( \
+                    np.asarray(post_klds), np.asarray(post_klds), file_name, bins=30)
         # DUMP PARAMETERS FROM TIME-TO-TIME
         if (i % 10000 == 0):
             DN.save_to_file(f_name=RESULT_PATH+"pt60k_walk_params_b{0:d}_DN.pkl".format(i))

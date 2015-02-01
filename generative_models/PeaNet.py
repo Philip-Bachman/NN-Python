@@ -71,7 +71,7 @@ class PeaNet(object):
             hid_drop: drop rate to use on hidden layers (when desired)
                 -- note: vis_drop/hid_drop are optional, with defaults 0.2/0.5
             activation: non-linearity to apply in hidden layers
-            init_scale: scaling factor for hidden layer weights (__ * 0.01)
+            init_scale: scaling factor for hidden layer weights
             proto_configs: list of lists, where each sublist gives the number
                            of neurons to put in each hidden layer one of the
                            proto-networks underlying this ensemble. Sub-lists

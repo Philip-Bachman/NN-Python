@@ -52,7 +52,7 @@ class InfNet(object):
                     from Xc and which to take from Xd
         prior_sigma: standard deviation of isotropic Gaussian prior that our
                      inferred posteriors will be penalized for deviating from.
-        params: a dict of parameters describing the desired ensemble:
+        params: a dict of parameters describing the desired network:
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on observable variables
             hid_drop: drop rate to use on hidden layer activations
@@ -64,6 +64,9 @@ class InfNet(object):
             sigma_config: list of "layer descriptions" for sigma part
             activation: "function handle" for the desired non-linearity
             init_scale: scaling factor for hidden layer weights (__ * 0.01)
+            encoder: a function that will be applied to inputs prior to
+                     passing them through the network. this can be used for
+                     in-lining, e.g., PCA preprocessing on training data
         shared_param_dicts: parameters for the MLP controlled by this InfNet
     """
     def __init__(self, \
@@ -388,8 +391,9 @@ class InfNet(object):
         # approximate posteriors produced by this model and some isotropic
         # Gaussian distribution.
         self.kld_cost = self._construct_kld_cost()
-        self.kld_mean_update = T.cast((0.95 * self.kld_mean) + \
-                (0.05 * T.mean(self.kld_cost)), 'floatX')
+        self.kld_mean_update = T.cast((0.98 * self.kld_mean) + \
+                (0.02 * T.mean(self.kld_cost)), 'floatX')
+        self.kld_func = self._construct_kld_func() # function computing KLds
         # Construct a theano function for sampling from the approximate
         # posteriors inferred by this model for some collection of points
         # in the "data space".
@@ -485,6 +489,14 @@ class InfNet(object):
                 outputs=self.output)
         return psample
 
+    def _construct_kld_func(self):
+        """
+        Construct a function for computing posterior KLds for some inputs.
+        """
+        kd_func = theano.function([self.Xd, self.Xc, self.Xm], \
+                outputs=self.kld_cost)
+        return kd_func
+
     def init_biases(self, b_init=0.0, b_std=1e-2):
         """
         Initialize the biases in all hidden layers to some constant.
@@ -571,68 +583,5 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None, \
     return clone_net
 
 if __name__=="__main__":
-    # TEST CODE FOR MODEL SAVING AND LOADING
-    from load_data import load_udm, load_udm_ss, load_mnist
-    from NetLayers import relu_actfun, softplus_actfun, \
-                          safe_softmax, safe_log
-    
-    # Simple test code, to check that everything is basically functional.
-    print("TESTING...")
-
-    # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
-
-    # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0]
-    Xtr = Xtr.get_value(borrow=False)
-    Xva = datasets[1][0]
-    Xva = Xva.get_value(borrow=False)
-    print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
-
-    # get and set some basic dataset information
-    tr_samples = Xtr.shape[0]
-    data_dim = Xtr.shape[1]
-    batch_size = 128
-    prior_dim = 50
-    prior_sigma = 1.0
-    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
-    Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
-    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
-
-    # Symbolic inputs
-    Xd = T.matrix(name='Xd')
-    Xc = T.matrix(name='Xc')
-    Xm = T.matrix(name='Xm')
-    Xt = T.matrix(name='Xt')
-    Xp = T.matrix(name='Xp')
-
-    ############################
-    # Setup inferencer network #
-    ############################
-    # choose some parameters for the continuous inferencer
-    in_params = {}
-    shared_config = [data_dim, (200, 4), (200, 4)]
-    top_config = [shared_config[-1], prior_dim]
-    in_params['shared_config'] = shared_config
-    in_params['mu_config'] = top_config
-    in_params['sigma_config'] = top_config
-    in_params['activation'] = softplus_actfun
-    in_params['init_scale'] = 2.0
-    in_params['lam_l2a'] = 1e-2
-    in_params['vis_drop'] = 0.0
-    in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.1
-    in_params['input_noise'] = 0.0
-    IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
-            prior_sigma=prior_sigma, params=in_params)
-    IN.init_biases(0.0)
-
-    pkl_file_name = "TEST_PKL_FILE.pkl"
-    print("Saving model:")
-    IN.save_to_file(f_name=pkl_file_name)
-    print("Loading model:")
-    IN_clone = load_infnet_from_file(f_name=pkl_file_name, rng=rng, \
-            Xd=Xd, Xc=Xc, Xm=Xm)
-    print("DONE!")
+    # Derp
+    print("NO TEST/DEMO CODE FOR NOW.")

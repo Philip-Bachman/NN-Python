@@ -205,9 +205,9 @@ class GIPair2(object):
         self.data_nll_cost_top = self.lam_nll[0] * \
                 self._construct_data_nll_cost(which_gip='top')
         self.post_kld_cost_bot = self.lam_kld[0] * \
-                self._construct_post_kld_cost(which_gip='bot', kc2_scale=0.1)
+                self._construct_post_kld_cost(which_gip='bot', kc2_scale=0.05)
         self.post_kld_cost_top = self.lam_kld[0] * \
-                self._construct_post_kld_cost(which_gip='top', kc2_scale=0.1)
+                self._construct_post_kld_cost(which_gip='top', kc2_scale=0.05)
         self.other_reg_cost_bot = \
                 self._construct_other_reg_cost(which_gip='bot')
         self.other_reg_cost_top = \
