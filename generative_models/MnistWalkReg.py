@@ -111,7 +111,7 @@ def manifold_walk_regularization():
     PNS.set_lam_l2w(1e-5)
 
     out_file = open("MWR_TEST_RESULT.txt", 'wb')
-    learn_rate = 0.1
+    learn_rate = 0.05
     PNS.set_pn_sgd_params(lr_pn=learn_rate, mom_1=0.9, mom_2=0.999)
     for i in range(300000):
         if i < 5000:
