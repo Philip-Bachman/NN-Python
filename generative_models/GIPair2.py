@@ -88,6 +88,7 @@ class GIPair2(object):
         self.posterior_sigmas = self.IN.output_sigma
         self.posterior_norms = T.sqrt(T.sum(self.posterior_means**2.0, axis=1, keepdims=1))
         self.posterior_klds = self.IN.kld_cost
+        self.kld2_scale = self.IN.kld2_scale
         # capture a handle for samples from the variational posterior
         self.Xp = self.IN.output
         # create a "shared-parameter" clone of the generator, set up to
@@ -205,9 +206,9 @@ class GIPair2(object):
         self.data_nll_cost_top = self.lam_nll[0] * \
                 self._construct_data_nll_cost(which_gip='top')
         self.post_kld_cost_bot = self.lam_kld[0] * \
-                self._construct_post_kld_cost(which_gip='bot', kc2_scale=0.05)
+                self._construct_post_kld_cost(which_gip='bot', kld2_scale=self.kld2_scale)
         self.post_kld_cost_top = self.lam_kld[0] * \
-                self._construct_post_kld_cost(which_gip='top', kc2_scale=0.05)
+                self._construct_post_kld_cost(which_gip='top', kld2_scale=self.kld2_scale)
         self.other_reg_cost_bot = \
                 self._construct_other_reg_cost(which_gip='bot')
         self.other_reg_cost_top = \
@@ -380,7 +381,7 @@ class GIPair2(object):
         nll_cost = -T.sum(log_prob_cost) / obs_count
         return nll_cost
 
-    def _construct_post_kld_cost(self, kc2_scale=0.0, which_gip=None):
+    def _construct_post_kld_cost(self, kld2_scale=0.0, which_gip=None):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
@@ -392,7 +393,7 @@ class GIPair2(object):
             # extra term for the squre of KLd in excess of the mean
             kld_too_big = theano.gradient.consider_constant( \
                 (self.IN.kld_cost > self.IN.kld_mean[0]))
-            kld_cost_2 = kc2_scale * (kld_too_big * self.IN.kld_cost)**2.0
+            kld_cost_2 = kld2_scale * (kld_too_big * self.IN.kld_cost)**2.0
             # combine the two types of KLd costs
             kld_cost = T.sum(kld_cost_1 + kld_cost_2) / obs_count
         else:
@@ -401,7 +402,7 @@ class GIPair2(object):
             kld_cost_1 = self.IN2.kld_cost
             kld_too_big = theano.gradient.consider_constant( \
                 (self.IN2.kld_cost > self.IN2.kld_mean[0]))
-            kld_cost_2 = kc2_scale * (kld_too_big * self.IN2.kld_cost)**2.0
+            kld_cost_2 = kld2_scale * (kld_too_big * self.IN2.kld_cost)**2.0
             kld_cost = T.sum(kld_cost_1 + kld_cost_2) / obs_count
         return kld_cost
 
@@ -589,96 +590,8 @@ class GIPair2(object):
 
 
 if __name__=="__main__":
-    from load_data import load_udm, load_udm_ss, load_mnist
-    import utils as utils
-
-    # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
-
-    # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0].get_value(borrow=False).astype(theano.config.floatX)
-    tr_samples = Xtr.shape[0]
-
-    # Construct a GenNet and an InfNet, then test constructor for GIPair.
-    # Do basic testing, to make sure classes aren't completely broken.
-    Xp = T.matrix('Xp_base')
-    Xd = T.matrix('Xd_base')
-    Xc = T.matrix('Xc_base')
-    Xm = T.matrix('Xm_base')
-    data_dim = Xtr.shape[1]
-    prior_dim = 128
-    prior_sigma = 2.0
-    # Choose some parameters for the generator network
-    gn_params = {}
-    gn_config = [prior_dim, 800, 800, data_dim]
-    gn_params['mlp_config'] = gn_config
-    gn_params['activation'] = softplus_actfun
-    gn_params['lam_l2a'] = 1e-3
-    gn_params['vis_drop'] = 0.0
-    gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.1
-    # choose some parameters for the continuous inferencer
-    in_params = {}
-    shared_config = [data_dim, (200, 4)]
-    top_config = [shared_config[-1], (200, 4), prior_dim]
-    in_params['shared_config'] = shared_config
-    in_params['mu_config'] = top_config
-    in_params['sigma_config'] = top_config
-    in_params['activation'] = relu_actfun
-    in_params['lam_l2a'] = 1e-3
-    in_params['vis_drop'] = 0.0
-    in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.1
-    in_params['input_noise'] = 0.0
-    # Initialize the base networks for this GIPair
-    IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
-            params=in_params, shared_param_dicts=None)
-    GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
-            params=gn_params, shared_param_dicts=None)
-    # Initialize biases in IN and GN
-    IN.init_biases(0.1)
-    GN.init_biases(0.1)
-    # Initialize the GIPair
-    GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
-            data_dim=data_dim, prior_dim=prior_dim, params=None)
-    GIP.set_lam_l2w(1e-3)
-    # Set initial learning rate and basic SGD hyper parameters
-    learn_rate = 0.001
-    GIP.set_all_sgd_params(learn_rate=learn_rate, momentum=0.8)
-
-    for i in range(750000):
-        if (i < 100000):
-            scale = float(i) / 50000.0
-            if (i < 50000):
-                GIP.set_all_sgd_params(learn_rate=(scale*learn_rate), momentum=0.8)
-            GIP.set_lam_kld(lam_kld=scale)
-        if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.75
-            GIP.set_all_sgd_params(learn_rate=learn_rate, momentum=0.9)
-        # get some data to train with
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
-        Xd_batch = binarize_data(Xtr.take(tr_idx, axis=0))
-        Xc_batch = 0.0 * Xd_batch
-        Xm_batch = 0.0 * Xd_batch
-        # do a minibatch update of the model, and compute some costs
-        outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
-        joint_cost = 1.0 * outputs[0]
-        data_nll_cost = 1.0 * outputs[1]
-        post_kld_cost = 1.0 * outputs[2]
-        other_reg_cost = 1.0 * outputs[3]
-        if ((i % 500) == 0):
-            print("batch: {0:d}, joint_cost: {1:.4f}, data_nll_cost: {2:.4f}, post_kld_cost: {3:.4f}, other_reg_cost: {4:.4f}".format( \
-                    i, joint_cost, data_nll_cost, post_kld_cost, other_reg_cost))
-        if ((i % 2500) == 0):
-            file_name = "GIP_SAMPLES_b{0:d}.png".format(i)
-            Xd_samps = np.repeat(Xd_batch[0:10,:], 3, axis=0)
-            sample_lists = GIP.sample_from_chain(Xd_samps, loop_iters=10)
-            Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name)
-
-    print("TESTING COMPLETE!")
+    # TEST CODE IS ELSEWHERE
+    print("NO TEST CODE HERE!")
 
 
 

@@ -207,6 +207,7 @@ class VCGLoop(object):
                 prior_dim=self.prior_dim, params=None, shared_param_dicts=None)
         self.IN = self.GIP.IN
         self.GN = self.GIP.GN
+        self.kld2_scale = self.IN.kld2_scale
         self.use_encoder = self.IN.use_encoder
         assert(self.use_encoder == self.GN.use_decoder)
         # self-loop some clones of the main VAE into a chain.
@@ -328,15 +329,15 @@ class VCGLoop(object):
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
         self.chain_nll_cost = self.lam_chain_nll[0] * \
-                self._construct_chain_nll_cost(data_weight=0.05)
+                self._construct_chain_nll_cost(data_weight=0.1)
         self.chain_kld_cost = self.lam_chain_kld[0] * \
-                self._construct_chain_kld_cost(data_weight=0.05, kc2_scale=0.05)
+                self._construct_chain_kld_cost(data_weight=0.1, kld2_scale=self.kld2_scale)
         self.chain_vel_cost = self.lam_chain_vel[0] * \
                 self._construct_chain_vel_cost()
         self.mask_nll_cost = self.lam_mask_nll[0] * \
                 self._construct_mask_nll_cost()
         self.mask_kld_cost = self.lam_mask_kld[0] * \
-                self._construct_mask_kld_cost(kc2_scale=0.05)
+                self._construct_mask_kld_cost(kld2_scale=self.kld2_scale)
         self.other_reg_cost = self._construct_other_reg_cost()
         self.gip_cost = self.disc_cost_gn + self.chain_nll_cost + \
                 self.chain_kld_cost + self.chain_vel_cost + \
@@ -351,11 +352,11 @@ class VCGLoop(object):
             # grads for discriminator network params use a separate cost
             self.joint_grads[p] = T.grad(self.dn_cost, p).clip(-0.1,0.1)
         for p in self.in_params:
-            # grads for generator network use the joint cost
-            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1,0.1)
+            # grads for generator network use the GIPair's cost
+            self.joint_grads[p] = T.grad(self.gip_cost, p).clip(-0.1,0.1)
         for p in self.gn_params:
-            # grads for generator network use the joint cost
-            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1,0.1)
+            # grads for generator network use the GIPair's cost
+            self.joint_grads[p] = T.grad(self.gip_cost, p).clip(-0.1,0.1)
 
         # construct the updates for the discriminator, generator and 
         # inferencer networks. all networks share the same first/second
@@ -588,7 +589,7 @@ class VCGLoop(object):
         nll_cost = sum(nll_costs) / sum(step_weights)
         return nll_cost
 
-    def _construct_chain_kld_cost(self, data_weight=0.1, kc2_scale=0.0):
+    def _construct_chain_kld_cost(self, data_weight=0.1, kld2_scale=0.0):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
 
@@ -609,7 +610,7 @@ class VCGLoop(object):
             # extra term for the squre of KLd in excess of the mean
             kld_too_big = theano.gradient.consider_constant( \
                     (IN_i.kld_cost > kld_mean))
-            kld_cost_2 = kc2_scale * \
+            kld_cost_2 = kld2_scale * \
                     (kld_too_big * (IN_i.kld_cost - kld_mean))**2.0
             # combine the two types of KLd costs
             c = T.sum(kld_cost_1 + kld_cost_2) / obs_count
@@ -658,7 +659,7 @@ class VCGLoop(object):
         nll_cost = sum(nll_costs)
         return nll_cost
 
-    def _construct_mask_kld_cost(self, kc2_scale=0.0):
+    def _construct_mask_kld_cost(self, kld2_scale=0.0):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
 
@@ -675,7 +676,7 @@ class VCGLoop(object):
             # extra term for the squre of KLd in excess of the mean
             kld_too_big = theano.gradient.consider_constant( \
                     (IN_i.kld_cost > kld_mean))
-            kld_cost_2 = kc2_scale * \
+            kld_cost_2 = kld2_scale * \
                     (kld_too_big * (IN_i.kld_cost - kld_mean))**2.0
             # combine the two types of KLd costs
             c = T.sum(kld_cost_1 + kld_cost_2) / obs_count

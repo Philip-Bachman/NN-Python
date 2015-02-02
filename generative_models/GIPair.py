@@ -83,6 +83,7 @@ class GIPair(object):
         self.posterior_sigmas = self.IN.output_sigma
         self.posterior_norms = T.sqrt(T.sum(self.posterior_means**2.0, axis=1, keepdims=1))
         self.posterior_klds = self.IN.kld_cost
+        self.kld2_scale = self.IN.kld2_scale
         # capture a handle for samples from the variational posterior
         self.Xp = self.IN.output
         # create a "shared-parameter" clone of the generator, set up to
@@ -168,7 +169,7 @@ class GIPair(object):
         ###################################
         self.data_nll_cost = self.lam_nll[0] * self._construct_data_nll_cost()
         self.post_kld_cost = self.lam_kld[0] * \
-                self._construct_post_kld_cost(kc2_scale=0.05)
+                self._construct_post_kld_cost(kld2_scale=self.kld2_scale)
         self.other_reg_cost = self._construct_other_reg_cost()
         self.joint_cost = self.data_nll_cost + self.post_kld_cost + \
                 self.other_reg_cost
@@ -257,7 +258,7 @@ class GIPair(object):
         nll_cost = -T.sum(log_prob_cost) / T.cast(self.Xd.shape[0], 'floatX')
         return nll_cost
 
-    def _construct_post_kld_cost(self, kc2_scale=0.0):
+    def _construct_post_kld_cost(self, kld2_scale=0.0):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
@@ -268,7 +269,7 @@ class GIPair(object):
         kld_mean = self.IN.kld_mean[0]
         kld_too_big = theano.gradient.consider_constant( \
             (self.IN.kld_cost > kld_mean))
-        kld_cost_2 = kc2_scale * (kld_too_big * (self.IN.kld_cost - kld_mean))**2.0
+        kld_cost_2 = kld2_scale * (kld_too_big * (self.IN.kld_cost - kld_mean))**2.0
         # combine the two types of KLd costs
         kld_cost = T.sum(kld_cost_1 + kld_cost_2) / obs_count
         return kld_cost
@@ -375,8 +376,8 @@ def binarize_data(X):
     return X_binary.astype(theano.config.floatX)
 
 if __name__=="__main__":
-    # Derp
-    print("NO TEST/DEMO CODE FOR NOW.")
+    # TEST CODE IS ELSEWHERE
+    print("NO TEST CODE HERE!")
 
 
 

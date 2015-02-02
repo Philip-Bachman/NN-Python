@@ -588,7 +588,7 @@ class GenNet(object):
         f_handle.close()
         return
 
-def load_gennet_from_file(f_name=None, rng=None, Xp=None, no_drop=False):
+def load_gennet_from_file(f_name=None, rng=None, Xp=None, new_params=None):
     """
     Load a clone of some previously trained model. Allow the drop rates in
     the loaded model to be clamped at 0 post-hoc.
@@ -597,9 +597,9 @@ def load_gennet_from_file(f_name=None, rng=None, Xp=None, no_drop=False):
     pickle_file = open(f_name)
     self_dot_prior_sigma = cPickle.load(pickle_file)
     self_dot_params = cPickle.load(pickle_file)
-    if no_drop:
-        self_dot_params['vis_drop'] = 0.0
-        self_dot_params['hid_drop'] = 0.0
+    if not (new_params is None):
+        for k in new_params:
+            self_dot_params[k] = new_params[k]
     self_dot_numpy_param_dicts = cPickle.load(pickle_file)
     self_dot_shared_param_dicts = []
     for numpy_dict in self_dot_numpy_param_dicts:
@@ -612,9 +612,15 @@ def load_gennet_from_file(f_name=None, rng=None, Xp=None, no_drop=False):
     clone_net = GenNet(rng=rng, Xp=Xp, \
             prior_sigma=self_dot_prior_sigma, params=self_dot_params, \
             shared_param_dicts=self_dot_shared_param_dicts)
+    # helpful output
+    print("==================================================")
+    print("LOADED GenNet WITH PARAMS:")
+    for k in self_dot_params:
+        print("    {0:s}: {1:s}".format(str(k), str(self_dot_params[k])))
+    print("==================================================")
     return clone_net
 
 
 if __name__=="__main__":
-     # Derp
+    # Derp
     print("NO TEST/DEMO CODE FOR NOW.")

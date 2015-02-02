@@ -24,7 +24,7 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "SMS_RESULTS/"
+RESULT_PATH = "SMS_RESULTS_DROPLESS/"
 
 
 #####################################
@@ -74,6 +74,15 @@ def train_valid_split(X, valid_count=1000):
     Xva = X.take(va_idx, axis=0)
     return Xtr, Xva
 
+def posterior_klds(IN, Xtr, samp_count):
+    """
+    Get posterior KLd cost for some inputs from Xtr.
+    """
+    tr_samples = Xtr.shape[0]
+    tr_idx = npr.randint(low=0,high=tr_samples,size=(samp_count,))
+    X = Xtr.take(tr_idx, axis=0)
+    post_klds = IN.kld_func(X, 0.0*X, 0.0*X)
+    return post_klds
 
 ##########################################
 ##########################################

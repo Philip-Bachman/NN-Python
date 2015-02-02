@@ -18,12 +18,15 @@ import InfNet as INet
 import PeaNet as PNet
 from DKCode import PCA_theano
 
+
+
 import sys, resource
 resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "MMS_RESULTS_DROPLESS/"
+RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
+#RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
 PRIOR_DIM = 50
 
 #####################################
@@ -173,7 +176,7 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.0003
-    for i in range(70000):
+    for i in range(200000):
         scale = min(1.0, float(i) / 30000.0)
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
@@ -235,8 +238,9 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
             file_name = RESULT_PATH+"pt_gip_post_klds_b{0:d}.png".format(i)
             utils.plot_kde_histogram2( \
                     np.asarray(post_klds), np.asarray(post_klds), file_name, bins=30)
-    IN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_IN.pkl")
-    GN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_GN.pkl")
+        if ((i % 10000) == 0):
+            IN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_b{0:d}_IN.pkl".format(i))
+            GN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_b{0:d}_GN.pkl".format(i))
     return
 
 #####################################################
@@ -334,7 +338,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
     ####################################################
     learn_rate = 0.0003
     cost_1 = [0. for i in range(10)]
-    for i in range(1000000):
+    for i in range(200000):
         scale = float(min((i+1), 25000)) / 25000.0
         if ((i+1 % 50000) == 0):
             learn_rate = learn_rate * 0.8
@@ -423,183 +427,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
             GN.save_to_file(f_name=RESULT_PATH+"pt_walk_params_b{0:d}_GN.pkl".format(i))
     return
 
-def train_recon_from_pretrained_gip():
-    # Simple test code, to check that everything is basically functional.
-    print("TESTING...")
-
-    # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
-
-    # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0]
-    Xtr = Xtr.get_value(borrow=False)
-    Xva = datasets[1][0]
-    Xva = Xva.get_value(borrow=False)
-    print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
-
-    # get and set some basic dataset information
-    tr_samples = Xtr.shape[0]
-    data_dim = Xtr.shape[1]
-    batch_size = 100
-    prior_sigma = 1.0
-    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
-    Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
-    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
-
-    # Symbolic inputs
-    Xd = T.matrix(name='Xd')
-    Xc = T.matrix(name='Xc')
-    Xm = T.matrix(name='Xm')
-    Xt = T.matrix(name='Xt')
-    Xp = T.matrix(name='Xp')
-
-    START_FRESH = True
-    if START_FRESH:
-        ###############################
-        # Setup discriminator network #
-        ###############################
-        # Set some reasonable mlp parameters
-        dn_params = {}
-        # Set up some proto-networks
-        pc0 = [data_dim, (300, 4), (300, 4), 10]
-        dn_params['proto_configs'] = [pc0]
-        # Set up some spawn networks
-        sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-        #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-        dn_params['spawn_configs'] = [sc0]
-        dn_params['spawn_weights'] = [1.0]
-        # Set remaining params
-        dn_params['init_scale'] = 0.2
-        dn_params['lam_l2a'] = 1e-2
-        dn_params['vis_drop'] = 0.2
-        dn_params['hid_drop'] = 0.5
-        # Initialize a network object to use as the discriminator
-        DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
-        DN.init_biases(0.0)
-
-        #######################################################
-        # Load inferencer and generator from saved parameters #
-        #######################################################
-        gn_fname = RESULT_PATH+"pt_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt_params_IN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
-        GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
-    else:
-        ###########################################################
-        # Load all networks from partially-trained VCGLoop params #
-        ###########################################################
-        gn_fname = RESULT_PATH+"pt_recon_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt_recon_params_IN.pkl"
-        dn_fname = RESULT_PATH+"pt_recon_params_DN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
-        GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
-        DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
-
-
-    ###############################
-    # Initialize the main VCGLoop #
-    ###############################
-    vcgl_params = {}
-    vcgl_params['lam_l2d'] = 1e-2
-    VCGL = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
-                 g_net=GN, d_net=DN, chain_len=6, data_dim=data_dim, \
-                 prior_dim=PRIOR_DIM, params=vcgl_params)
-    VCGL.set_lam_l2w(1e-4)
-
-    out_file = open(RESULT_PATH+"pt_recon_results.txt", 'wb')
-    ####################################################
-    # Train the VCGLoop by unrolling and applying BPTT #
-    ####################################################
-    learn_rate = 0.0003
-    cost_2 = [0. for i in range(10)]
-    for i in range(1000000):
-        scale = float(min((i+1), 25000)) / 25000.0
-        if ((i+1 % 100000) == 0):
-            learn_rate = learn_rate * 0.66
-        #########################################
-        # TRAIN THE CHAIN UNDER PARTIAL CONTROL #
-        #########################################
-        VCGL.set_all_sgd_params(learn_rate=(scale*learn_rate), \
-                mom_1=0.9, mom_2=0.999)
-        VCGL.set_dn_sgd_params(learn_rate=0.5*scale*learn_rate)
-        VCGL.set_disc_weights(dweight_gn=20.0, dweight_dn=4.0)
-        VCGL.set_lam_chain_nll(0.0)
-        VCGL.set_lam_chain_kld(0.0)
-        VCGL.set_lam_chain_vel(0.0)
-        VCGL.set_lam_mask_nll(1.0)
-        VCGL.set_lam_mask_kld(1.0)
-        # get some data to train with
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-        Xd_batch = Xc_mean
-        Xc_batch = Xtr.take(tr_idx, axis=0)
-        Xm_rand = sample_masks(Xc_batch, drop_prob=0.3)
-        Xm_patch = sample_patch_masks(Xc_batch, (28,28), (14,14))
-        Xm_batch = Xm_rand * Xm_patch
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-        Xt_batch = Xtr.take(tr_idx, axis=0)
-        # do 5 repetitions of the batch
-        Xd_batch = np.repeat(Xd_batch, 5, axis=0)
-        Xc_batch = np.repeat(Xc_batch, 5, axis=0)
-        Xm_batch = np.repeat(Xm_batch, 5, axis=0)
-        Xt_batch = np.repeat(Xt_batch, 5, axis=0)
-        # do a minibatch update of the model, and compute some costs
-        outputs = VCGL.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
-        cost_2 = [(cost_2[k] + 1.*outputs[k]) for k in range(len(outputs))]
-        if ((i % 1000) == 0):
-            cost_2 = [(v / 1000.0) for v in cost_2]
-            o_str_2 = "batch {0:d} -- joint_cost: {1:.4f}, mask_nll_cost: {2:.4f}, mask_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
-                    i, cost_2[0], cost_2[4], cost_2[5], cost_2[6], cost_2[7])
-            print(o_str_2)
-            out_file.write(o_str_2+"\n")
-            out_file.flush()
-            cost_2 = [0. for v in cost_2]
-        if ((i % 5000) == 0):
-            tr_idx = npr.randint(low=0,high=Xtr.shape[0],size=(5,))
-            va_idx = npr.randint(low=0,high=Xva.shape[0],size=(5,))
-            Xd_batch = np.vstack([Xtr.take(tr_idx, axis=0), Xva.take(va_idx, axis=0)])
-            # draw some chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt_recon_chain_samples_b{0:d}.png".format(i)
-            Xd_samps = np.repeat(Xd_batch, 3, axis=0)
-            sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, loop_iters=20)
-            Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name, num_rows=20)
-            # draw some masked chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt_recon_mask_samples_b{0:d}.png".format(i)
-            Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
-            Xc_samps = np.repeat(Xd_batch, 3, axis=0)
-            Xm_rand = sample_masks(Xc_samps, drop_prob=0.3)
-            Xm_patch = sample_patch_masks(Xc_samps, (28,28), (14,14))
-            Xm_samps = Xm_rand * Xm_patch
-            sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, \
-                    X_c=Xc_samps, X_m=Xm_samps, loop_iters=20)
-            Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name, num_rows=20)
-            # draw some samples independently from the GenNet's prior
-            file_name = RESULT_PATH+"pt_recon_prior_samples_b{0:d}.png".format(i)
-            Xs = VCGL.sample_from_prior(20*20)
-            utils.visualize_samples(Xs, file_name, num_rows=20)
-            # draw discriminator network's weights
-            file_name = RESULT_PATH+"pt_recon_dis_weights_b{0:d}.png".format(i)
-            utils.visualize_net_layer(VCGL.DN.proto_nets[0][0], file_name)
-            # draw inference net first layer weights
-            file_name = RESULT_PATH+"pt_recon_inf_weights_b{0:d}.png".format(i)
-            utils.visualize_net_layer(VCGL.IN.shared_layers[0], file_name)
-            # draw generator net final layer weights
-            file_name = RESULT_PATH+"pt_recon_gen_weights_b{0:d}.png".format(i)
-            if GN.out_type == 'sigmoid':
-                utils.visualize_net_layer(VCGL.GN.mlp_layers[-1], file_name, use_transpose=True)
-            else:
-                utils.visualize_net_layer(VCGL.GN.mlp_layers[-2], file_name, use_transpose=True)
-        # DUMP PARAMETERS FROM TIME-TO-TIME
-        if (i % 10000 == 0):
-            DN.save_to_file(f_name=RESULT_PATH+"pt_recon_params_b{0:d}_DN.pkl".format(i))
-            IN.save_to_file(f_name=RESULT_PATH+"pt_recon_params_b{0:d}_IN.pkl".format(i))
-            GN.save_to_file(f_name=RESULT_PATH+"pt_recon_params_b{0:d}_GN.pkl".format(i))
-    return
 
 if __name__=="__main__":
 	pretrain_gip_dropless(extra_lam_kld=3.0, kld2_scale=0.1)
 	train_walk_from_pretrained_gip(extra_lam_kld=3.0)
-    #train_recon_from_pretrained_gip()

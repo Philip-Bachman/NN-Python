@@ -121,6 +121,10 @@ class InfNet(object):
             self.use_encoder = False
             self.Xc_encoded = self.encoder(self.Xc)
             self.Xd_encoded = self.encoder(self.Xd)
+        if 'kld2_scale' in params:
+            self.kld2_scale = params['kld2_scale']
+        else:
+            self.kld2_scale = 0.0
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
@@ -556,7 +560,7 @@ class InfNet(object):
         return
 
 def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None, \
-                          no_drop=False):
+                          new_params=None):
     """
     Load a clone of some previously trained model.
     """
@@ -564,9 +568,9 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None, \
     pickle_file = open(f_name)
     self_dot_prior_sigma = cPickle.load(pickle_file)
     self_dot_params = cPickle.load(pickle_file)
-    if no_drop:
-        self_dot_params['vis_drop'] = 0.0
-        self_dot_params['hid_drop'] = 0.0
+    if not (new_params is None):
+        for k in new_params:
+            self_dot_params[k] = new_params[k]
     self_dot_numpy_param_dicts = cPickle.load(pickle_file)
     self_dot_shared_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
     for layer_group in ['shared', 'mu', 'sigma']:
@@ -580,6 +584,12 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None, \
     clone_net = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
             prior_sigma=self_dot_prior_sigma, params=self_dot_params, \
             shared_param_dicts=self_dot_shared_param_dicts)
+    # helpful output
+    print("==================================================")
+    print("LOADED InfNet WITH PARAMS:")
+    for k in self_dot_params:
+        print("    {0:s}: {1:s}".format(str(k), str(self_dot_params[k])))
+    print("==================================================")
     return clone_net
 
 if __name__=="__main__":
