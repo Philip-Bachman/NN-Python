@@ -23,7 +23,7 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "MMS_RESULTS_DROPLESS/"
+RESULT_PATH = "MMS_RESULTS_DROPPY/"
 PRIOR_DIM = 50
 
 #####################################
@@ -67,13 +67,13 @@ def posterior_klds(IN, Xtr, batch_size, batch_count):
     return post_klds
 
 
-##########################################
-##########################################
-## CODE FOR PRETRAINING DROPLESS GIPAIR ##
-##########################################
-##########################################
+######################################
+######################################
+## CODE FOR PRETRAINING AS A GIPAIR ##
+######################################
+######################################
 
-def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
+def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
 
@@ -98,7 +98,7 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [PRIOR_DIM, 1000, 1000, data_dim]
+    gn_config = [PRIOR_DIM, 1200, 1200, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
@@ -108,10 +108,10 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.2
+    gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 1000, 1000]
+    shared_config = [data_dim, 1200, 1200]
     top_config = [shared_config[-1], PRIOR_DIM]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
@@ -120,8 +120,8 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.2
+    in_params['hid_drop'] = 0.5
+    in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     in_params['kld2_scale'] = kld2_scale
     # Initialize the base networks for this GIPair
@@ -235,6 +235,9 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
             file_name = RESULT_PATH+"pt_gip_post_klds_b{0:d}.png".format(i)
             utils.plot_kde_histogram2( \
                     np.asarray(post_klds), np.asarray(post_klds), file_name, bins=30)
+        if ((i % 10000) == 0):
+            IN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_b{0:d}_IN.pkl".format(i))
+            GN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_b{0:d}_GN.pkl".format(i))
     IN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_IN.pkl")
     GN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_GN.pkl")
     return
@@ -303,8 +306,8 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt_gip_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt_gip_params_IN.pkl"
+        gn_fname = RESULT_PATH+"pt_gip_params_b80000_GN.pkl"
+        in_fname = RESULT_PATH+"pt_gip_params_b80000_IN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
@@ -600,6 +603,6 @@ def train_recon_from_pretrained_gip():
     return
 
 if __name__=="__main__":
-	pretrain_gip_dropless(extra_lam_kld=3.0, kld2_scale=0.1)
-	train_walk_from_pretrained_gip(extra_lam_kld=3.0)
+	pretrain_gip(extra_lam_kld=2.0, kld2_scale=0.1)
+	train_walk_from_pretrained_gip(extra_lam_kld=2.0)
     #train_recon_from_pretrained_gip()

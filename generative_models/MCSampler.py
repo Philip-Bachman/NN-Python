@@ -145,7 +145,7 @@ if __name__=="__main__":
     # get and set some basic dataset information
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
-    batch_size = 5000
+    batch_size = 2000
     batch_count = int(np.ceil(tr_samples / float(batch_size)))
 
     # Symbolic inputs
@@ -156,14 +156,14 @@ if __name__=="__main__":
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MMS_RESULTS_32D/pt60k_walk_params_b300000_GN.pkl"
-    in_fname = "MMS_RESULTS_32D/pt60k_walk_params_b300000_IN.pkl"
+    gn_fname = "MNIST_WALKOUT_TEST_VAE/pt_walk_params_b30000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_VAE/pt_walk_params_b30000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     IN.set_sigma_scale(1.5)
     prior_dim = GN.latent_dim
 
-    MCS = MCSampler(rng=rng, Xd=Xd, i_net=IN, g_net=GN, chain_len=5, \
+    MCS = MCSampler(rng=rng, Xd=Xd, i_net=IN, g_net=GN, chain_len=9, \
                     data_dim=data_dim, prior_dim=prior_dim)
 
     Xtr_chains = [Xtr]
@@ -182,7 +182,7 @@ if __name__=="__main__":
         Xs = [Xd_batch[0:50]]
         Xs.extend([xd[0:50] for xd in Xd_chain])
         file_name = "MCS_TEST_{0:d}.png".format(i)
-        utils.visualize_samples(np.vstack(Xs), file_name, num_rows=6)
+        utils.visualize_samples(np.vstack(Xs), file_name, num_rows=10)
         loop_times.append((time.clock() - start_time))
     total_time = sum(loop_times)
     mean_time = total_time / batch_count
