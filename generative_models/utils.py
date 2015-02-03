@@ -7,11 +7,12 @@ image from a set of samples or weights.
 """
 
 import numpy as np
-#import pylab as plt
 import PIL as PIL
 # Stuff for visualizing diagnostics
 from sklearn.neighbors import KernelDensity
-import matplotlib.pyplot as plt
+import matplotlib as mpl
+mpl.use('Agg')
+#import matplotlib.pyplot as plt
 
 class batch(object):
     def __init__(self,batch_size):
@@ -140,21 +141,6 @@ def tile_raster_images(X, img_shape=None, tile_shape=None, tile_spacing=(0, 0),
                         = this_img * (255 if output_pixel_vals else 1)
         return out_array
 
-
-def plot_histograms(firings):
-    N = int(np.ceil(np.sqrt(firings.shape[1])))
-    plt.figure(figsize=(N,N))
-    axisNum = 0
-    for row in range(N):
-        for col in range(N):
-            axisNum += 1
-            ax = plt.subplot(N, N, axisNum)
-            ax.set_xticklabels([])
-            ax.set_yticklabels([])
-            plt.hist(firings[:,row*N+col],bins=50)
-    plt.show()
-    return
-
 def visualize(EN, proto_key, layer_num, file_name):
     W = EN.proto_nets[proto_key][layer_num].W.get_value(borrow=True).T
     size = int(np.sqrt(W.shape[1]))
@@ -223,14 +209,14 @@ def plot_kde_histogram(X, f_name, bins=25):
     # make a kernel density estimator for the data in X
     kde = KernelDensity(kernel='gaussian', bandwidth=sigma).fit(X_samp)
     # make a figure
-    fig = plt.figure()
+    fig = mpl.pyplot.figure()
     ax = fig.add_subplot(111)
     ax.plot(plot_X, np.exp(kde.score_samples(plot_X)))
     fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
         orientation='portrait', papertype=None, format=None, \
         transparent=False, bbox_inches=None, pad_inches=0.1, \
         frameon=None)
-    plt.close(fig)
+    mpl.pyplot.close(fig)
     return
 
 def plot_kde_histogram2(X1, X2, f_name, bins=25):
@@ -238,7 +224,7 @@ def plot_kde_histogram2(X1, X2, f_name, bins=25):
     Plot KDE-smoothed histogram of the data in X1/X2. Assume data is 1D.
     """
     # make a figure and configure an axis
-    fig = plt.figure()
+    fig = mpl.pyplot.figure()
     ax = fig.add_subplot(111)
     ax.hold(True)
     for (X, style) in [(X1, '-'), (X2, '--')]:
@@ -257,6 +243,6 @@ def plot_kde_histogram2(X1, X2, f_name, bins=25):
         orientation='portrait', papertype=None, format=None, \
         transparent=False, bbox_inches=None, pad_inches=0.1, \
         frameon=None)
-    plt.close(fig)
+    mpl.pyplot.close(fig)
     return
 
