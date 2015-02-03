@@ -315,6 +315,10 @@ def load_tfd(tfd_pkl_name='', which_set='', fold=0):
     # reshape to 1-d images
     data_x = data_x.reshape((data_x.shape[0], data_x.shape[1]*data_x.shape[2]))
 
+    # some of the original unlabeled faces are all zero?
+    good_idx = np.sum(data_x, axis=1) > 0.1
+    data_x = data_x[good_idx]
+
     # get labels if they were requested
     if which_set != 'unlabeled':
         data_y = data['labs_ex'][set_indices] - 1

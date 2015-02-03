@@ -25,7 +25,7 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-#RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
+RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
 PRIOR_DIM = 50
 
@@ -75,7 +75,7 @@ def posterior_klds(IN, Xtr, batch_size, batch_count):
 ##########################################
 ##########################################
 
-def pretrain_gip_dropless(RESULT_PATH=None, extra_lam_kld=0.0, kld2_scale=0.0):
+def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
 
@@ -87,7 +87,7 @@ def pretrain_gip_dropless(RESULT_PATH=None, extra_lam_kld=0.0, kld2_scale=0.0):
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 200
+    batch_size = 100
     batch_reps = 5
 
     # Construct a GenNet and an InfNet, then test constructor for GIPair.
@@ -265,7 +265,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
     # get and set some basic dataset information
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
-    batch_size = 200
+    batch_size = 100
     batch_reps = 5
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
@@ -306,8 +306,8 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt_gip_params_GN.pkl"
-        in_fname = RESULT_PATH+"pt_gip_params_IN.pkl"
+        gn_fname = RESULT_PATH+"pt_gip_params_b80000_GN.pkl"
+        in_fname = RESULT_PATH+"pt_gip_params_b80000_IN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
@@ -431,9 +431,9 @@ if __name__=="__main__":
     # MAKE SURE TO SET RESULT_PATH FOR THE PROPER TEST
 
     # Test with strong regularization on posterior KLds
-	pretrain_gip_dropless(extra_lam_kld=3.0, kld2_scale=0.1)
-	train_walk_from_pretrained_gip(extra_lam_kld=3.0)
+	pretrain_gip_dropless(extra_lam_kld=4.0, kld2_scale=0.1)
+	train_walk_from_pretrained_gip(extra_lam_kld=4.0)
 
     # Test with regular VAE settings
-    pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0)
-    train_walk_from_pretrained_gip(extra_lam_kld=0.0)
+    #pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0)
+    #train_walk_from_pretrained_gip(extra_lam_kld=0.0)
