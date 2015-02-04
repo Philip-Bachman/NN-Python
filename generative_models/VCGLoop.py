@@ -185,6 +185,14 @@ class VCGLoop(object):
         self.rng = RandStream(rng.randint(100000))
         self.data_dim = data_dim
         self.prior_dim = prior_dim
+        if params is None:
+            self.params = {}
+        else:
+            self.params = params
+        if 'cost_decay' in self.params:
+            self.cost_decay = self.params['cost_decay']
+        else:
+            self.cost_decay = 0.1
 
         # symbolic var for inputting samples for initializing the VAE chain
         self.Xd = Xd
@@ -329,9 +337,10 @@ class VCGLoop(object):
         # construct costs relevant to the optimization of the generator and
         # discriminator networks
         self.chain_nll_cost = self.lam_chain_nll[0] * \
-                self._construct_chain_nll_cost(data_weight=0.1)
+                self._construct_chain_nll_cost(cost_decay=self.cost_decay)
         self.chain_kld_cost = self.lam_chain_kld[0] * \
-                self._construct_chain_kld_cost(data_weight=0.1, kld2_scale=self.kld2_scale)
+                self._construct_chain_kld_cost(cost_decay=self.cost_decay, \
+                        kld2_scale=self.kld2_scale)
         self.chain_vel_cost = self.lam_chain_vel[0] * \
                 self._construct_chain_vel_cost()
         self.mask_nll_cost = self.lam_mask_nll[0] * \
@@ -552,26 +561,26 @@ class VCGLoop(object):
                           (logreg_loss(noise_preds, -1.0) / noise_size)
             # compute the cost with respect to which we will be optimizing
             # the parameters of the generative model
-            dnl_gn_cost = hinge_loss(noise_preds, 0.0) / noise_size
+            dnl_gn_cost = (hinge_loss(noise_preds, 0.0) + hinge_sq_loss(noise_preds, 0.0)) / (2.0 * noise_size)
             dn_costs.append(dnl_dn_cost)
             gn_costs.append(dnl_gn_cost)
         dn_cost = self.dw_dn[0] * T.sum(dn_costs)
         gn_cost = self.dw_gn[0] * T.sum(gn_costs)
         return [dn_cost, gn_cost]
 
-    def _construct_chain_nll_cost(self, data_weight=0.1):
+    def _construct_chain_nll_cost(self, cost_decay=0.1):
         """
         Construct the negative log-likelihood part of cost to minimize.
 
         This is for operation in "free chain" mode, where a seed point is used
         to initialize a long(ish) running markov chain.
         """
-        assert((data_weight > 0.0) and (data_weight < 1.0))
+        assert((cost_decay > 0.0) and (cost_decay < 1.0))
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
         nll_costs = []
         step_weight = 1.0
         step_weights = []
-        step_decay = data_weight
+        step_decay = cost_decay
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
             GN_i = self.GN_chain[i]
@@ -589,20 +598,20 @@ class VCGLoop(object):
         nll_cost = sum(nll_costs) / sum(step_weights)
         return nll_cost
 
-    def _construct_chain_kld_cost(self, data_weight=0.1, kld2_scale=0.0):
+    def _construct_chain_kld_cost(self, cost_decay=0.1, kld2_scale=0.0):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
 
         This is for operation in "free chain" mode, where a seed point is used
         to initialize a long(ish) running markov chain.
         """
-        assert((data_weight > 0.0) and (data_weight < 1.0))
+        assert((cost_decay > 0.0) and (cost_decay < 1.0))
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
         kld_mean = self.IN.kld_mean[0]
         kld_costs = []
         step_weight = 1.0
         step_weights = []
-        step_decay = data_weight
+        step_decay = cost_decay
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
             # basic variational term on KL divergence between post and prior

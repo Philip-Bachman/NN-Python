@@ -26,8 +26,9 @@ sys.setrecursionlimit(10**6)
 
 # DERP
 #RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
+RESULT_PATH = "MNIST_WALKOUT_TEST_KLD2/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
-RESULT_PATH = "MNIST_WALKOUT_TEST_DRP/"
+#RESULT_PATH = "MNIST_WALKOUT_TEST_DRP/"
 PRIOR_DIM = 50
 
 #####################################
@@ -327,8 +328,9 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
     ###############################
     vcgl_params = {}
     vcgl_params['lam_l2d'] = 5e-2
+    vcgl_params['cost_decay'] = 0.25
     VCGL = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
-                 g_net=GN, d_net=DN, chain_len=6, data_dim=data_dim, \
+                 g_net=GN, d_net=DN, chain_len=8, data_dim=data_dim, \
                  prior_dim=PRIOR_DIM, params=vcgl_params)
     VCGL.set_lam_l2w(1e-4)
 
@@ -347,7 +349,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         ########################################
         VCGL.set_all_sgd_params(learn_rate=(scale*learn_rate), \
                 mom_1=0.9, mom_2=0.999)
-        VCGL.set_disc_weights(dweight_gn=20.0, dweight_dn=4.0)
+        VCGL.set_disc_weights(dweight_gn=32.0, dweight_dn=4.0)
         VCGL.set_lam_chain_nll(1.0)
         VCGL.set_lam_chain_kld(1.0 + extra_lam_kld)
         VCGL.set_lam_chain_vel(0.0)
@@ -433,11 +435,11 @@ if __name__=="__main__":
 
     # Test with strong regularization on posterior KLds
 	#pretrain_gip_dropless(extra_lam_kld=4.0, kld2_scale=0.1)
-	#train_walk_from_pretrained_gip(extra_lam_kld=4.0)
+	train_walk_from_pretrained_gip(extra_lam_kld=4.0)
 
     # Test with dropout and strong KLd regularization
-    pretrain_gip_dropless(extra_lam_kld=2.0, kld2_scale=0.1)
-    train_walk_from_pretrained_gip(extra_lam_kld=2.0)
+    #pretrain_gip_dropless(extra_lam_kld=2.0, kld2_scale=0.1)
+    #train_walk_from_pretrained_gip(extra_lam_kld=2.0)
 
     # Test with regular VAE settings
     #pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0)

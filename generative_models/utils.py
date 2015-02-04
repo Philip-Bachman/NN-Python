@@ -12,7 +12,6 @@ import PIL as PIL
 from sklearn.neighbors import KernelDensity
 import matplotlib as mpl
 mpl.use('Agg')
-#import matplotlib.pyplot as plt
 
 class batch(object):
     def __init__(self,batch_size):
@@ -198,6 +197,7 @@ def plot_kde_histogram(X, f_name, bins=25):
     """
     Plot KDE-smoothed histogram of the data in X. Assume data is univariate.
     """
+    import matplotlib.pyplot as plt
     X_samp = X.ravel()[:,np.newaxis]
     X_min = np.min(X_samp)
     X_max = np.max(X_samp)
@@ -209,22 +209,23 @@ def plot_kde_histogram(X, f_name, bins=25):
     # make a kernel density estimator for the data in X
     kde = KernelDensity(kernel='gaussian', bandwidth=sigma).fit(X_samp)
     # make a figure
-    fig = mpl.pyplot.figure()
+    fig = plt.figure()
     ax = fig.add_subplot(111)
     ax.plot(plot_X, np.exp(kde.score_samples(plot_X)))
     fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
         orientation='portrait', papertype=None, format=None, \
         transparent=False, bbox_inches=None, pad_inches=0.1, \
         frameon=None)
-    mpl.pyplot.close(fig)
+    plt.close(fig)
     return
 
 def plot_kde_histogram2(X1, X2, f_name, bins=25):
     """
     Plot KDE-smoothed histogram of the data in X1/X2. Assume data is 1D.
     """
+    import matplotlib.pyplot as plt
     # make a figure and configure an axis
-    fig = mpl.pyplot.figure()
+    fig = plt.figure()
     ax = fig.add_subplot(111)
     ax.hold(True)
     for (X, style) in [(X1, '-'), (X2, '--')]:
@@ -243,6 +244,6 @@ def plot_kde_histogram2(X1, X2, f_name, bins=25):
         orientation='portrait', papertype=None, format=None, \
         transparent=False, bbox_inches=None, pad_inches=0.1, \
         frameon=None)
-    mpl.pyplot.close(fig)
+    plt.close(fig)
     return
 

@@ -283,8 +283,8 @@ def test_gip_sigma_scale_mnist():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b20000_GN.pkl"
-    in_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b20000_IN.pkl"
+    gn_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     # construct a GIPair with the loaded InfNet and GenNet
@@ -295,7 +295,7 @@ def test_gip_sigma_scale_mnist():
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
         sample_lists = GIP.sample_from_chain(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=1000, \
-                sigma_scale=1.0)
+                sigma_scale=1.25)
         Xs = np.vstack(sample_lists["data samples"])
         file_name = "AAA_TEST_{0:d}.png".format(i)
         utils.visualize_samples(Xs, file_name, num_rows=30)

@@ -61,16 +61,18 @@ def manifold_walk_regularization():
     Yd = T.icol('Yd')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MMS_RESULTS_32D/pt60k_walk_params_b250000_GN.pkl"
-    in_fname = "MMS_RESULTS_32D/pt60k_walk_params_b250000_IN.pkl"
+    gn_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     prior_dim = GN.latent_dim
 
-    MCS = MCSampler(rng=rng, Xd=Xd, i_net=IN, g_net=GN, chain_len=5, \
+    MCS = MCSampler(rng=rng, Xd=Xd, i_net=IN, g_net=GN, chain_len=2, \
                     data_dim=data_dim, prior_dim=prior_dim)
     full_chain_len = MCS.chain_len + 1
 
+    # TEMP SETTING
+    #full_chain_len = 2
     # setup "chain" versions of the labeled/unlabeled/validate sets
     Xtr_su_chains = [Xtr_su.copy() for i in range(full_chain_len)]
     Xtr_un_chains = [Xtr_un.copy() for i in range(full_chain_len)]
@@ -110,7 +112,7 @@ def manifold_walk_regularization():
     PNS.set_lam_ent(0.0)
     PNS.set_lam_l2w(1e-5)
 
-    out_file = open("MWR_TEST_RESULT.txt", 'wb')
+    out_file = open("MWR_TEST_RESULTS.txt", 'wb')
     learn_rate = 0.05
     PNS.set_pn_sgd_params(lr_pn=learn_rate, mom_1=0.9, mom_2=0.999)
     for i in range(300000):
@@ -155,7 +157,7 @@ def manifold_walk_regularization():
             out_file.flush()
         if ((i % 1000) == 0):
             # draw the main PeaNet's first-layer filters/weights
-            file_name = "PNS_WEIGHTS_ZMUV.png".format(i)
+            file_name = "MWR_PN_WEIGHTS.png".format(i)
             utils.visualize_net_layer(PNS.PN.proto_nets[0][0], file_name)
     print("TESTING COMPLETE!")
 

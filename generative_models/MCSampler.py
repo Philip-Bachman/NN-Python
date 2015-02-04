@@ -156,8 +156,8 @@ if __name__=="__main__":
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MNIST_WALKOUT_TEST_VAE/pt_walk_params_b30000_GN.pkl"
-    in_fname = "MNIST_WALKOUT_TEST_VAE/pt_walk_params_b30000_IN.pkl"
+    gn_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     IN.set_sigma_scale(1.5)
