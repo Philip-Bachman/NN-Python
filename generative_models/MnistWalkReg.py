@@ -21,7 +21,7 @@ from MCSampler import MCSampler, resample_chain_steps
 
 def manifold_walk_regularization():
     # Initialize a source of randomness
-    rng = np.random.RandomState(123)
+    rng = np.random.RandomState(1)
 
     # Load some data to train/validate/test with
     sup_count = 600
@@ -44,6 +44,10 @@ def manifold_walk_regularization():
     Xva = datasets[2][0].get_value(borrow=False).astype(theano.config.floatX)
     Yva = datasets[2][1].get_value(borrow=False).astype(np.int32)
     Yva = Yva[:,np.newaxis] # numpy is dumb
+    # get observations and labels for the test set
+    Xte = datasets[3][0].get_value(borrow=False).astype(theano.config.floatX)
+    Yte = datasets[3][1].get_value(borrow=False).astype(np.int32)
+    Yte = Yte[:,np.newaxis] # numpy is dumb
     # get size information for the data and training batches
     un_samples = Xtr_un.shape[0]
     su_samples = Xtr_su.shape[0]

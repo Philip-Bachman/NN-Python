@@ -26,10 +26,11 @@ sys.setrecursionlimit(10**6)
 
 # DERP
 #RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
-RESULT_PATH = "MNIST_WALKOUT_TEST_KLD2/"
+#RESULT_PATH = "MNIST_WALKOUT_TEST_KLD2/"
+RESULT_PATH = "MNIST_WALKOUT_TEST_BIN/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_DRP/"
-PRIOR_DIM = 50
+PRIOR_DIM = 64
 
 #####################################
 # HELPER FUNCTIONS FOR DATA MASKING #
@@ -105,7 +106,7 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     gn_config = [PRIOR_DIM, 1200, 1200, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
-    gn_params['out_type'] = 'gaussian'
+    gn_params['out_type'] = 'bernoulli'
     gn_params['mean_transform'] = 'sigmoid'
     gn_params['logvar_type'] = 'single_shared'
     gn_params['init_scale'] = 1.0
@@ -124,8 +125,8 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.5
-    in_params['bias_noise'] = 0.1
+    in_params['hid_drop'] = 0.0
+    in_params['bias_noise'] = 0.2
     in_params['input_noise'] = 0.0
     in_params['kld2_scale'] = kld2_scale
     # Initialize the base networks for this GIPair
@@ -177,7 +178,7 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.0003
-    for i in range(200000):
+    for i in range(150000):
         scale = min(1.0, float(i) / 30000.0)
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
@@ -235,10 +236,10 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
             #########################
             # Check posterior KLds. #
             #########################
-            post_klds = posterior_klds(IN, Xtr, 5000, 5)
-            file_name = RESULT_PATH+"pt_gip_post_klds_b{0:d}.png".format(i)
-            utils.plot_kde_histogram2( \
-                    np.asarray(post_klds), np.asarray(post_klds), file_name, bins=30)
+            # post_klds = posterior_klds(IN, Xtr, 5000, 5)
+            # file_name = RESULT_PATH+"pt_gip_post_klds_b{0:d}.png".format(i)
+            # utils.plot_kde_histogram2( \
+            #         np.asarray(post_klds), np.asarray(post_klds), file_name, bins=30)
         if ((i % 10000) == 0):
             IN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_b{0:d}_IN.pkl".format(i))
             GN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_b{0:d}_GN.pkl".format(i))
@@ -330,7 +331,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
     vcgl_params['lam_l2d'] = 5e-2
     vcgl_params['cost_decay'] = 0.25
     VCGL = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, i_net=IN, \
-                 g_net=GN, d_net=DN, chain_len=8, data_dim=data_dim, \
+                 g_net=GN, d_net=DN, chain_len=6, data_dim=data_dim, \
                  prior_dim=PRIOR_DIM, params=vcgl_params)
     VCGL.set_lam_l2w(1e-4)
 
@@ -349,7 +350,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         ########################################
         VCGL.set_all_sgd_params(learn_rate=(scale*learn_rate), \
                 mom_1=0.9, mom_2=0.999)
-        VCGL.set_disc_weights(dweight_gn=32.0, dweight_dn=4.0)
+        VCGL.set_disc_weights(dweight_gn=20.0, dweight_dn=4.0)
         VCGL.set_lam_chain_nll(1.0)
         VCGL.set_lam_chain_kld(1.0 + extra_lam_kld)
         VCGL.set_lam_chain_vel(0.0)
@@ -411,17 +412,17 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
             utils.visualize_net_layer(VCGL.IN.shared_layers[0], file_name)
             # draw generator net final layer weights
             file_name = RESULT_PATH+"pt_walk_gen_weights_b{0:d}.png".format(i)
-            if GN.out_type == 'sigmoid':
+            if GN.out_type == 'bernoulli':
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-1], file_name, use_transpose=True)
             else:
                 utils.visualize_net_layer(VCGL.GN.mlp_layers[-2], file_name, use_transpose=True)
             #########################
             # Check posterior KLds. #
             #########################
-            post_klds = posterior_klds(IN, Xtr, 5000, 5)
-            file_name = RESULT_PATH+"pt_walk_post_klds_b{0:d}.png".format(i)
-            utils.plot_kde_histogram2( \
-                    np.asarray(post_klds), np.asarray(post_klds), file_name, bins=30)
+            # post_klds = posterior_klds(IN, Xtr, 5000, 5)
+            # file_name = RESULT_PATH+"pt_walk_post_klds_b{0:d}.png".format(i)
+            # utils.plot_kde_histogram2( \
+            #         np.asarray(post_klds), np.asarray(post_klds), file_name, bins=30)
         # DUMP PARAMETERS FROM TIME-TO-TIME
         if (i % 10000 == 0):
             DN.save_to_file(f_name=RESULT_PATH+"pt_walk_params_b{0:d}_DN.pkl".format(i))
@@ -435,7 +436,7 @@ if __name__=="__main__":
 
     # Test with strong regularization on posterior KLds
 	#pretrain_gip_dropless(extra_lam_kld=4.0, kld2_scale=0.1)
-	train_walk_from_pretrained_gip(extra_lam_kld=4.0)
+	#train_walk_from_pretrained_gip(extra_lam_kld=4.0)
 
     # Test with dropout and strong KLd regularization
     #pretrain_gip_dropless(extra_lam_kld=2.0, kld2_scale=0.1)
@@ -444,3 +445,7 @@ if __name__=="__main__":
     # Test with regular VAE settings
     #pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0)
     #train_walk_from_pretrained_gip(extra_lam_kld=0.0)
+
+    # Test with bernoulli output distribution
+    pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.1)
+    train_walk_from_pretrained_gip(extra_lam_kld=0.0)

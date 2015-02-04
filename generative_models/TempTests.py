@@ -290,6 +290,15 @@ def test_gip_sigma_scale_mnist():
     # construct a GIPair with the loaded InfNet and GenNet
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
+    # compute variational likelihood bound and its sub-components
+    bound_results = GIP.compute_ll_bound(Xva)
+    ll_bounds = bound_results[0]
+    post_klds = bound_results[1]
+    log_likelihoods = bound_results[2]
+    print("mean ll bound: {0:.4f}".format(np.mean(ll_bounds)))
+    print("mean posterior KLd: {0:.4f}".format(np.mean(post_klds)))
+    print("mean log-likelihood: {0:.4f}".format(np.mean(log_likelihoods)))
+
     # draw many samples from the GIP
     for i in range(10):
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))

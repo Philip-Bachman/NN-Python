@@ -162,15 +162,17 @@ def theano_parzen(mu, sigma):
 
 
 def cross_validate_sigma(samples, data, sigmas, batch_size):
-
+    """
+    Find which sigma is best for the Parzen estimator bound.
+    """
     lls = []
     for sigma in sigmas:
         print sigma
         parzen = theano_parzen(samples, sigma)
-        tmp = get_nll(data, parzen, batch_size = batch_size)
+        tmp = get_nll(data, parzen, batch_size=batch_size)
         lls.append(np.asarray(tmp).mean())
         del parzen
         gc.collect()
-
     ind = np.argmax(lls)
-    return sigmas[ind]
+    max_ll = lls[ind]
+    return [sigmas[ind], max_ll]

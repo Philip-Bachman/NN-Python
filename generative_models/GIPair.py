@@ -198,6 +198,7 @@ class GIPair(object):
         # Construct a function for jointly training the generator/inferencer
         self.train_joint = self._construct_train_joint()
         self.compute_costs = self._construct_compute_costs()
+        self.compute_ll_bound = self._construct_compute_ll_bound()
         return
 
     def set_all_sgd_params(self, lr_gn=0.01, lr_in=0.01, \
@@ -244,6 +245,39 @@ class GIPair(object):
         new_lam = zero_ary + lam_l2w
         self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
+
+    def _construct_compute_ll_bound(self):
+        """
+        Construct a function for computing the variational likelihood bound.
+        """
+        # setup some symbolic variables for theano to deal with
+        Xd = T.matrix()
+        Xc = T.zeros_like(Xd)
+        Xm = T.zeros_like(Xd)
+        # get symbolic var for posterior KLds
+        post_kld = self.IN.kld_cost
+        # get symbolic var for log likelihoods
+        if self.use_encoder:
+            log_likelihood = self.GN.compute_log_prob(self.IN.Xd_encoded)
+        else:
+            log_likelihood = self.GN.compute_log_prob(self.IN.Xd)
+        # construct a theano function for actually computing stuff
+        outputs = [post_kld, log_likelihood]
+        out_func = theano.function([Xd], outputs=outputs, \
+                givens={ self.Xd: Xd, self.Xc: Xc, self.Xm: Xm })
+        # construct a function for computing multi-sample averages
+        def multi_sample_bound(X, sample_count=10):
+            post_klds = np.zeros((X.shape[0], 1))
+            log_likelihoods = np.zeros((X.shape[0], 1))
+            for i in range(sample_count):
+                result = out_func(X)
+                post_klds = post_klds + (1.0 * result[0])
+                log_likelihoods = log_likelihoods + (1.0 * result[1])
+            post_klds = post_klds / sample_count
+            log_likelihoods = log_likelihoods / sample_count
+            ll_bounds = log_likelihoods - post_klds
+            return [ll_bounds, post_klds, log_likelihoods]
+        return multi_sample_bound
 
     def _construct_data_nll_cost(self):
         """
