@@ -5,7 +5,7 @@ import numpy.random as npr
 import theano
 import theano.tensor as T
 
-from load_data import load_tfd
+from load_data import load_svhn, load_svhn_gray, load_svhn_all_gray_zca
 from PeaNet import PeaNet, load_peanet_from_file
 from InfNet import InfNet, load_infnet_from_file
 from GenNet import GenNet, load_gennet_from_file
@@ -23,14 +23,31 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "TMS_WALKOUT_TEST_KLD/"
-#RESULT_PATH = "TMS_WALKOUT_TEST_VAE/"
-#RESULT_PATH = "TMS_RESULTS_DROPPY/"
-PRIOR_DIM = 100
+RESULT_PATH = "SVHN_WALKOUT_TEST_KLD/"
+#RESULT_PATH = "SVHN_WALKOUT_TEST_VAE/"
+PRIOR_DIM = 200
 
-#####################################
-# HELPER FUNCTIONS FOR DATA MASKING #
-#####################################
+####################
+# HELPER FUNCTIONS #
+####################
+
+def shift_and_scale_into_01(X):
+    X = X - np.min(X, axis=1, keepdims=True)
+    X = X / np.max(X, axis=1, keepdims=True)
+    return X
+
+def train_valid_split(X, valid_count=1000):
+    """
+    Split the observations in the rows of X into train/validate sets.
+    """
+    obs_count = X.shape[0]
+    idx = np.arange(obs_count)
+    npr.shuffle(idx)
+    va_idx = idx[:valid_count]
+    tr_idx = idx[valid_count:]
+    Xtr = X.take(tr_idx, axis=0)
+    Xva = X.take(va_idx, axis=0)
+    return Xtr, Xva
 
 def sample_masks(X, drop_prob=0.3):
     """
@@ -68,29 +85,32 @@ def posterior_klds(IN, Xtr, batch_size, batch_count):
         post_klds.extend([k for k in IN.kld_func(X, 0.0*X, 0.0*X)])
     return post_klds
 
-
 ####################################
 ####################################
 ## VAE PRETRAINING FOR THE GIPAIR ##
 ####################################
 ####################################
 
-def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
+def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
 
-    # Load some data to train/validate/test with
-    data_file = 'data/tfd_data_48x48.pkl'
-    dataset = load_tfd(tfd_pkl_name=data_file, which_set='unlabeled', fold='all')
-    Xtr_unlabeled = dataset[0]
-    dataset = load_tfd(tfd_pkl_name=data_file, which_set='train', fold='all')
-    Xtr_train = dataset[0]
-    Xtr = np.vstack([Xtr_unlabeled, Xtr_train])
-    dataset = load_tfd(tfd_pkl_name=data_file, which_set='valid', fold='all')
-    Xva = dataset[0]
+     # Load some data to train/validate/test with
+    tr_file = 'data/svhn_train_gray.pkl'
+    te_file = 'data/svhn_test_gray.pkl'
+    ex_file = 'data/svhn_extra_gray.pkl'
+    data = load_svhn_gray(tr_file, te_file, ex_file=ex_file, ex_count=200000)
+    #all_file = 'data/svhn_all_gray_zca.pkl'
+    #data = load_svhn_all_gray_zca(all_file)
+    Xtr = np.vstack([data['Xtr'], data['Xex']])
+    Xtr = Xtr - np.mean(Xtr, axis=1, keepdims=True)
+    Xtr = Xtr / np.std(Xtr, axis=1, keepdims=True)
+    Xtr = shift_and_scale_into_01(Xtr)
+    Xtr, Xva = train_valid_split(Xtr, valid_count=5000)
+
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 200
+    batch_size = 100
     batch_reps = 5
 
     # setup some symbolic variables and stuff
@@ -105,7 +125,7 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     # NETWORK CONFIGURATIONS #
     ##########################
     gn_params = {}
-    gn_config = [PRIOR_DIM, 2000, 2000, data_dim]
+    gn_config = [PRIOR_DIM, 2400, 2400, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
@@ -115,10 +135,10 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.2
+    gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 2000, 2000]
+    shared_config = [data_dim, 2400, 2400]
     top_config = [shared_config[-1], PRIOR_DIM]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
@@ -128,7 +148,7 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.2
+    in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     in_params['kld2_scale'] = kld2_scale
     # Initialize the base networks for this GIPair
@@ -196,8 +216,8 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     out_file = open(RESULT_PATH+"pt_gip_results.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
-    learn_rate = 0.00015
-    for i in range(200000):
+    learn_rate = 0.0002
+    for i in range(300000):
         scale = min(1.0, float(i) / 40000.0)
         if ((i + 1) % 100000 == 0):
             learn_rate = learn_rate * 0.8
@@ -277,22 +297,25 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
 
-    # Load some data to train/validate/test with
-    data_file = 'data/tfd_data_48x48.pkl'
-    dataset = load_tfd(tfd_pkl_name=data_file, which_set='unlabeled', fold='all')
-    Xtr_unlabeled = dataset[0]
-    dataset = load_tfd(tfd_pkl_name=data_file, which_set='train', fold='all')
-    Xtr_train = dataset[0]
-    Xtr = np.vstack([Xtr_unlabeled, Xtr_train])
-    dataset = load_tfd(tfd_pkl_name=data_file, which_set='valid', fold='all')
-    Xva = dataset[0]
+     # Load some data to train/validate/test with
+    tr_file = 'data/svhn_train_gray.pkl'
+    te_file = 'data/svhn_test_gray.pkl'
+    ex_file = 'data/svhn_extra_gray.pkl'
+    data = load_svhn_gray(tr_file, te_file, ex_file=ex_file, ex_count=200000)
+    #all_file = 'data/svhn_all_gray_zca.pkl'
+    #data = load_svhn_all_gray_zca(all_file)
+    Xtr = np.vstack([data['Xtr'], data['Xex']])
+    Xtr = Xtr - np.mean(Xtr, axis=1, keepdims=True)
+    Xtr = Xtr / np.std(Xtr, axis=1, keepdims=True)
+    Xtr = shift_and_scale_into_01(Xtr)
+    Xtr, Xva = train_valid_split(Xtr, valid_count=5000)
     print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
 
     # get and set some basic dataset information
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
     data_dim = Xtr.shape[1]
-    batch_size = 200
+    batch_size = 100
     batch_reps = 5
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
@@ -333,8 +356,8 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt_gip_params_b150000_GN.pkl"
-        in_fname = RESULT_PATH+"pt_gip_params_b150000_IN.pkl"
+        gn_fname = RESULT_PATH+"pt_gip_params_b200000_GN.pkl"
+        in_fname = RESULT_PATH+"pt_gip_params_b200000_IN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
@@ -362,7 +385,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
     ####################################################
     # Train the VCGLoop by unrolling and applying BPTT #
     ####################################################
-    learn_rate = 0.00015
+    learn_rate = 0.0002
     cost_1 = [0. for i in range(10)]
     for i in range(1000000):
         scale = float(min((i+1), 25000)) / 25000.0
@@ -417,7 +440,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
             Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
             Xc_samps = np.repeat(Xd_batch, 3, axis=0)
             Xm_rand = sample_masks(Xc_samps, drop_prob=0.2)
-            Xm_patch = sample_patch_masks(Xc_samps, (48,48), (25,25))
+            Xm_patch = sample_patch_masks(Xc_samps, (32,32), (16,16))
             Xm_samps = Xm_rand * Xm_patch
             sample_lists = VCGL.GIP.sample_from_chain(Xd_samps, \
                     X_c=Xc_samps, X_m=Xm_samps, loop_iters=20)
@@ -460,14 +483,10 @@ def train_recon_from_pretrained_gip():
     return
 
 if __name__=="__main__":
-    # FOR DROPPY MODEL
-	# pretrain_gip_droppy(extra_lam_kld=1.0, kld2_scale=0.1)
-	# train_walk_from_pretrained_gip(extra_lam_kld=1.0)
-
     # FOR KLD MODEL
-    pretrain_gip_dropless(extra_lam_kld=4.0, kld2_scale=0.1)
-    train_walk_from_pretrained_gip(extra_lam_kld=4.0)
+    pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.1)
+    train_walk_from_pretrained_gip(extra_lam_kld=0.0)
 
     # FOR VAE MODEL
-    # pretrain_gip_dropless(extra_lam_kld=5.0, kld2_scale=0.1)
-    # train_walk_from_pretrained_gip(extra_lam_kld=3.0)
+    # pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0)
+    # train_walk_from_pretrained_gip(extra_lam_kld=0.0)

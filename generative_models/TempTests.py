@@ -304,7 +304,7 @@ def test_gip_sigma_scale_mnist():
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
         sample_lists = GIP.sample_from_chain(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=1000, \
-                sigma_scale=1.25)
+                sigma_scale=1.0)
         Xs = np.vstack(sample_lists["data samples"])
         file_name = "AAA_TEST_{0:d}.png".format(i)
         utils.visualize_samples(Xs, file_name, num_rows=30)
@@ -366,9 +366,9 @@ def test_gip_sigma_scale_tfd():
         sample_lists = GIP.sample_from_chain(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=300, \
                 sigma_scale=1.0)
         Xs = np.vstack(sample_lists["data samples"])
-        file_name = "AAA_TEST_{0:d}.png".format(i)
+        file_name = "TFD_TEST_{0:d}.png".format(i)
         utils.visualize_samples(Xs, file_name, num_rows=15)
-    file_name = "AAA_TEST_PRIOR.png"
+    file_name = "TFD_TEST_PRIOR.png"
     Xs = GIP.sample_from_prior(32*32, sigma=1.0)
     utils.visualize_samples(Xs, file_name, num_rows=32)
     # test Parzen density estimator built from prior samples

@@ -721,7 +721,7 @@ class VCGLoop(object):
         Sample for several rounds through the I<->G loop, initialized with the
         the "data variable" samples in X_d.
         """
-        result = self.GN.sample_from_chain(X_d, X_c=X_c, X_m=X_m, \
+        result = self.GIP.sample_from_chain(X_d, X_c=X_c, X_m=X_m, \
                 loop_iters=loop_iters, sigma_scale=sigma_scale)
         return result
 
