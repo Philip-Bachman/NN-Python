@@ -66,31 +66,46 @@ def draw_parzen_vs_variational_scatter(p_vals_kld, v_vals_kld, p_vals_vae, v_val
     import matplotlib.pyplot as plt
     fig = plt.figure()
     ax = fig.add_subplot(111)
-    ax.set_xlabel('Variational Bound')
-    ax.set_ylabel('Parzen Bound')
-    ax.set_title('Comparing Parzen vs. Variational Bounds')
+    box = ax.get_position()
+    ax.set_position([box.x0+(0.05*box.width), box.y0+(0.05*box.height), 0.96*box.width, 0.96*box.height])
+    ax.set_xlabel('Variational Bound', fontsize=22)
+    ax.set_ylabel('Parzen Bound', fontsize=22)
+    ax.set_title('Compare Parzen vs. Variational Bound', fontsize=22)
     ax.hold(True)
-    ax.scatter(v_vals_kld, p_vals_kld, s=32, c=u'b', marker=u'o', label='ORK')
-    ax.scatter(v_vals_vae, p_vals_vae, s=32, c=u'r', marker=u'+', label='VAR')
-    ax.legend(loc='lower right')
-    fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
-        orientation='portrait', papertype=None, format='pdf', \
-        transparent=False, bbox_inches=None, pad_inches=0.1, \
-        frameon=None)
+    ax.scatter(v_vals_kld, p_vals_kld, s=64, c=u'b', marker=u'o', label='ORK')
+    ax.scatter(v_vals_vae, p_vals_vae, s=64, c=u'r', marker=u'+', label='VAR')
+    ax.legend(loc='lower right', fontsize=22)
+    plt.sca(ax)
+    x_locs, x_labels = plt.xticks()
+    plt.xticks(x_locs, fontsize=18)
+    y_locs, y_labels = plt.yticks()
+    plt.yticks(y_locs, fontsize=18)
+    fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w',\
+            orientation='portrait', papertype=None, format='pdf', \
+            transparent=False, bbox_inches=None, pad_inches=0.1, \
+            frameon=None)
     plt.close(fig)
     return
+
 
 def draw_kld_vs_likelihood_scatter(kl_vals_kld, ll_vals_kld, kl_vals_vae, ll_vals_vae, f_name=None):
     import matplotlib.pyplot as plt
     fig = plt.figure()
     ax = fig.add_subplot(111)
-    ax.set_xlabel('Posterior KLd')
-    ax.set_ylabel('Log-likelihood')
-    ax.set_title('Trading KLd for Log-likelihood')
+    box = ax.get_position()
+    ax.set_position([box.x0+(0.05*box.width), box.y0+(0.05*box.height), 0.96*box.width, 0.96*box.height])
+    ax.set_xlabel('Posterior KLd', fontsize=22)
+    ax.set_ylabel('Log-likelihood', fontsize=22)
+    ax.set_title('Trading KLd for Log-likelihood', fontsize=22)
     ax.hold(True)
-    ax.scatter(kl_vals_kld, ll_vals_kld, s=16, alpha=0.4, c=u'b', marker=u'o', label='ORK')
-    ax.scatter(kl_vals_vae, ll_vals_vae, s=16, alpha=0.4, c=u'r', marker=u'+', label='VAR')
-    ax.legend()
+    ax.scatter(kl_vals_kld, ll_vals_kld, s=24, alpha=0.3, c=u'b', marker=u'o', label='ORK')
+    ax.scatter(kl_vals_vae, ll_vals_vae, s=24, alpha=0.3, c=u'r', marker=u'+', label='VAR')
+    ax.legend(loc='upper right', fontsize=22)
+    plt.sca(ax)
+    x_locs, x_labels = plt.xticks()
+    plt.xticks(x_locs, fontsize=18)
+    y_locs, y_labels = plt.yticks()
+    plt.yticks(y_locs, fontsize=18)
     fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
         orientation='portrait', papertype=None, format='pdf', \
         transparent=False, bbox_inches=None, pad_inches=0.1, \
@@ -246,7 +261,7 @@ def check_mnist_walkout():
             file_name = RESULT_PATH + "post_klds_b{0:d}.pdf".format(i)
             draw_posterior_kld_hist( \
                     np.asarray(post_klds_kld), np.asarray(post_klds_vae), file_name, bins=30)
-            if i in [20000, 50000, 80000, 110000, 150000, (200000-1)]:
+            if i in [20000, 50000, 80000, 110000, 150000, 190000]:
                 # select random random indices into the validation set
                 va_idx = npr.randint(0,high=va_samples,size=(150,))
                 # record information about their current variational bounds
@@ -463,7 +478,7 @@ def check_tfd_walkout():
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # test Parzen density estimator built from prior samples
             Xs = GIP_KLD.sample_from_prior(10000, sigma=1.0)
-            parzen_vals_kld = cross_validate_sigma(Xs, Xva, [0.1, 0.13, 0.15, 0.18, 0.2], 20)
+            parzen_vals_kld = cross_validate_sigma(Xs, Xva, [0.08, 0.09, 0.1, 0.11, 0.12, 0.15, 0.2], 20)
             # get variational bound info
             var_vals_kld = GIP_KLD.compute_ll_bound(Xva)
             # record info about variational and parzen bounds
@@ -491,7 +506,7 @@ def check_tfd_walkout():
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # test Parzen density estimator built from prior samples
             Xs = GIP_VAE.sample_from_prior(10000, sigma=1.0)
-            parzen_vals_vae = cross_validate_sigma(Xs, Xva, [0.12, 0.15, 0.18, 0.20, 0.25], 20)
+            parzen_vals_vae = cross_validate_sigma(Xs, Xva, [0.08, 0.09, 0.1, 0.11, 0.12, 0.15, 0.2], 20)
             # get variational bound info
             var_vals_vae = GIP_VAE.compute_ll_bound(Xva)
             # record info about variational and parzen bounds
@@ -503,7 +518,7 @@ def check_tfd_walkout():
             file_name = RESULT_PATH + "post_klds_b{0:d}.pdf".format(i)
             draw_posterior_kld_hist( \
                     np.asarray(post_klds_kld), np.asarray(post_klds_vae), file_name, bins=30)
-            if i in [20000, 50000, 80000, 110000, 150000, (200000-1)]:
+            if i in [20000, 50000, 80000, 110000, 150000, 190000]:
                 # select random random indices into the validation set
                 va_idx = npr.randint(0,high=va_samples,size=(150,))
                 # record information about their current variational bounds
@@ -651,7 +666,7 @@ def check_tfd_recon():
 
 if __name__=="__main__":
     # MAKE SURE TO SET RESULT_PATH FOR THE PROPER TEST
-    #check_mnist_walkout()
+    check_mnist_walkout()
     #check_mnist_recon()
-    check_tfd_recon()
+    #check_tfd_recon()
     check_tfd_walkout()

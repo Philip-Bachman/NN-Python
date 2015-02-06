@@ -19,6 +19,11 @@ import PeaNet as PNet
 from DKCode import PCA_theano
 from MCSampler import MCSampler, resample_chain_steps
 
+def downsample_chains(X_chain, stride=1):
+	Xs = [X_chain[i] for i in range(len(X_chain)) if ((i % stride) == 0)]
+	return Xs
+
+
 def manifold_walk_regularization():
     # Initialize a source of randomness
     rng = np.random.RandomState(1)
@@ -65,18 +70,17 @@ def manifold_walk_regularization():
     Yd = T.icol('Yd')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_GN.pkl"
-    in_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_IN.pkl"
+    gn_fname = "MNIST_WALKOUT_TEST_BIN/pt_walk_params_b150000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_BIN/pt_walk_params_b150000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
+    IN.set_sigma_scale(1.3)
     prior_dim = GN.latent_dim
 
-    MCS = MCSampler(rng=rng, Xd=Xd, i_net=IN, g_net=GN, chain_len=2, \
+    MCS = MCSampler(rng=rng, Xd=Xd, i_net=IN, g_net=GN, chain_len=6, \
                     data_dim=data_dim, prior_dim=prior_dim)
     full_chain_len = MCS.chain_len + 1
 
-    # TEMP SETTING
-    #full_chain_len = 2
     # setup "chain" versions of the labeled/unlabeled/validate sets
     Xtr_su_chains = [Xtr_su.copy() for i in range(full_chain_len)]
     Xtr_un_chains = [Xtr_un.copy() for i in range(full_chain_len)]
@@ -84,6 +88,17 @@ def manifold_walk_regularization():
     Ytr_un_chains = [Ytr_un for i in range(full_chain_len)]
     Xva_chains = [Xva for i in range(full_chain_len)]
     Yva_chains = [Yva for i in range(full_chain_len)]
+
+    # downsample, to feed less into the PNS
+    Xtr_su_short = downsample_chains(Xtr_su_chains, stride=3)
+    Xtr_un_short = downsample_chains(Xtr_un_chains, stride=3)
+    Ytr_su_short = downsample_chains(Ytr_su_chains, stride=3)
+    Ytr_un_short = downsample_chains(Ytr_un_chains, stride=3)
+    Xva_short = downsample_chains(Xva_chains, stride=3)
+    Yva_short = downsample_chains(Yva_chains, stride=3)
+    short_chain_len = len(Xtr_su_short)
+    print("REGULARIZATION CHAIN STEPS: {0:d}".format(short_chain_len))
+
 
     # choose some parameters for the categorical inferencer
     pn_params = {}
@@ -106,7 +121,7 @@ def manifold_walk_regularization():
 
     print("Initializing PNS...")
     # Initialize the PeaNetSeq
-    PNS = PeaNetSeq(rng=rng, pea_net=PN, seq_len=full_chain_len, \
+    PNS = PeaNetSeq(rng=rng, pea_net=PN, seq_len=short_chain_len, \
     		seq_Xd=None, params=None)
 
     # set weighting parameters for the various costs...
@@ -127,13 +142,15 @@ def manifold_walk_regularization():
         if ((i % 250) == 0):
         	Xtr_su_chains = resample_chain_steps(MCS, Xtr_su_chains)
         	Xtr_un_chains = resample_chain_steps(MCS, Xtr_un_chains)
+        	Xtr_su_short = downsample_chains(Xtr_su_chains, stride=3)
+        	Xtr_un_short = downsample_chains(Xtr_un_chains, stride=3)
         # get some data to train with
         su_idx = npr.randint(low=0,high=su_samples,size=(batch_size,))
-        xsuc = [(x.take(su_idx, axis=0) - Xtr_mean) for x in Xtr_su_chains]
-        ysuc = [y.take(su_idx, axis=0) for y in Ytr_su_chains]
+        xsuc = [(x.take(su_idx, axis=0) - Xtr_mean) for x in Xtr_su_short]
+        ysuc = [y.take(su_idx, axis=0) for y in Ytr_su_short]
         un_idx = npr.randint(low=0,high=un_samples,size=(batch_size,))
-        xunc = [(x.take(un_idx, axis=0) - Xtr_mean) for x in Xtr_un_chains]
-        yunc = [y.take(un_idx, axis=0) for y in Ytr_un_chains]
+        xunc = [(x.take(un_idx, axis=0) - Xtr_mean) for x in Xtr_un_short]
+        yunc = [y.take(un_idx, axis=0) for y in Ytr_un_short]
         Xb_chains = [np.vstack((xsu, xun)) for (xsu, xun) in zip(xsuc, xunc)]
         Yb_chains = [np.vstack((ysu, yun)) for (ysu, yun) in zip(ysuc, yunc)]
         # set learning parameters for this update
