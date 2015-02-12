@@ -23,9 +23,9 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "TMS_WALKOUT_TEST_KLD/"
-#RESULT_PATH = "TMS_WALKOUT_TEST_VAE/"
-#RESULT_PATH = "TMS_RESULTS_DROPPY/"
+RESULT_PATH = "TFD_WALKOUT_TEST_KLD/"
+#RESULT_PATH = "TFD_WALKOUT_TEST_VAE/"
+#RESULT_PATH = "TFD_WALKOUT_TEST_DRP/"
 PRIOR_DIM = 100
 
 #####################################
@@ -373,7 +373,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         ########################################
         VCGL.set_all_sgd_params(learn_rate=(scale*learn_rate), \
                 mom_1=0.9, mom_2=0.999)
-        VCGL.set_disc_weights(dweight_gn=20.0, dweight_dn=4.0)
+        VCGL.set_disc_weights(dweight_gn=40.0, dweight_dn=20.0)
         VCGL.set_lam_chain_nll(1.0)
         VCGL.set_lam_chain_kld(1.0 + extra_lam_kld)
         VCGL.set_lam_chain_vel(0.0)
@@ -454,7 +454,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
     return
 
 
-def train_recon_from_pretrained_gip():
+def train_recon_from_pretrained_gip(extra_lam_kld=0.0):
     # Simple test code, to check that everything is basically functional.
     print("TESTING...")
 
@@ -480,7 +480,7 @@ def train_recon_from_pretrained_gip():
     batch_reps = 5
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
-    Xtr_mean = (0.0 * Xtr_mean) + np.mean(np.mean(Xtr,axis=1))
+    Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr_mean)
     Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0)
 
     # Symbolic inputs
@@ -517,8 +517,8 @@ def train_recon_from_pretrained_gip():
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt_gip_params_b150000_GN.pkl"
-        in_fname = RESULT_PATH+"pt_gip_params_b150000_IN.pkl"
+        gn_fname = RESULT_PATH+"pt_gip_params_b120000_GN.pkl"
+        in_fname = RESULT_PATH+"pt_gip_params_b120000_IN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
@@ -550,7 +550,7 @@ def train_recon_from_pretrained_gip():
     cost_2 = [0. for i in range(10)]
     for i in range(1000000):
         scale = float(min((i+1), 25000)) / 25000.0
-        if ((i+1 % 100000) == 0):
+        if ((i+1 % 50000) == 0):
             learn_rate = learn_rate * 0.66
         #########################################
         # TRAIN THE CHAIN UNDER PARTIAL CONTROL #
@@ -567,7 +567,7 @@ def train_recon_from_pretrained_gip():
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xd_batch = Xc_mean
         Xc_batch = Xtr.take(tr_idx, axis=0)
-        Xm_rand = sample_masks(Xc_batch, drop_prob=0.1)
+        Xm_rand = sample_masks(Xc_batch, drop_prob=0.0)
         Xm_patch = sample_patch_masks(Xc_batch, (48,48), (25,25))
         Xm_batch = Xm_rand * Xm_patch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
@@ -653,7 +653,8 @@ if __name__=="__main__":
 
     # FOR KLD MODEL
     #pretrain_gip_dropless(extra_lam_kld=2.0, kld2_scale=0.1)
-    train_walk_from_pretrained_gip(extra_lam_kld=2.0)
+    #train_walk_from_pretrained_gip(extra_lam_kld=2.0)
+    train_recon_from_pretrained_gip(extra_lam_kld=2.0)
 
     # FOR VAE MODEL
     # pretrain_gip_dropless(extra_lam_kld=5.0, kld2_scale=0.1)

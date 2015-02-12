@@ -193,6 +193,12 @@ class VCGLoop(object):
             self.cost_decay = self.params['cost_decay']
         else:
             self.cost_decay = 0.1
+        if 'chain_type' in params:
+            assert((params['chain_type'] == 'walkback') or \
+                (params['chain_type'] == 'walkout'))
+            self.chain_type = params['chain_type']
+        else:
+            self.chain_type = 'walkout'
 
         # symbolic var for inputting samples for initializing the VAE chain
         self.Xd = Xd
@@ -582,7 +588,12 @@ class VCGLoop(object):
         step_weights = []
         step_decay = cost_decay
         for i in range(self.chain_len):
-            IN_i = self.IN_chain[i]
+            if self.chain_type == 'walkback':
+                # train with walkback roll-outs -- reconstruct initial point
+                IN_i = self.IN_chain[0]
+            else:
+                # train with walkout roll-outs -- reconstruct previous point
+                IN_i = self.IN_chain[i]
             GN_i = self.GN_chain[i]
             if self.use_encoder:
                 # compare encoded output of the generator with the encoded

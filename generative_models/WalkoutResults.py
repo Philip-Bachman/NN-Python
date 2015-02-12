@@ -572,8 +572,8 @@ def check_tfd_recon():
     #############################################################
     # Process the GIPair trained with strong KLd regularization #
     #############################################################
-    gn_fname = KLD_PATH + "pt_walk_params_b50000_GN.pkl"
-    in_fname = KLD_PATH + "pt_walk_params_b50000_IN.pkl"
+    gn_fname = KLD_PATH + "pt_recon_params_b180000_GN.pkl"
+    in_fname = KLD_PATH + "pt_recon_params_b180000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     IN.set_sigma_scale(1.0)
@@ -666,7 +666,7 @@ def check_tfd_recon():
 
 if __name__=="__main__":
     # MAKE SURE TO SET RESULT_PATH FOR THE PROPER TEST
-    check_mnist_walkout()
+    #check_mnist_walkout()
     #check_mnist_recon()
-    #check_tfd_recon()
-    check_tfd_walkout()
+    check_tfd_recon()
+    #check_tfd_walkout()

@@ -74,6 +74,7 @@ class InfNet(object):
             Xd=None, \
             Xc=None, \
             Xm=None, \
+            Xq=None, \
             prior_sigma=None, \
             params=None, \
             shared_param_dicts=None):
@@ -83,6 +84,7 @@ class InfNet(object):
         self.Xd = Xd
         self.Xc = Xc
         self.Xm = Xm
+        self.Xq = Xq
         self.prior_sigma = prior_sigma
         #####################################################
         # Process user-supplied parameters for this network #
@@ -125,6 +127,15 @@ class InfNet(object):
             self.kld2_scale = params['kld2_scale']
         else:
             self.kld2_scale = 0.0
+        if 'Xq_type' in params:
+            # check how we will be using Xq.
+            assert((params['Xq_type'] == 'observed bernoulli') or \
+                    (params['Xq_type'] == 'observed gaussian') or \
+                    (params['Xq_type'] == 'latent'))
+            self.Xq_type = params['Xq_type']
+        else:
+            # default to treating Xq as additional "latent" variables
+            self.Xq_type = 'latent'
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
@@ -519,7 +530,7 @@ class InfNet(object):
             layer.b.set_value(b_vec.astype(theano.config.floatX))
         return
 
-    def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None):
+    def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None, Xq=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
@@ -527,7 +538,7 @@ class InfNet(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
+        clone_net = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xq=Xq, \
                 prior_sigma=self.prior_sigma, params=self.params, \
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
