@@ -23,10 +23,10 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-RESULT_PATH = "TFD_WALKOUT_TEST_KLD/"
+#RESULT_PATH = "TFD_WALKOUT_TEST_KLD/"
 #RESULT_PATH = "TFD_WALKOUT_TEST_VAE/"
-#RESULT_PATH = "TFD_WALKOUT_TEST_DRP/"
-PRIOR_DIM = 100
+RESULT_PATH = "TFD_WALKOUT_TEST_DRP/"
+PRIOR_DIM = 64
 
 #####################################
 # HELPER FUNCTIONS FOR DATA MASKING #
@@ -65,7 +65,7 @@ def posterior_klds(IN, Xtr, batch_size, batch_count):
     for i in range(batch_count):
         batch_idx = npr.randint(low=0, high=Xtr.shape[0], size=(batch_size,))
         X = Xtr.take(batch_idx, axis=0)
-        post_klds.extend([k for k in IN.kld_func(X, 0.0*X, 0.0*X)])
+        post_klds.extend([k for k in IN.kld_func(X)])
     return post_klds
 
 
@@ -75,7 +75,7 @@ def posterior_klds(IN, Xtr, batch_size, batch_count):
 ####################################
 ####################################
 
-def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
+def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     # Initialize a source of randomness
     rng = np.random.RandomState(1234)
 
@@ -90,7 +90,7 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     Xva = dataset[0]
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 200
+    batch_size = 300
     batch_reps = 5
 
     # setup some symbolic variables and stuff
@@ -111,11 +111,11 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     gn_params['out_type'] = 'gaussian'
     gn_params['mean_transform'] = 'sigmoid'
     gn_params['logvar_type'] = 'single_shared'
-    gn_params['init_scale'] = 1.2
+    gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
-    gn_params['bias_noise'] = 0.2
+    gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
     shared_config = [data_dim, 2000, 2000]
@@ -124,15 +124,15 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.2
+    in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.0
-    in_params['bias_noise'] = 0.2
+    in_params['hid_drop'] = 0.5
+    in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     in_params['kld2_scale'] = kld2_scale
     # Initialize the base networks for this GIPair
-    IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
+    IN = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=in_params, shared_param_dicts=None)
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
             params=gn_params, shared_param_dicts=None)
@@ -149,7 +149,7 @@ def pretrain_gip_dropless(extra_lam_kld=0.0, kld2_scale=0.0):
     # gn_fname = "TMS_RESULTS_DROPLESS/pt_params_b50000_GN.pkl"
     # in_fname = "TMS_RESULTS_DROPLESS/pt_params_b50000_IN.pkl"
     # IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, \
-    #         Xc=Xc, Xm=Xm, new_params=new_in_params)
+    #         new_params=new_in_params)
     # GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp, \
     #         new_params=new_gn_params)
     # in_params = IN.params
@@ -292,7 +292,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
     data_dim = Xtr.shape[1]
-    batch_size = 200
+    batch_size = 300
     batch_reps = 5
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
@@ -335,7 +335,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         #######################################################
         gn_fname = RESULT_PATH+"pt_gip_params_b150000_GN.pkl"
         in_fname = RESULT_PATH+"pt_gip_params_b150000_IN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
         ###########################################################
@@ -344,7 +344,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         gn_fname = RESULT_PATH+"pt_walk_params_GN.pkl"
         in_fname = RESULT_PATH+"pt_walk_params_IN.pkl"
         dn_fname = RESULT_PATH+"pt_walk_params_DN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
         DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
 
@@ -373,7 +373,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0):
         ########################################
         VCGL.set_all_sgd_params(learn_rate=(scale*learn_rate), \
                 mom_1=0.9, mom_2=0.999)
-        VCGL.set_disc_weights(dweight_gn=40.0, dweight_dn=20.0)
+        VCGL.set_disc_weights(dweight_gn=50.0, dweight_dn=50.0)
         VCGL.set_lam_chain_nll(1.0)
         VCGL.set_lam_chain_kld(1.0 + extra_lam_kld)
         VCGL.set_lam_chain_vel(0.0)
@@ -519,7 +519,7 @@ def train_recon_from_pretrained_gip(extra_lam_kld=0.0):
         #######################################################
         gn_fname = RESULT_PATH+"pt_gip_params_b120000_GN.pkl"
         in_fname = RESULT_PATH+"pt_gip_params_b120000_IN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
         ###########################################################
@@ -528,7 +528,7 @@ def train_recon_from_pretrained_gip(extra_lam_kld=0.0):
         gn_fname = RESULT_PATH+"pt_walk_params_GN.pkl"
         in_fname = RESULT_PATH+"pt_walk_params_IN.pkl"
         dn_fname = RESULT_PATH+"pt_walk_params_DN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
         DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
 
@@ -648,14 +648,14 @@ def train_recon_from_pretrained_gip(extra_lam_kld=0.0):
 
 if __name__=="__main__":
     # FOR DROPPY MODEL
-	# pretrain_gip_droppy(extra_lam_kld=1.0, kld2_scale=0.1)
-	# train_walk_from_pretrained_gip(extra_lam_kld=1.0)
+	pretrain_gip(extra_lam_kld=3.0, kld2_scale=0.05)
+	train_walk_from_pretrained_gip(extra_lam_kld=3.0)
 
     # FOR KLD MODEL
-    #pretrain_gip_dropless(extra_lam_kld=2.0, kld2_scale=0.1)
-    #train_walk_from_pretrained_gip(extra_lam_kld=2.0)
-    train_recon_from_pretrained_gip(extra_lam_kld=2.0)
+    # pretrain_gip(extra_lam_kld=4.0, kld2_scale=0.1)
+    # train_walk_from_pretrained_gip(extra_lam_kld=4.0)
+    # train_recon_from_pretrained_gip(extra_lam_kld=4.0)
 
     # FOR VAE MODEL
-    # pretrain_gip_dropless(extra_lam_kld=5.0, kld2_scale=0.1)
-    # train_walk_from_pretrained_gip(extra_lam_kld=3.0)
+    # pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0)
+    # train_walk_from_pretrained_gip(extra_lam_kld=0.0)

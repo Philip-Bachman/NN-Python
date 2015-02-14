@@ -16,7 +16,8 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, safe_log, softplus_actfun
+from NetLayers import HiddenLayer, DiscLayer, safe_log, softplus_actfun, \
+                      apply_mask
 from DKCode import get_adam_updates, get_adadelta_updates
 from GIPair import GIPair
 
@@ -236,13 +237,13 @@ class VCGLoop(object):
         for i in range(self.chain_len):
             if (i == 0):
                 # start the chain with data provided by user
-                _IN = self.IN.shared_param_clone(rng=rng, Xd=_Xd, \
-                        Xc=self.Xc, Xm=self.Xm)
+                _IN = self.IN.shared_param_clone(rng=rng, \
+                        Xd=apply_mask(Xd=_Xd, Xc=self.Xc, Xm=self.Xm))
                 _GN = self.GN.shared_param_clone(rng=rng, Xp=_IN.output)
             else:
                 # continue the chain with samples from previous VAE
-                _IN = self.IN.shared_param_clone(rng=rng, Xd=_Xd, \
-                        Xc=self.Xc, Xm=self.Xm)
+                _IN = self.IN.shared_param_clone(rng=rng, \
+                        Xd=apply_mask(Xd=_Xd, Xc=self.Xc, Xm=self.Xm))
                 _GN = self.GN.shared_param_clone(rng=rng, Xp=_IN.output)
             if self.use_encoder:
                 # use the "decoded" output of the previous generator as input
@@ -668,7 +669,7 @@ class VCGLoop(object):
             if self.use_encoder:
                 # compare encoded output of the generator to the encoded
                 # representation of control input to the inferencer
-                c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xc_encoded)) / obs_count
+                c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd_encoded)) / obs_count
             else:
                 # compare encoded output of the generator to the unencoded
                 # control input to the inferencer, but only measure NLL for

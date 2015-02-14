@@ -146,7 +146,7 @@ def posterior_klds(IN, Xtr, batch_size, batch_count):
     for i in range(batch_count):
         batch_idx = npr.randint(low=0, high=Xtr.shape[0], size=(batch_size,))
         X = Xtr.take(batch_idx, axis=0)
-        post_klds.extend([k for k in IN.kld_func(X, 0.0*X, 0.0*X)])
+        post_klds.extend([k for k in IN.kld_func(X)])
     return post_klds
 
 #############################
@@ -204,7 +204,7 @@ def check_mnist_walkout():
             #############################################################
             gn_fname = KLD_PATH + "pt_{0:s}_params_b{1:d}_GN.pkl".format(net_type, b)
             in_fname = KLD_PATH + "pt_{0:s}_params_b{1:d}_IN.pkl".format(net_type, b)
-            IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+            IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
             GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
             IN.set_sigma_scale(1.0)
             prior_dim = GN.latent_dim
@@ -232,7 +232,7 @@ def check_mnist_walkout():
             ################################################################
             gn_fname = VAE_PATH + "pt_{0:s}_params_b{1:d}_GN.pkl".format(net_type, b)
             in_fname = VAE_PATH + "pt_{0:s}_params_b{1:d}_IN.pkl".format(net_type, b)
-            IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+            IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
             GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
             IN.set_sigma_scale(1.0)
             prior_dim = GN.latent_dim
@@ -315,7 +315,7 @@ def check_mnist_recon():
     #############################################################
     gn_fname = KLD_PATH + "pt_walk_params_b120000_GN.pkl"
     in_fname = KLD_PATH + "pt_walk_params_b120000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     IN.set_sigma_scale(1.0)
     prior_dim = GN.latent_dim
@@ -328,7 +328,7 @@ def check_mnist_recon():
     ################################################################
     gn_fname = VAE_PATH + "pt_walk_params_b120000_GN.pkl"
     in_fname = VAE_PATH + "pt_walk_params_b120000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     IN.set_sigma_scale(1.0)
     prior_dim = GN.latent_dim
@@ -461,7 +461,7 @@ def check_tfd_walkout():
             #############################################################
             gn_fname = KLD_PATH + "pt_{0:s}_params_b{1:d}_GN.pkl".format(net_type, b)
             in_fname = KLD_PATH + "pt_{0:s}_params_b{1:d}_IN.pkl".format(net_type, b)
-            IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+            IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
             GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
             IN.set_sigma_scale(1.0)
             prior_dim = GN.latent_dim
@@ -489,7 +489,7 @@ def check_tfd_walkout():
             ################################################################
             gn_fname = VAE_PATH + "pt_{0:s}_params_b{1:d}_GN.pkl".format(net_type, b)
             in_fname = VAE_PATH + "pt_{0:s}_params_b{1:d}_IN.pkl".format(net_type, b)
-            IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+            IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
             GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
             IN.set_sigma_scale(1.0)
             prior_dim = GN.latent_dim
@@ -574,7 +574,7 @@ def check_tfd_recon():
     #############################################################
     gn_fname = KLD_PATH + "pt_recon_params_b180000_GN.pkl"
     in_fname = KLD_PATH + "pt_recon_params_b180000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     IN.set_sigma_scale(1.0)
     prior_dim = GN.latent_dim
@@ -587,7 +587,7 @@ def check_tfd_recon():
     ################################################################
     gn_fname = VAE_PATH + "pt_walk_params_b50000_GN.pkl"
     in_fname = VAE_PATH + "pt_walk_params_b50000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     IN.set_sigma_scale(1.0)
     prior_dim = GN.latent_dim

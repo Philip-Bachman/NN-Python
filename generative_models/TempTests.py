@@ -147,7 +147,7 @@ def test_gip2_mnist_60k():
     # Load the bottom inferencer and generator from disk
     gn_fname = "MMS_RESULTS_32D/pt60k_walk_params_b300000_GN.pkl"
     in_fname = "MMS_RESULTS_32D/pt60k_walk_params_b300000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
 
     # choose some parameters for the top generator network
@@ -292,7 +292,7 @@ def test_gip_sigma_scale_mnist():
     datasets = load_udm(dataset, zero_mean=False)
     Xtr = datasets[0][0]
     Xtr = Xtr.get_value(borrow=False)
-    Xva = datasets[1][0]
+    Xva = datasets[2][0]
     Xva = Xva.get_value(borrow=False)
     print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
 
@@ -300,7 +300,7 @@ def test_gip_sigma_scale_mnist():
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
     batch_size = 100
-    prior_dim = 64
+    prior_dim = 32
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
@@ -314,9 +314,9 @@ def test_gip_sigma_scale_mnist():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MNIST_WALKOUT_TEST_BIN/pt_walk_params_b170000_GN.pkl"
-    in_fname = "MNIST_WALKOUT_TEST_BIN/pt_walk_params_b170000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    gn_fname = "MNIST_WALKOUT_TEST_DRP_32D/pt_gip_params_b80000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_DRP_32D/pt_gip_params_b80000_IN.pkl"
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     # construct a GIPair with the loaded InfNet and GenNet
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
@@ -334,8 +334,8 @@ def test_gip_sigma_scale_mnist():
     for i in range(10):
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        sample_lists = GIP.sample_from_chain(Xd_batch[0:10,:], loop_iters=400, \
-                sigma_scale=1.2)
+        sample_lists = GIP.sample_from_chain(Xd_batch[0:30,:], loop_iters=150, \
+                sigma_scale=1.0)
         Xs = group_chains(sample_lists['data samples'])
         to_video(Xs, (28,28), "A_CHAIN_VIDEO_{0:d}.avi".format(i), frame_rate=25)
         #Xs = sample_lists['data samples']
@@ -349,7 +349,7 @@ def test_gip_sigma_scale_mnist():
     utils.visualize_samples(Xs, file_name, num_rows=32)
     # test Parzen density estimator built from prior samples
     Xs = GIP.sample_from_prior(10000, sigma=1.0)
-    cross_validate_sigma(Xs, Xva, [0.1, 0.13, 0.15, 0.18, 0.2], 50)
+    cross_validate_sigma(Xs, Xva, [0.1, 0.12, 0.14, 0.15, 0.16, 0.17, 0.18, 0.2], 50)
     return
 
 def test_gip_sigma_scale_tfd():
@@ -388,7 +388,7 @@ def test_gip_sigma_scale_tfd():
     # Load inferencer and generator from saved parameters
     gn_fname = "TFD_WALKOUT_TEST_KLD/pt_walk_params_b50000_GN.pkl"
     in_fname = "TFD_WALKOUT_TEST_KLD/pt_walk_params_b50000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     prior_dim = GN.latent_dim
     prior_sigma = GN.prior_sigma

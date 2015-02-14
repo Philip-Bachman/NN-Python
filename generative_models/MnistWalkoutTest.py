@@ -28,9 +28,10 @@ sys.setrecursionlimit(10**6)
 #RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_BIN/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
+RESULT_PATH = "MNIST_WALKOUT_TEST_DRP_32D/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_DRP_KLD/"
-RESULT_PATH = "MNIST_WALKOUT_TEST_DRP_VAE/"
-PRIOR_DIM = 100
+#RESULT_PATH = "MNIST_WALKOUT_TEST_DRP_VAE/"
+PRIOR_DIM = 32
 
 #####################################
 # HELPER FUNCTIONS FOR DATA MASKING #
@@ -69,7 +70,7 @@ def posterior_klds(IN, Xtr, batch_size, batch_count):
     for i in range(batch_count):
         batch_idx = npr.randint(low=0, high=Xtr.shape[0], size=(batch_size,))
         X = Xtr.take(batch_idx, axis=0)
-        post_klds.extend([k for k in IN.kld_func(X, 0.0*X, 0.0*X)])
+        post_klds.extend([k for k in IN.kld_func(X)])
     return post_klds
 
 ######################################
@@ -90,7 +91,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 400
+    batch_size = 300
     batch_reps = 5
 
     # Construct a GenNet and an InfNet, then test constructor for GIPair.
@@ -103,26 +104,26 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     prior_sigma = 1.0
     # Choose some parameters for the generator network
     gn_params = {}
-    gn_config = [PRIOR_DIM, 1600, 1600, data_dim]
+    gn_config = [PRIOR_DIM, 1000, 1000, data_dim]
     gn_params['mlp_config'] = gn_config
     gn_params['activation'] = relu_actfun
     gn_params['out_type'] = 'gaussian'
     gn_params['mean_transform'] = 'sigmoid'
     gn_params['logvar_type'] = 'single_shared'
-    gn_params['init_scale'] = 1.2
+    gn_params['init_scale'] = 1.0
     gn_params['lam_l2a'] = 1e-2
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
     gn_params['bias_noise'] = 0.1
     # choose some parameters for the continuous inferencer
     in_params = {}
-    shared_config = [data_dim, 1600, 1600]
+    shared_config = [data_dim, 1000, 1000]
     top_config = [shared_config[-1], PRIOR_DIM]
     in_params['shared_config'] = shared_config
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.2
+    in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
     in_params['hid_drop'] = 0.5
@@ -130,7 +131,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     in_params['input_noise'] = 0.0
     in_params['kld2_scale'] = kld2_scale
     # Initialize the base networks for this GIPair
-    IN = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, prior_sigma=prior_sigma, \
+    IN = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=in_params, shared_param_dicts=None)
     GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
             params=gn_params, shared_param_dicts=None)
@@ -178,7 +179,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.0003
-    for i in range(250000):
+    for i in range(220000):
         scale = min(1.0, float(i) / 30000.0)
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
@@ -268,7 +269,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0, chain_type='walkout'):
     # get and set some basic dataset information
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
-    batch_size = 400
+    batch_size = 300
     batch_reps = 5
     prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
@@ -309,9 +310,9 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0, chain_type='walkout'):
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt_gip_params_b150000_GN.pkl"
-        in_fname = RESULT_PATH+"pt_gip_params_b150000_IN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        gn_fname = RESULT_PATH+"pt_gip_params_b80000_GN.pkl"
+        in_fname = RESULT_PATH+"pt_gip_params_b80000_IN.pkl"
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
         ###########################################################
@@ -320,7 +321,7 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0, chain_type='walkout'):
         gn_fname = RESULT_PATH+"pt_walk_params_GN.pkl"
         in_fname = RESULT_PATH+"pt_walk_params_IN.pkl"
         dn_fname = RESULT_PATH+"pt_walk_params_DN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
         DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
 
@@ -493,7 +494,7 @@ def train_recon_from_pretrained_gip(extra_lam_kld=3.0):
         #######################################################
         gn_fname = RESULT_PATH+"pt_gip_params_b100000_GN.pkl"
         in_fname = RESULT_PATH+"pt_gip_params_b100000_IN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
         ###########################################################
@@ -502,7 +503,7 @@ def train_recon_from_pretrained_gip(extra_lam_kld=3.0):
         gn_fname = RESULT_PATH+"pt_walk_params_GN.pkl"
         in_fname = RESULT_PATH+"pt_walk_params_IN.pkl"
         dn_fname = RESULT_PATH+"pt_walk_params_DN.pkl"
-        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+        IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
         DN = PNet.load_peanet_from_file(f_name=dn_fname, rng=rng, Xd=Xd)
 
@@ -630,12 +631,12 @@ if __name__=="__main__":
     #train_recon_from_pretrained_gip(extra_lam_kld=3.0)
 
     # Test with dropout and added KLd regularization
-    #pretrain_gip(extra_lam_kld=1.0, kld2_scale=0.1)
-    #train_walk_from_pretrained_gip(extra_lam_kld=1.0, chain_type='walkout')
+    pretrain_gip(extra_lam_kld=3.0, kld2_scale=0.05)
+    train_walk_from_pretrained_gip(extra_lam_kld=3.0, chain_type='walkout')
 
     # Test with regular VAE settings
-    pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0)
-    train_walk_from_pretrained_gip(extra_lam_kld=0.0, chain_type='walkout')
+    #pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0)
+    #train_walk_from_pretrained_gip(extra_lam_kld=0.0, chain_type='walkout')
 
     # Test with bernoulli output distribution
     #pretrain_gip(extra_lam_kld=-0.2, kld2_scale=0.1)

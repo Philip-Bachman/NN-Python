@@ -46,10 +46,8 @@ class InfNet(object):
 
     Parameters:
         rng: a numpy.random RandomState object
-        Xd: symbolic input matrix for inputting observable data
-        Xc: symbolic input matrix for inputting control data
-        Xm: symbolic input matrix for a mask on which values to take
-                    from Xc and which to take from Xd
+        Xd: symbolic input matrix for type 1 inputs
+        Xq: symbolic input matrix for optional type 2 inputs
         prior_sigma: standard deviation of isotropic Gaussian prior that our
                      inferred posteriors will be penalized for deviating from.
         params: a dict of parameters describing the desired network:
@@ -72,8 +70,6 @@ class InfNet(object):
     def __init__(self, \
             rng=None, \
             Xd=None, \
-            Xc=None, \
-            Xm=None, \
             Xq=None, \
             prior_sigma=None, \
             params=None, \
@@ -82,8 +78,6 @@ class InfNet(object):
         self.rng = RandStream(rng.randint(1000000))
         # Grab the symbolic input matrix
         self.Xd = Xd
-        self.Xc = Xc
-        self.Xm = Xm
         self.Xq = Xq
         self.prior_sigma = prior_sigma
         #####################################################
@@ -115,18 +109,20 @@ class InfNet(object):
             self.encoder = params['encoder']
             self.decoder = params['decoder']
             self.use_encoder = True
-            self.Xc_encoded = self.encoder(self.Xc)
             self.Xd_encoded = self.encoder(self.Xd)
         else:
             self.encoder = lambda x: x
             self.decoder = lambda x: x
             self.use_encoder = False
-            self.Xc_encoded = self.encoder(self.Xc)
             self.Xd_encoded = self.encoder(self.Xd)
         if 'kld2_scale' in params:
             self.kld2_scale = params['kld2_scale']
         else:
             self.kld2_scale = 0.0
+        if 'sigma_init_scale' in params:
+            self.sigma_init_scale = params['sigma_init_scale']
+        else:
+            self.sigma_init_scale = 1.0
         if 'Xq_type' in params:
             # check how we will be using Xq.
             assert((params['Xq_type'] == 'observed bernoulli') or \
@@ -166,15 +162,11 @@ class InfNet(object):
         self.shared_layers = []
         layer_def_pairs = zip(self.shared_config[:-1],self.shared_config[1:])
         layer_num = 0
-        # Construct input by combining data input and control input, taking
-        # unmasked values from data input and others from the control input
-        # I.e., when Xm[i] == 1 use Xc[i] and when Xm[i] == 0 use Xd[i].
-        masked_input = ((1.0 - self.Xm) * self.Xd) + \
-                (self.Xm * self.Xc)
+        # Construct input to the inference network
         if self.use_encoder:
-            next_input = self.encoder(masked_input)
+            next_input = self.encoder(self.Xd)
         else:
-            next_input = masked_input
+            next_input = self.Xd
         for in_def, out_def in layer_def_pairs:
             first_layer = (layer_num == 0)
             last_layer = (layer_num == (len(layer_def_pairs) - 1))
@@ -393,7 +385,8 @@ class InfNet(object):
         # of the final layers of its mu and sigma networks.
         self.output_mean = self.mu_layers[-1].noisy_linear
         self.output_logvar = self.sigma_layers[-1].noisy_linear
-        self.output_sigma = self.sigma_scale[0] * T.exp(0.5 * self.output_logvar)
+        self.output_sigma = self.sigma_init_scale * self.sigma_scale[0] * \
+                T.exp(0.5 * self.output_logvar)
 
         # We'll also construct an output containing a single samples from each
         # of the distributions represented by the rows of self.output_mean and
@@ -413,7 +406,7 @@ class InfNet(object):
         # posteriors inferred by this model for some collection of points
         # in the "data space".
         self.sample_posterior = self._construct_sample_posterior()
-        self.mean_posterior = theano.function([self.Xd, self.Xc, self.Xm], \
+        self.mean_posterior = theano.function([self.Xd], \
                 outputs=self.output_mean)
 
         ########################################################
@@ -500,7 +493,7 @@ class InfNet(object):
         Construct a sampler that draws a single sample from the inferred
         posterior for some set of inputs.
         """
-        psample = theano.function([self.Xd, self.Xc, self.Xm], \
+        psample = theano.function([self.Xd], \
                 outputs=self.output)
         return psample
 
@@ -508,7 +501,7 @@ class InfNet(object):
         """
         Construct a function for computing posterior KLds for some inputs.
         """
-        kd_func = theano.function([self.Xd, self.Xc, self.Xm], \
+        kd_func = theano.function([self.Xd], \
                 outputs=self.kld_cost)
         return kd_func
 
@@ -530,7 +523,7 @@ class InfNet(object):
             layer.b.set_value(b_vec.astype(theano.config.floatX))
         return
 
-    def shared_param_clone(self, rng=None, Xd=None, Xc=None, Xm=None, Xq=None):
+    def shared_param_clone(self, rng=None, Xd=None, Xq=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
@@ -538,7 +531,7 @@ class InfNet(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xq=Xq, \
+        clone_net = InfNet(rng=rng, Xd=Xd, Xq=Xq, \
                 prior_sigma=self.prior_sigma, params=self.params, \
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
@@ -570,7 +563,7 @@ class InfNet(object):
         f_handle.close()
         return
 
-def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None, \
+def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xq=None, \
                           new_params=None):
     """
     Load a clone of some previously trained model.
@@ -592,7 +585,7 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xc=None, Xm=None, \
                 shared_dict[key] = theano.shared(val)
             self_dot_shared_param_dicts[layer_group].append(shared_dict)
     # now, create a PeaNet with the configuration we just unpickled
-    clone_net = InfNet(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
+    clone_net = InfNet(rng=rng, Xd=Xd, Xq=Xq, \
             prior_sigma=self_dot_prior_sigma, params=self_dot_params, \
             shared_param_dicts=self_dot_shared_param_dicts)
     # helpful output

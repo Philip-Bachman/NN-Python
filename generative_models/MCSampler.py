@@ -15,6 +15,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from GIPair import GIPair
+from NetLayers import apply_mask
 
 
 class MCSampler(object):
@@ -68,14 +69,14 @@ class MCSampler(object):
         _Xd = self.Xd
         for i in range(self.chain_len):
             if (i == 0):
-                # start the chain with data provided by user
-                _IN = self.IN.shared_param_clone(rng=rng, Xd=_Xd, \
-                        Xc=self.Xc, Xm=self.Xm)
+                # start the chain with data provided by used
+                _IN = self.IN.shared_param_clone(rng=rng, \
+                        Xd=apply_mask(Xd=_Xd, Xc=self.Xc, Xm=self.Xm))
                 _GN = self.GN.shared_param_clone(rng=rng, Xp=_IN.output)
             else:
                 # continue the chain with samples from previous VAE
-                _IN = self.IN.shared_param_clone(rng=rng, Xd=_Xd, \
-                        Xc=self.Xc, Xm=self.Xm)
+                _IN = self.IN.shared_param_clone(rng=rng, \
+                        Xd=apply_mask(Xd=_Xd, Xc=self.Xc, Xm=self.Xm))
                 _GN = self.GN.shared_param_clone(rng=rng, Xp=_IN.output)
             if self.use_encoder:
                 # use the "decoded" output of the previous generator as input
@@ -156,11 +157,11 @@ if __name__=="__main__":
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_GN.pkl"
-    in_fname = "MNIST_WALKOUT_TEST_KLD/pt_walk_params_b120000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+    gn_fname = "MNIST_WALKOUT_TEST_BIN/pt_walk_params_b150000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_BIN/pt_walk_params_b150000_IN.pkl"
+    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
-    IN.set_sigma_scale(1.5)
+    IN.set_sigma_scale(1.25)
     prior_dim = GN.latent_dim
 
     MCS = MCSampler(rng=rng, Xd=Xd, i_net=IN, g_net=GN, chain_len=9, \

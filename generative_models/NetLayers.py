@@ -120,6 +120,13 @@ def safe_log(x):
     safe_log_x = T.log(x + 1e-8)
     return safe_log_x
 
+def apply_mask(Xd=None, Xc=None, Xm=None):
+    """
+    Apply a mask, like in the old days.
+    """
+    X_masked = ((1.0 - Xm) * Xd) + (Xm * Xc)
+    return X_masked
+
 ######################################
 # BASIC FULLY-CONNECTED HIDDEN LAYER #
 ######################################

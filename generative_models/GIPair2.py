@@ -15,7 +15,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      safe_log
+                      safe_log, apply_mask
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
@@ -83,7 +83,7 @@ class GIPair2(object):
         # create a "shared-parameter" clone of the inferencer, set up to
         # receive input from the appropriate symbolic variables.
         self.IN = i_net.shared_param_clone(rng=rng, \
-                Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
+                Xd=apply_mask(Xd=self.Xd, Xc=self.Xc, Xm=self.Xm))
         self.posterior_means = self.IN.output_mean
         self.posterior_sigmas = self.IN.output_sigma
         self.posterior_norms = T.sqrt(T.sum(self.posterior_means**2.0, axis=1, keepdims=1))
@@ -100,8 +100,8 @@ class GIPair2(object):
         # construct a second GIPair stacked on top of the first GIPair, which
         # learns to model the posterior samples emitted by the inferencer in
         # the first GIPair
-        self.IN2 = i_net_2.shared_param_clone(rng=rng, \
-                Xd=self.Xp, Xc=T.zeros_like(self.Xp), Xm=T.zeros_like(self.Xp))
+        self.IN2 = i_net_2.shared_param_clone(rng=rng, Xd=apply_mask(Xd=self.Xp, \
+                Xc=T.zeros_like(self.Xp), Xm=T.zeros_like(self.Xp)))
         # capture a handle for samples from the top's variational posterior
         self.Xp2 = self.IN2.output
         # feed these variational posterior samples into the top's generator
@@ -139,7 +139,6 @@ class GIPair2(object):
             # referring to the given param dict (i.e. shared_param_dicts).
             self.shared_param_dicts = shared_param_dicts
             self.is_clone = True
-
         if not self.is_clone:
             # shared var learning rate for generator and inferencer
             zero_ary = np.zeros((1,)).astype(theano.config.floatX)
@@ -465,12 +464,10 @@ class GIPair2(object):
         #func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
         #        outputs=outputs, \
         #        updates=self.top_updates)
-        func = theano.function(inputs=[ Xd, Xc, Xm ], \
+        func = theano.function(inputs=[ Xd ], \
                 outputs=outputs, \
                 updates=self.top_updates, \
-                givens={ self.IN2.Xd: Xd, \
-                         self.IN2.Xc: Xc, \
-                         self.IN2.Xm: Xm })
+                givens={ self.IN2.Xd: Xd })
         return func
 
     def _construct_compute_costs(self):

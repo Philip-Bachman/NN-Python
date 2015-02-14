@@ -15,7 +15,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      safe_log
+                      safe_log, apply_mask
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
@@ -78,7 +78,7 @@ class GIPair(object):
         # create a "shared-parameter" clone of the inferencer, set up to
         # receive input from the appropriate symbolic variables.
         self.IN = i_net.shared_param_clone(rng=rng, \
-                Xd=self.Xd, Xc=self.Xc, Xm=self.Xm)
+                Xd=apply_mask(self.Xd, self.Xc, self.Xm))
         self.posterior_means = self.IN.output_mean
         self.posterior_sigmas = self.IN.output_sigma
         self.posterior_norms = T.sqrt(T.sum(self.posterior_means**2.0, axis=1, keepdims=1))
@@ -374,11 +374,11 @@ class GIPair(object):
         self.IN.set_sigma_scale(sigma_scale)
         for i in range(loop_iters):
             # apply mask, mixing foreground and background data
-            X_d = ((1.0 - X_m) * X_d) + (X_m * X_c)
+            X_d = apply_mask(Xd=X_d, Xc=X_c, Xm=X_m)
             # record the data samples for this iteration
             data_samples.append(1.0 * X_d)
             # sample from their inferred posteriors
-            X_p = self.IN.sample_posterior(X_d, X_c, X_m)
+            X_p = self.IN.sample_posterior(X_d)
             # record the sampled points (in the "prior space")
             prior_samples.append(1.0 * X_p)
             # get next data samples by transforming the prior-space points

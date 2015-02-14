@@ -76,7 +76,7 @@ def manifold_walk_regularization():
 	    # Load inferencer and generator from saved parameters
 	    gn_fname = "MNIST_WALKOUT_TEST_BIN/pt_walk_params_b150000_GN.pkl"
 	    in_fname = "MNIST_WALKOUT_TEST_BIN/pt_walk_params_b150000_IN.pkl"
-	    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, Xc=Xc, Xm=Xm)
+	    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
 	    GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
 	    IN.set_sigma_scale(1.3)
 	    prior_dim = GN.latent_dim
