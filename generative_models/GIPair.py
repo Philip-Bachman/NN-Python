@@ -219,6 +219,21 @@ class GIPair(object):
         self.mom_2.set_value(new_mom_2.astype(theano.config.floatX))
         return
 
+    def set_lr(self, lr=0.01, net=None):
+        """
+        Set learning rate for inferencer and/or generator network separately.
+        """
+        assert((net=='IN') or (net=='GN'))
+        zero_ary = np.zeros((1,))
+        new_lr = zero_ary + lr
+        if net == 'IN':
+            # set learning rate for inferencer
+            self.lr_in.set_value(new_lr.astype(theano.config.floatX))
+        else:
+            # set learning rate for generator
+            self.lr_gn.set_value(new_lr.astype(theano.config.floatX))
+        return
+
     def set_lam_nll(self, lam_nll=1.0):
         """
         Set weight for controlling the influence of the data likelihood.
@@ -269,14 +284,16 @@ class GIPair(object):
         def multi_sample_bound(X, sample_count=10):
             post_klds = np.zeros((X.shape[0], 1))
             log_likelihoods = np.zeros((X.shape[0], 1))
+            max_lls = np.zeros((X.shape[0], 1)) - 1e8
             for i in range(sample_count):
                 result = out_func(X)
                 post_klds = post_klds + (1.0 * result[0])
                 log_likelihoods = log_likelihoods + (1.0 * result[1])
+                max_lls = np.maximum(max_lls, (1.0 * result[1]))
             post_klds = post_klds / sample_count
             log_likelihoods = log_likelihoods / sample_count
             ll_bounds = log_likelihoods - post_klds
-            return [ll_bounds, post_klds, log_likelihoods]
+            return [ll_bounds, post_klds, log_likelihoods, max_lls]
         return multi_sample_bound
 
     def _construct_data_nll_cost(self):

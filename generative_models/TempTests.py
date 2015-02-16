@@ -300,8 +300,6 @@ def test_gip_sigma_scale_mnist():
     tr_samples = Xtr.shape[0]
     data_dim = Xtr.shape[1]
     batch_size = 100
-    prior_dim = 32
-    prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
     Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
@@ -314,10 +312,12 @@ def test_gip_sigma_scale_mnist():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MNIST_WALKOUT_TEST_DRP_32D/pt_gip_params_b80000_GN.pkl"
-    in_fname = "MNIST_WALKOUT_TEST_DRP_32D/pt_gip_params_b80000_IN.pkl"
+    gn_fname = "MNIST_WALKOUT_TEST_DRP_32D/pt_gip_params_b200000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_DRP_32D/pt_gip_params_b200000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
+    prior_dim = GN.latent_dim
+    prior_sigma = GN.prior_sigma
     # construct a GIPair with the loaded InfNet and GenNet
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
@@ -326,9 +326,11 @@ def test_gip_sigma_scale_mnist():
     ll_bounds = bound_results[0]
     post_klds = bound_results[1]
     log_likelihoods = bound_results[2]
+    max_lls = bound_results[3]
     print("mean ll bound: {0:.4f}".format(np.mean(ll_bounds)))
     print("mean posterior KLd: {0:.4f}".format(np.mean(post_klds)))
     print("mean log-likelihood: {0:.4f}".format(np.mean(log_likelihoods)))
+    print("mean max log-likelihood: {0:.4f}".format(np.mean(max_lls)))
 
     # draw many samples from the GIP
     for i in range(10):
@@ -386,8 +388,8 @@ def test_gip_sigma_scale_tfd():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "TFD_WALKOUT_TEST_KLD/pt_walk_params_b50000_GN.pkl"
-    in_fname = "TFD_WALKOUT_TEST_KLD/pt_walk_params_b50000_IN.pkl"
+    gn_fname = "TFD_WALKOUT_TEST_DRP/pt_gip_params_b110000_GN.pkl"
+    in_fname = "TFD_WALKOUT_TEST_DRP/pt_gip_params_b110000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     prior_dim = GN.latent_dim
@@ -395,25 +397,36 @@ def test_gip_sigma_scale_tfd():
     # construct a GIPair with the loaded InfNet and GenNet
     GIP = GIPair(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, g_net=GN, i_net=IN, \
             data_dim=data_dim, prior_dim=prior_dim, params=None)
+    # compute variational likelihood bound and its sub-components
+    bound_results = GIP.compute_ll_bound(Xva)
+    ll_bounds = bound_results[0]
+    post_klds = bound_results[1]
+    log_likelihoods = bound_results[2]
+    max_lls = bound_results[3]
+    print("mean ll bound: {0:.4f}".format(np.mean(ll_bounds)))
+    print("mean posterior KLd: {0:.4f}".format(np.mean(post_klds)))
+    print("mean log-likelihood: {0:.4f}".format(np.mean(log_likelihoods)))
+    print("mean max log-likelihood: {0:.4f}".format(np.mean(max_lls)))
+
     # draw many samples from the GIP
     for i in range(10):
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        sample_lists = GIP.sample_from_chain(Xd_batch[0:20,:], loop_iters=100, \
-                sigma_scale=0.5)
+        sample_lists = GIP.sample_from_chain(Xd_batch[0:20,:], loop_iters=50, \
+                sigma_scale=1.0)
         Xs = group_chains(sample_lists['data samples'])
-        to_video(Xs, (48,48), "A_CHAIN_VIDEO_{0:d}.avi".format(i), frame_rate=25)
+        to_video(Xs, (48,48), "A_CHAIN_VIDEO_{0:d}.avi".format(i), frame_rate=10)
         #sample_lists = GIP.sample_from_chain(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=300, \
         #        sigma_scale=1.0)
         #Xs = np.vstack(sample_lists["data samples"])
         #file_name = "TFD_TEST_{0:d}.png".format(i)
         #utils.visualize_samples(Xs, file_name, num_rows=15)
-    file_name = "TFD_TEST_PRIOR.png"
+    file_name = "A_PRIOR_SAMPLE.png"
     Xs = GIP.sample_from_prior(32*32, sigma=1.0)
     utils.visualize_samples(Xs, file_name, num_rows=32)
     # test Parzen density estimator built from prior samples
     Xs = GIP.sample_from_prior(10000, sigma=1.0)
-    cross_validate_sigma(Xs, Xva, [0.08, 0.09, 0.1, 0.11, 0.12, 0.15], 10)
+    cross_validate_sigma(Xs, Xva, [0.09, 0.1, 0.11, 0.12, 0.13], 10)
     return
 
 ###################

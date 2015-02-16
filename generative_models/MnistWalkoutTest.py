@@ -28,9 +28,8 @@ sys.setrecursionlimit(10**6)
 #RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_BIN/"
 #RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
-RESULT_PATH = "MNIST_WALKOUT_TEST_DRP_32D/"
-#RESULT_PATH = "MNIST_WALKOUT_TEST_DRP_KLD/"
-#RESULT_PATH = "MNIST_WALKOUT_TEST_DRP_VAE/"
+#RESULT_PATH = "MNIST_WALKOUT_TEST_DRP_32D/"
+#RESULT_PATH = "MNIST_WALKOUT_TEST_KLD_32D/"
 PRIOR_DIM = 32
 
 #####################################
@@ -126,7 +125,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.5
+    in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     in_params['kld2_scale'] = kld2_scale
@@ -310,8 +309,8 @@ def train_walk_from_pretrained_gip(extra_lam_kld=0.0, chain_type='walkout'):
         #######################################################
         # Load inferencer and generator from saved parameters #
         #######################################################
-        gn_fname = RESULT_PATH+"pt_gip_params_b80000_GN.pkl"
-        in_fname = RESULT_PATH+"pt_gip_params_b80000_IN.pkl"
+        gn_fname = RESULT_PATH+"pt_gip_params_b100000_GN.pkl"
+        in_fname = RESULT_PATH+"pt_gip_params_b100000_IN.pkl"
         IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
         GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     else:
@@ -631,8 +630,12 @@ if __name__=="__main__":
     #train_recon_from_pretrained_gip(extra_lam_kld=3.0)
 
     # Test with dropout and added KLd regularization
-    pretrain_gip(extra_lam_kld=3.0, kld2_scale=0.05)
-    train_walk_from_pretrained_gip(extra_lam_kld=3.0, chain_type='walkout')
+    #pretrain_gip(extra_lam_kld=3.0, kld2_scale=0.1)
+    #train_walk_from_pretrained_gip(extra_lam_kld=3.0, chain_type='walkout')
+
+    # Test with rather excessive KLd regularization
+    pretrain_gip(extra_lam_kld=9.0, kld2_scale=0.1)
+    train_walk_from_pretrained_gip(extra_lam_kld=9.0, chain_type='walkout')
 
     # Test with regular VAE settings
     #pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0)

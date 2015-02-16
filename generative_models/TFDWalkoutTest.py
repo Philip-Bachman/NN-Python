@@ -127,7 +127,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     in_params['init_scale'] = 1.0
     in_params['lam_l2a'] = 1e-2
     in_params['vis_drop'] = 0.2
-    in_params['hid_drop'] = 0.5
+    in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.1
     in_params['input_noise'] = 0.0
     in_params['kld2_scale'] = kld2_scale
@@ -198,7 +198,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.00015
     for i in range(200000):
-        scale = min(1.0, float(i) / 40000.0)
+        scale = min(1.0, float(i) / 50000.0)
         if ((i + 1) % 100000 == 0):
             learn_rate = learn_rate * 0.8
         # do a minibatch update of the model, and compute some costs
@@ -210,6 +210,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
         # do a minibatch update of the model, and compute some costs
         GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
                 lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.999)
+        GIP.set_lr(lr=(2.0*scale*learn_rate), net='IN')
         GIP.set_lam_nll(1.0)
         GIP.set_lam_kld(1.0 + extra_lam_kld*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
@@ -648,8 +649,8 @@ def train_recon_from_pretrained_gip(extra_lam_kld=0.0):
 
 if __name__=="__main__":
     # FOR DROPPY MODEL
-	pretrain_gip(extra_lam_kld=3.0, kld2_scale=0.05)
-	train_walk_from_pretrained_gip(extra_lam_kld=3.0)
+	pretrain_gip(extra_lam_kld=9.0, kld2_scale=0.1)
+	train_walk_from_pretrained_gip(extra_lam_kld=9.0)
 
     # FOR KLD MODEL
     # pretrain_gip(extra_lam_kld=4.0, kld2_scale=0.1)

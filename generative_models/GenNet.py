@@ -45,7 +45,7 @@ class GenNet(object):
     Parameters:
         rng: a numpy.random RandomState object
         Xp: symbolic matrix for inputting type 1 latent variable samples
-        Xq: symbolic matrix for inputting type 1 latent variable samples
+        Xq: symbolic matrix for inputting type 2 latent variable samples
         prior_sigma: standard deviation of isotropic Gaussian prior that this
                      generator will transform to match some other distribution
         params: a dict of parameters describing the desired network:
