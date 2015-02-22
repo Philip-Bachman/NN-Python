@@ -43,7 +43,7 @@ def log_prob_bernoulli(p_true, p_approx, mask=None):
     compute joint log probabilities over row-wise groups.
     """
     if mask is None:
-        mask = T.ones((1, mu_approx.shape[1]))
+        mask = T.ones((1, p_approx.shape[1]))
     log_prob_1 = p_true * safe_log(p_approx)
     log_prob_0 = (1.0 - p_true) * safe_log(1.0 - p_approx)
     log_prob_01 = log_prob_1 + log_prob_0
@@ -77,6 +77,18 @@ def log_prob_gaussian2(mu_true, mu_approx, log_vars=1.0, mask=None):
             ((mu_true - mu_approx)**2.0 / (2.0 * T.exp(log_vars)))
     row_log_probs = T.sum((ind_log_probs * mask), axis=1, keepdims=True)
     return row_log_probs
+
+def gaussian_kld(mu_left, logvar_left, mu_right, logvar_right):
+    """
+    Compute KL divergence between a bunch of univariate Gaussian distributions
+    with the given means and log-variances.
+    We do KL(N(mu_left, logvar_left) || N(mu_right, logvar_right)).
+    """
+    gauss_klds = 0.5 * (logvar_right - logvar_left + \
+            (T.exp(logvar_left) / T.exp(logvar_right)) + \
+            ((mu_left - mu_right)**2.0 / T.exp(logvar_right)) - 1.0)
+    return gauss_klds
+
 
 #################################
 # Log-gamma function for theano #

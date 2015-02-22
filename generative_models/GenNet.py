@@ -44,8 +44,7 @@ class GenNet(object):
 
     Parameters:
         rng: a numpy.random RandomState object
-        Xp: symbolic matrix for inputting type 1 latent variable samples
-        Xq: symbolic matrix for inputting type 2 latent variable samples
+        Xp: symbolic matrix for inputting latent variable samples
         prior_sigma: standard deviation of isotropic Gaussian prior that this
                      generator will transform to match some other distribution
         params: a dict of parameters describing the desired network:
@@ -80,7 +79,6 @@ class GenNet(object):
     def __init__(self, \
             rng=None, \
             Xp=None, \
-            Xq=None, \
             prior_sigma=None, \
             params=None, \
             shared_param_dicts=None):
@@ -89,7 +87,6 @@ class GenNet(object):
 
         # Grab the symbolic input matrix
         self.Xp = Xp
-        self.Xq = Xq
         self.prior_sigma = prior_sigma
         #####################################################
         # Process user-supplied parameters for this network #
@@ -124,15 +121,6 @@ class GenNet(object):
         else:
             # default to bernoulli-valued outputs
             self.out_type = 'bernoulli'
-        if 'Xq_type' in params:
-            # check how we will be using Xq.
-            assert((params['Xq_type'] == 'observed bernoulli') or \
-                    (params['Xq_type'] == 'observed gaussian') or \
-                    (params['Xq_type'] == 'latent'))
-            self.Xq_type = params['Xq_type']
-        else:
-            # default to treating Xq as additional "latent" variables
-            self.Xq_type = 'latent'
         if 'mean_transform' in params:
             trans = params['mean_transform']
             assert((trans == 'sigmoid') or (trans == 'max_normalize'))
@@ -201,11 +189,7 @@ class GenNet(object):
         self.logvar_layer = None
         layer_def_pairs = zip(self.mlp_config[:-1],self.mlp_config[1:])
         layer_num = 0
-        if (self.Xq_type == 'latent') and (not (self.Xq is None)):
-            # only do this if we're sure we should...
-            next_input = T.concatenate([self.Xp, self.Xq], axis=1)
-        else:
-            next_input = self.Xp
+        next_input = self.Xp
         for in_def, out_def in layer_def_pairs:
             first_layer = (layer_num == 0)
             last_layer = (layer_num == (len(layer_def_pairs) - 1))
@@ -242,7 +226,9 @@ class GenNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=i_scale)
                 self.mlp_layers.append(new_layer)
-                self.shared_param_dicts.append({'W': new_layer.W, 'b': new_layer.b})
+                self.shared_param_dicts.append( \
+                        {'W': new_layer.W, 'b': new_layer.b, \
+                         'b_in': new_layer.b_in, 's_in': new_layer.s_in})
                 if (last_layer and (self.out_type != 'bernoulli')):
                     # add an extra layer/transform for encoding log-variance
                     lv_layer = HiddenLayer(rng=rng, input=next_input, \
@@ -252,28 +238,38 @@ class GenNet(object):
                         name=l_name+'_logvar', W_scale=0.1*i_scale)
                     self.logvar_layer = lv_layer
                     self.mlp_layers.append(lv_layer)
-                    self.shared_param_dicts.append({'W': lv_layer.W, 'b': lv_layer.b})
+                    self.shared_param_dicts.append( \
+                            {'W': lv_layer.W, 'b': lv_layer.b, \
+                             'b_in': lv_layer.b_in, 's_in': lv_layer.s_in})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.shared_param_dicts[layer_num]
+                if not (('b_in' in init_params) and ('s_in' in init_params)):
+                    init_params['b_in'] = None
+                    init_params['s_in'] = None
                 self.mlp_layers.append(HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
+                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale))
                 if (last_layer and (self.out_type != 'bernoulli')):
                     # add an extra layer for predicting log-variance.
                     # we'll shrink the init scale for this layer, to avoid
                     # unreasonably small initial predicted logvars.
                     init_params = self.shared_param_dicts[layer_num+1]
+                    if not (('b_in' in init_params) and ('s_in' in init_params)):
+                        init_params['b_in'] = None
+                        init_params['s_in'] = None
                     self.mlp_layers.append(HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
+                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name+'_logvar', W_scale=0.1*i_scale))
             next_input = self.mlp_layers[-1].output
             # Acknowledge layer completion
@@ -312,28 +308,12 @@ class GenNet(object):
         # be used to encourage the induced distribution to match the first and
         # second-order moments of the distribution we are trying to match.
         if self.out_type == 'bernoulli':
-            # get the predicted mean, which may be offset by Xq
-            if (self.Xq_type == 'latent') or (self.Xq is None):
-                # self.Xq shouldn't be incorporated into the output
-                raw_mean = self.mlp_layers[-1].linear_output + self.output_bias
-            else:
-                # self.Xq should be incorporated into the output
-                assert(self.Xq_type == 'observed bernoulli')
-                raw_mean = self.mlp_layers[-1].linear_output + \
-                        self.Xq + self.output_bias
+            raw_mean = self.mlp_layers[-1].linear_output + self.output_bias
             self.output = T.nnet.sigmoid(raw_mean)
             self.output_logvar = 0.0 * self.output
             self.output_sigma = 0.0 * self.output
         else:
-            # get the predicted mean, which may be offset by Xq
-            if (self.Xq_type == 'latent') or (self.Xq is None):
-                # self.Xq shouldn't be incorporated into the output
-                raw_mean = self.mlp_layers[-2].linear_output + self.output_bias
-            else:
-                # self.Xq should be incorporated into the output
-                assert(self.Xq_type == 'observed gaussian')
-                raw_mean = self.mlp_layers[-2].linear_output + \
-                        self.Xq + self.output_bias
+            raw_mean = self.mlp_layers[-2].linear_output + self.output_bias
             # apply a transform (it's just identity if none was given)
             self.output = self.mean_transform(raw_mean)
             # set self.output_logvar based on self.logvar_type
@@ -581,7 +561,7 @@ class GenNet(object):
                     log_vars=self.output_logvar, mask=Xm_inv)
         return log_prob_cost
 
-    def shared_param_clone(self, rng=None, Xp=None, Xq=None):
+    def shared_param_clone(self, rng=None, Xp=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
@@ -589,7 +569,7 @@ class GenNet(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = GenNet(rng=rng, Xp=Xp, Xq=Xq, \
+        clone_net = GenNet(rng=rng, Xp=Xp, \
                 prior_sigma=self.prior_sigma, params=self.params, \
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net

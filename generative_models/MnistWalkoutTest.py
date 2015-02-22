@@ -161,14 +161,10 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
             print("rica batch {0:d}: in_recon={1:.4f}, in_spars={2:.4f}, gn_recon={3:.4f}, gn_spars={4:.4f}".format( \
                     i, 1.*inr_out[1], 1.*inr_out[2], 1.*gnr_out[1], 1.*gnr_out[2]))
                         # draw inference net first layer weights
-    file_name = RESULT_PATH+"pt_inf_weights.png".format(i)
+    file_name = RESULT_PATH+"pt_rica_inf_weights.png".format(i)
     utils.visualize_samples(IN.W_rica.get_value(borrow=False).T, file_name, num_rows=20)
     # draw generator net final layer weights
     file_name = RESULT_PATH+"pt_rica_gen_weights.png".format(i)
-    if ('gaussian' in gn_params['out_type']):
-        lay_num = -2
-    else:
-        lay_num = -1
     utils.visualize_samples(GN.W_rica.get_value(borrow=False), file_name, num_rows=20)
 
     ######################
@@ -222,15 +218,12 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw inference net first layer weights
             file_name = RESULT_PATH+"pt_gip_inf_weights_b{0:d}.png".format(i)
-            utils.visualize_net_layer(GIP.IN.shared_layers[0], file_name)
+            utils.visualize_samples(GIP.IN.W_rica.get_value(borrow=False).T, \
+                    file_name, num_rows=20)
             # draw generator net final layer weights
             file_name = RESULT_PATH+"pt_gip_gen_weights_b{0:d}.png".format(i)
-            if (gn_params['out_type'] == 'gaussian'):
-                lay_num = -2
-            else:
-                lay_num = -1
-            utils.visualize_net_layer(GIP.GN.mlp_layers[lay_num], file_name, \
-                    colorImg=False, use_transpose=True)
+            utils.visualize_samples(GIP.GN.W_rica.get_value(borrow=False), \
+                    file_name, num_rows=20)
             IN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_IN.pkl")
             GN.save_to_file(f_name=RESULT_PATH+"pt_gip_params_GN.pkl")
             #########################

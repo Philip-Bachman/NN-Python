@@ -75,7 +75,7 @@ def PCA_encdec_theano(eigvec, eigval, x_mean, x_sd):
 
 def get_adam_updates(params=None, grads=None, \
         alpha=None, beta1=None, beta2=None, it_count=None, \
-        mom2_init=1e-3, smoothing=1e-8):
+        mom2_init=1e-3, smoothing=1e-6):
     """
     Get the Theano updates to perform ADAM optimization of the shared-var
     parameters in params, given the shaared-var gradients in grads.

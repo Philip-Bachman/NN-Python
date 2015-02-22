@@ -17,6 +17,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
                       softplus_actfun, safe_log
+from LogPDFs import gaussian_kld
 
 ####################################
 # INFREENCE NETWORK IMPLEMENTATION #
@@ -46,8 +47,7 @@ class InfNet(object):
 
     Parameters:
         rng: a numpy.random RandomState object
-        Xd: symbolic input matrix for type 1 inputs
-        Xq: symbolic input matrix for optional type 2 inputs
+        Xd: symbolic input matrix for inputs
         prior_sigma: standard deviation of isotropic Gaussian prior that our
                      inferred posteriors will be penalized for deviating from.
         params: a dict of parameters describing the desired network:
@@ -70,7 +70,6 @@ class InfNet(object):
     def __init__(self, \
             rng=None, \
             Xd=None, \
-            Xq=None, \
             prior_sigma=None, \
             params=None, \
             shared_param_dicts=None):
@@ -78,7 +77,6 @@ class InfNet(object):
         self.rng = RandStream(rng.randint(1000000))
         # Grab the symbolic input matrix
         self.Xd = Xd
-        self.Xq = Xq
         self.prior_sigma = prior_sigma
         #####################################################
         # Process user-supplied parameters for this network #
@@ -123,15 +121,6 @@ class InfNet(object):
             self.sigma_init_scale = params['sigma_init_scale']
         else:
             self.sigma_init_scale = 1.0
-        if 'Xq_type' in params:
-            # check how we will be using Xq.
-            assert((params['Xq_type'] == 'observed bernoulli') or \
-                    (params['Xq_type'] == 'observed gaussian') or \
-                    (params['Xq_type'] == 'latent'))
-            self.Xq_type = params['Xq_type']
-        else:
-            # default to treating Xq as additional "latent" variables
-            self.Xq_type = 'latent'
         # Check if the params for this net were given a priori. This option
         # will be used for creating "clones" of an inference network, with all
         # of the network parameters shared between clones.
@@ -208,17 +197,23 @@ class InfNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
-                self.shared_param_dicts['shared'].append({'W': new_layer.W, 'b': new_layer.b})
+                self.shared_param_dicts['shared'].append( \
+                        {'W': new_layer.W, 'b': new_layer.b, \
+                         'b_in': new_layer.b_in, 's_in': new_layer.s_in})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.shared_param_dicts['shared'][layer_num]
+                if not (('b_in' in init_params) and ('s_in' in init_params)):
+                    init_params['b_in'] = None
+                    init_params['s_in'] = None
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
+                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
             next_input = self.shared_layers[-1].output
@@ -266,17 +261,23 @@ class InfNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
-                self.shared_param_dicts['mu'].append({'W': new_layer.W, 'b': new_layer.b})
+                self.shared_param_dicts['mu'].append( \
+                        {'W': new_layer.W, 'b': new_layer.b, \
+                         'b_in': new_layer.b_in, 's_in': new_layer.s_in})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.shared_param_dicts['mu'][layer_num]
+                if not (('b_in' in init_params) and ('s_in' in init_params)):
+                    init_params['b_in'] = None
+                    init_params['s_in'] = None
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
+                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
             next_input = self.mu_layers[-1].output
@@ -327,17 +328,23 @@ class InfNet(object):
                         in_dim=in_dim, out_dim=out_dim, \
                         name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
-                self.shared_param_dicts['sigma'].append({'W': new_layer.W, 'b': new_layer.b})
+                self.shared_param_dicts['sigma'].append( \
+                        {'W': new_layer.W, 'b': new_layer.b, \
+                         'b_in': new_layer.b_in, 's_in': new_layer.s_in})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.shared_param_dicts['sigma'][layer_num]
+                if not (('b_in' in init_params) and ('s_in' in init_params)):
+                    init_params['b_in'] = None
+                    init_params['s_in'] = None
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
+                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
             next_input = self.sigma_layers[-1].output
@@ -480,11 +487,10 @@ class InfNet(object):
         posterior encoded by self.mu/self.sigma and the isotropic Gaussian
         distribution with mean 0 and standard deviation self.prior_sigma.
         """
-        prior_sigma_sq = self.prior_sigma**2.0
-        prior_log_sigma_sq = np.log(prior_sigma_sq)
-        post_klds = 0.5 * (prior_log_sigma_sq - self.output_logvar + \
-                (T.exp(self.output_logvar) / prior_sigma_sq) + \
-                (self.output_mean**2.0 / prior_sigma_sq) - 1.0)
+        prior_mu = 0.0
+        prior_logvar = np.log(self.prior_sigma**2.0)
+        post_klds = gaussian_kld(self.output_mean, self.output_logvar, \
+                prior_mu, prior_logvar)
         kld_cost = T.sum(post_klds, axis=1, keepdims=True)
         return kld_cost
 
@@ -523,7 +529,7 @@ class InfNet(object):
             layer.b.set_value(b_vec.astype(theano.config.floatX))
         return
 
-    def shared_param_clone(self, rng=None, Xd=None, Xq=None):
+    def shared_param_clone(self, rng=None, Xd=None):
         """
         Return a clone of this network, with shared parameters but with
         different symbolic input variables.
@@ -531,7 +537,7 @@ class InfNet(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = InfNet(rng=rng, Xd=Xd, Xq=Xq, \
+        clone_net = InfNet(rng=rng, Xd=Xd, \
                 prior_sigma=self.prior_sigma, params=self.params, \
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
@@ -563,7 +569,7 @@ class InfNet(object):
         f_handle.close()
         return
 
-def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xq=None, \
+def load_infnet_from_file(f_name=None, rng=None, Xd=None, \
                           new_params=None):
     """
     Load a clone of some previously trained model.
@@ -585,7 +591,7 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, Xq=None, \
                 shared_dict[key] = theano.shared(val)
             self_dot_shared_param_dicts[layer_group].append(shared_dict)
     # now, create a PeaNet with the configuration we just unpickled
-    clone_net = InfNet(rng=rng, Xd=Xd, Xq=Xq, \
+    clone_net = InfNet(rng=rng, Xd=Xd, \
             prior_sigma=self_dot_prior_sigma, params=self_dot_params, \
             shared_param_dicts=self_dot_shared_param_dicts)
     # helpful output

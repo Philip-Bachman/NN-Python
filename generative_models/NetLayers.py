@@ -117,7 +117,7 @@ def safe_log(x):
     """
     Log that doesn't NaN out for reasonably non-negative numbers.
     """
-    safe_log_x = T.log(x + 1e-8)
+    safe_log_x = T.log(x + 1e-10)
     return safe_log_x
 
 def apply_mask(Xd=None, Xc=None, Xm=None):
@@ -135,12 +135,26 @@ class HiddenLayer(object):
     def __init__(self, rng, input, in_dim, out_dim, \
                  activation=None, pool_size=0, \
                  drop_rate=0., input_noise=0., bias_noise=0., \
-                 W=None, b=None, name="", W_scale=1.0):
+                 W=None, b=None, b_in=None, s_in=None,
+                 name="", W_scale=1.0):
 
         # Setup a shared random generator for this layer
         self.rng = RandStream(rng.randint(1000000))
 
-        self.clean_input = input
+        # setup scale and bias params for the input
+        if b_in is None:
+            # input biases are always initialized to zero
+            ary = np.zeros((in_dim,), dtype=theano.config.floatX)
+            b_in = theano.shared(value=ary, name="{0:s}_b_in".format(name))
+        if s_in is None:
+            # input scales are always initialized to one
+            ary = np.ones((in_dim,), dtype=theano.config.floatX)
+            s_in = theano.shared(value=ary, name="{0:s}_s_in".format(name))
+        self.b_in = b_in
+        self.s_in = s_in
+
+        # make a symbolic var for the shifted and scaled input
+        self.clean_input = self.s_in * (input + self.b_in)
 
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         self.input_noise = theano.shared(value=(zero_ary+input_noise), \
@@ -151,8 +165,8 @@ class HiddenLayer(object):
                 name="{0:s}_bias_noise".format(name))
 
         # Add gaussian noise to the input (if desired)
-        self.fuzzy_input = input + (self.input_noise[0] * \
-                self.rng.normal(size=input.shape, avg=0.0, std=1.0, \
+        self.fuzzy_input = self.clean_input + (self.input_noise[0] * \
+                self.rng.normal(size=self.clean_input.shape, avg=0.0, std=1.0, \
                 dtype=theano.config.floatX))
 
         # Apply masking noise to the input (if desired)
@@ -201,12 +215,14 @@ class HiddenLayer(object):
             b_init = np.zeros((self.filt_count,), dtype=theano.config.floatX)
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
 
+
         # Set layer weights and biases
         self.W = W
         self.b = b
 
         # Compute linear "pre-activation" for this layer
-        self.linear_output = 10.0 * T.tanh((T.dot(self.noisy_input, self.W) + self.b) / 10.0)
+        #self.linear_output = 10.0 * T.tanh((T.dot(self.noisy_input, self.W) + self.b) / 10.0)
+        self.linear_output = T.dot(self.noisy_input, self.W) + self.b
 
         # Add noise to the pre-activation features (if desired)
         self.noisy_linear = self.linear_output + (self.bias_noise[0] * \
@@ -224,7 +240,7 @@ class HiddenLayer(object):
                 self.output.shape[1]
 
         # Conveniently package layer parameters
-        self.params = [self.W, self.b]
+        self.params = [self.W, self.b, self.b_in, self.s_in]
         # Layer construction complete...
         return
 
