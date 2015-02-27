@@ -148,13 +148,13 @@ class HiddenLayer(object):
             b_in = theano.shared(value=ary, name="{0:s}_b_in".format(name))
         if s_in is None:
             # input scales are always initialized to one
-            ary = np.ones((in_dim,), dtype=theano.config.floatX)
+            ary = 0.541325 * np.ones((in_dim,), dtype=theano.config.floatX)
             s_in = theano.shared(value=ary, name="{0:s}_s_in".format(name))
         self.b_in = b_in
         self.s_in = s_in
 
         # make a symbolic var for the shifted and scaled input
-        self.clean_input = self.s_in * (input + self.b_in)
+        self.clean_input = T.nnet.softplus(self.s_in) * (input + self.b_in)
 
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         self.input_noise = theano.shared(value=(zero_ary+input_noise), \

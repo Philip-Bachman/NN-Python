@@ -216,6 +216,9 @@ class InfNet(object):
                         b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
+                if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
+                    init_params['b_in'] = new_layer.b_in
+                    init_params['s_in'] = new_layer.s_in
             next_input = self.shared_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1
@@ -280,6 +283,9 @@ class InfNet(object):
                         b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
+                if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
+                    init_params['b_in'] = new_layer.b_in
+                    init_params['s_in'] = new_layer.s_in
             next_input = self.mu_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1
@@ -331,6 +337,7 @@ class InfNet(object):
                 self.shared_param_dicts['sigma'].append( \
                         {'W': new_layer.W, 'b': new_layer.b, \
                          'b_in': new_layer.b_in, 's_in': new_layer.s_in})
+                #new_layer.b.set_value((new_layer.b.get_value(borrow=False) - 1.0))
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -347,6 +354,9 @@ class InfNet(object):
                         b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
+                if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
+                    init_params['b_in'] = new_layer.b_in
+                    init_params['s_in'] = new_layer.s_in
             next_input = self.sigma_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1

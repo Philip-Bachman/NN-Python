@@ -256,6 +256,9 @@ class GenNet(object):
                         W=init_params['W'], b=init_params['b'], \
                         b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale))
+                if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
+                    init_params['b_in'] = self.mlp_layers[-1].b_in
+                    init_params['s_in'] = self.mlp_layers[-1].s_in
                 if (last_layer and (self.out_type != 'bernoulli')):
                     # add an extra layer for predicting log-variance.
                     # we'll shrink the init scale for this layer, to avoid
@@ -271,6 +274,9 @@ class GenNet(object):
                         W=init_params['W'], b=init_params['b'], \
                         b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name+'_logvar', W_scale=0.1*i_scale))
+                    if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
+                        init_params['b_in'] = self.mlp_layers[-1].b_in
+                        init_params['s_in'] = self.mlp_layers[-1].s_in
             next_input = self.mlp_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1

@@ -102,6 +102,9 @@ class OneStageModel(object):
         # inferencer model for latent prototypes given instances
         self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
         self.z = self.q_z_given_x.output
+        self.post_mean_dim_vars = T.mean(self.q_z_given_x.output_mean**2.0, axis=0)
+        self.post_mean_norms = T.mean(self.q_z_given_x.output_mean**2.0)
+        self.post_mean_logvars = T.mean(self.q_z_given_x.output_logvar)
         self.kld2_scale = self.q_z_given_x.kld2_scale
         # generator model for prototypes given latent prototypes
         self.p_xt_given_z = p_xt_given_z.shared_param_clone(rng=rng, Xd=self.z)
@@ -110,7 +113,7 @@ class OneStageModel(object):
         if self.x_type == 'bernoulli':
             self.xg = T.nnet.sigmoid(self.xt + self.output_bias)
         else:
-            self.xg = self.xt + self.output_bias
+            self.xg = T.nnet.sigmoid(self.xt + self.output_bias)
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -216,6 +219,22 @@ class OneStageModel(object):
         self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
         return
 
+    def set_output_bias(self, new_bias=None):
+        """
+        Set the output layer bias.
+        """
+        new_bias = new_bias.astype(theano.config.floatX)
+        self.output_bias.set_value(new_bias)
+        return
+
+    def set_input_bias(self, new_bias=None):
+        """
+        Set the output layer bias.
+        """
+        new_bias = new_bias.astype(theano.config.floatX)
+        self.q_z_given_x.shared_layers[0].b_in.set_value(new_bias)
+        return
+
     def _construct_compute_ll_bound(self):
         """
         Construct a function for computing the variational likelihood bound.
@@ -293,7 +312,8 @@ class OneStageModel(object):
         Construct theano function to train all networks jointly.
         """
         outputs = [self.joint_cost, self.nll_cost, self.kld_cost_1, \
-                self.reg_cost]
+                self.kld_cost, self.reg_cost, self.post_mean_norms, \
+                self.post_mean_logvars, self.post_mean_dim_vars]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
@@ -357,7 +377,7 @@ if __name__=="__main__":
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 110
+    batch_size = 250
     batch_reps = 10
 
     ###############################################
@@ -368,7 +388,7 @@ if __name__=="__main__":
     z_dim = 50
     xt_dim = x_dim
     zt_dim = 128
-    x_type = 'bernoulli'
+    x_type = 'gaussian'
     xt_type = 'observed'
 
     # some InfNet instances to build the OneStageModel from
@@ -379,42 +399,42 @@ if __name__=="__main__":
     # p_xt_given_z #
     ################
     params = {}
-    shared_config = [z_dim, 1000, 1000]
+    shared_config = [z_dim, 500, 500]
     top_config = [shared_config[-1], xt_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
     params['init_scale'] = 1.0
-    params['lam_l2a'] = 1e-2
+    params['lam_l2a'] = 1e-3
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.1
+    params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['kld2_scale'] = 0.0
     p_xt_given_z = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_xt_given_z.init_biases(0.1)
+    p_xt_given_z.init_biases(1.0)
     ###############
     # q_z_given_x #
     ###############
     params = {}
-    shared_config = [x_dim, 1000, 1000]
+    shared_config = [x_dim, 500, 500]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
     params['init_scale'] = 1.0
-    params['lam_l2a'] = 1e-2
+    params['lam_l2a'] = 1e-3
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.1
+    params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['kld2_scale'] = 0.0
     q_z_given_x = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    q_z_given_x.init_biases(0.1)
+    q_z_given_x.init_biases(1.0)
 
     ##############################################################
     # Define parameters for the OneStageModel, and initialize it #
@@ -427,35 +447,43 @@ if __name__=="__main__":
             p_xt_given_z=p_xt_given_z, q_z_given_x=q_z_given_x, \
             x_dim=x_dim, z_dim=z_dim, xt_dim=xt_dim , \
             params=osm_params)
+    obs_mean = np.mean(Xtr, axis=0)
+    OSM.set_output_bias(obs_mean)
+    OSM.set_input_bias(-obs_mean)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
-    costs = [0. for i in range(10)]
-    learn_rate = 0.0003
+    costs = [0. for i in range(20)]
+    post_mean_dim_vars = None
+    learn_rate = 0.002
     for i in range(500000):
         scale = min(1.0, (float(i+1) / 10000.0))
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-        Xb = binarize_data(Xtr.take(tr_idx, axis=0))
+        Xb = Xtr.take(tr_idx, axis=0) #binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = np.repeat(Xb, batch_reps, axis=0).astype(theano.config.floatX)
         # set model parameters for this update
         OSM.set_sgd_params(lr_1=scale*learn_rate, mom_1=0.9, mom_2=0.99)
         OSM.set_lam_nll(lam_nll=1.0)
-        OSM.set_lam_kld(lam_kld_1=3.0)
+        OSM.set_lam_kld(lam_kld_1=25.0)
         OSM.set_lam_l2w(1e-4)
         # perform a minibatch update and record the cost for this batch
         result = OSM.train_joint(Xb, 0.0*Xb, 0.0*Xb)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
-        if ((i % 1000) == 0):
+        if ((i % 500) == 0):
             costs = [(v / 500.0) for v in costs]
+            post_mean_dim_vars = costs[7]
             print("-- batch {0:d} --".format(i))
             print("    joint_cost: {0:.4f}".format(costs[0]))
             print("    nll_cost  : {0:.4f}".format(costs[1]))
             print("    kld_cost_1: {0:.4f}".format(costs[2]))
-            print("    reg_cost  : {0:.4f}".format(costs[3]))
+            print("    kld_cost  : {0:.4f}".format(costs[3]))
+            print("    reg_cost  : {0:.4f}".format(costs[4]))
+            print("    post_norm : {0:.4f}".format(costs[5]))
+            print("    post_lgvar: {0:.4f}".format(costs[6]))
             costs = [0.0 for v in costs]
-        if ((i % 2000) == 0):
+        if ((i % 1000) == 0):
             model_samps = OSM.sample_from_prior(500)
             file_name = "OSM_SAMPLES_b{0:d}_XG.png".format(i)
             utils.visualize_samples(model_samps['xg'], file_name, num_rows=20)
@@ -465,6 +493,9 @@ if __name__=="__main__":
             file_name = "OSM_GEN_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(OSM.gen_weights.get_value(borrow=False), \
                     file_name, num_rows=20)
+            file_name = "OSM_POST_DIM_VARS_b{0:d}.png".format(i)
+            utils.plot_stem(np.arange(post_mean_dim_vars.shape[0]), \
+                    post_mean_dim_vars, file_name)
     ########
     # DONE #
     ########
