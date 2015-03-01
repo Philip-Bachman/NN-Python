@@ -589,6 +589,50 @@ def test_gip_sigma_scale_tfd():
     print("mean posterior KLd: {0:.4f}".format(np.mean(post_klds)))
     print("mean log-likelihood: {0:.4f}".format(np.mean(log_likelihoods)))
     print("mean max log-likelihood: {0:.4f}".format(np.mean(max_lls)))
+    print("min ll bound: {0:.4f}".format(np.min(ll_bounds)))
+    print("max posterior KLd: {0:.4f}".format(np.max(post_klds)))
+    print("min log-likelihood: {0:.4f}".format(np.min(log_likelihoods)))
+    print("min max log-likelihood: {0:.4f}".format(np.min(max_lls)))
+    # compute some information about the approximate posteriors
+    post_stats = GIP.compute_post_stats(Xva, 0.0*Xva, 0.0*Xva)
+    all_post_klds = np.sort(post_stats[0].ravel()) # post KLds for each obs and dim
+    obs_post_klds = np.sort(post_stats[1]) # summed post KLds for each obs
+    post_dim_klds = post_stats[2] # average post KLds for each post dim
+    post_dim_vars = post_stats[3] # average squared mean for each post dim
+    utils.plot_line(np.arange(all_post_klds.shape[0]), all_post_klds, "AAA_ALL_POST_KLDS.png")
+    utils.plot_line(np.arange(obs_post_klds.shape[0]), obs_post_klds, "AAA_OBS_POST_KLDS.png")
+    utils.plot_stem(np.arange(post_dim_klds.shape[0]), post_dim_klds, "AAA_POST_DIM_KLDS.png")
+    utils.plot_stem(np.arange(post_dim_vars.shape[0]), post_dim_vars, "AAA_POST_DIM_VARS.png")
+
+    # repeat on part of the training set
+    print("==================================================")
+    print("==================================================")
+    tr_idx = np.arange(tr_samples)
+    npr.shuffle(tr_idx)
+    _Xtr_ = Xtr[tr_idx[0:5000]]
+    bound_results = GIP.compute_ll_bound(_Xtr_)
+    ll_bounds = bound_results[0]
+    post_klds = bound_results[1]
+    log_likelihoods = bound_results[2]
+    max_lls = bound_results[3]
+    print("mean ll bound: {0:.4f}".format(np.mean(ll_bounds)))
+    print("mean posterior KLd: {0:.4f}".format(np.mean(post_klds)))
+    print("mean log-likelihood: {0:.4f}".format(np.mean(log_likelihoods)))
+    print("mean max log-likelihood: {0:.4f}".format(np.mean(max_lls)))
+    print("min ll bound: {0:.4f}".format(np.min(ll_bounds)))
+    print("max posterior KLd: {0:.4f}".format(np.max(post_klds)))
+    print("min log-likelihood: {0:.4f}".format(np.min(log_likelihoods)))
+    print("min max log-likelihood: {0:.4f}".format(np.min(max_lls)))
+    # compute some information about the approximate posteriors
+    post_stats = GIP.compute_post_stats(_Xtr_, 0.0*_Xtr_, 0.0*_Xtr_)
+    all_post_klds = np.sort(post_stats[0].ravel()) # post KLds for each obs and dim
+    obs_post_klds = np.sort(post_stats[1]) # summed post KLds for each obs
+    post_dim_klds = post_stats[2] # average post KLds for each post dim
+    post_dim_vars = post_stats[3] # average squared mean for each post dim
+    utils.plot_line(np.arange(all_post_klds.shape[0]), all_post_klds, "AAB_ALL_POST_KLDS.png")
+    utils.plot_line(np.arange(obs_post_klds.shape[0]), obs_post_klds, "AAB_OBS_POST_KLDS.png")
+    utils.plot_stem(np.arange(post_dim_klds.shape[0]), post_dim_klds, "AAB_POST_DIM_KLDS.png")
+    utils.plot_stem(np.arange(post_dim_vars.shape[0]), post_dim_vars, "AAB_POST_DIM_VARS.png")
 
     # draw many samples from the GIP
     for i in range(10):
@@ -608,7 +652,24 @@ def test_gip_sigma_scale_tfd():
     utils.visualize_samples(Xs, file_name, num_rows=32)
     # test Parzen density estimator built from prior samples
     Xs = GIP.sample_from_prior(10000, sigma=1.0)
-    cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
+    [best_sigma, best_ll, best_lls] = \
+            cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
+    best_lls = np.sort(best_lls)
+    sort_idx = np.argsort(best_lls)
+    utils.plot_line(np.arange(best_lls.shape[0]), best_lls, "BEST_LLS_1.png")
+    bad_faces = Xva[sort_idx[0:1024]]
+    utils.visualize_samples(bad_faces, "BAD_FACES_1.png", num_rows=32)
+    ##########
+    # AGAIN! #
+    ##########
+    Xs = GIP.sample_from_prior(10000, sigma=1.0)
+    [best_sigma, best_ll, best_lls] = \
+            cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
+    best_lls = np.sort(best_lls)
+    sort_idx = np.argsort(best_lls)
+    utils.plot_line(np.arange(best_lls.shape[0]), best_lls, "BEST_LLS_2.png")
+    bad_faces = Xva[sort_idx[0:1024]]
+    utils.visualize_samples(bad_faces, "BAD_FACES_2.png", num_rows=32)
     return
 
 ###################

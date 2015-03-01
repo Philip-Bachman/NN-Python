@@ -249,12 +249,27 @@ def plot_kde_histogram2(X1, X2, f_name, bins=25):
 
 def plot_stem(x, y, f_name):
     """
-    Plot stem plot.
+    Plot a stem plot.
     """
     import matplotlib.pyplot as plt
     fig = plt.figure()
     ax = fig.add_subplot(111)
     ax.stem(x, y, linefmt='b-', markerfmt='bo', basefmt='r-')
+    fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
+        orientation='portrait', papertype=None, format=None, \
+        transparent=False, bbox_inches=None, pad_inches=0.1, \
+        frameon=None)
+    plt.close(fig)
+    return
+
+def plot_line(x, y, f_name):
+    """
+    Plot a line plot.
+    """
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.plot(x, y)
     fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
         orientation='portrait', papertype=None, format=None, \
         transparent=False, bbox_inches=None, pad_inches=0.1, \

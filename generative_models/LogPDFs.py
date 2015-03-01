@@ -178,13 +178,20 @@ def cross_validate_sigma(samples, data, sigmas, batch_size):
     Find which sigma is best for the Parzen estimator bound.
     """
     lls = []
+    best_ll = -1e6
+    best_lls = None
+    best_sigma = None
     for sigma in sigmas:
         print sigma
         parzen = theano_parzen(samples, sigma)
         tmp = get_nll(data, parzen, batch_size=batch_size)
-        lls.append(np.asarray(tmp).mean())
+        sigma_lls = np.asarray(tmp)
+        mean_ll = sigma_lls.mean()
+        lls.append(mean_ll)
+        if (mean_ll > best_ll):
+            best_ll = mean_ll
+            best_lls = sigma_lls
+            best_sigma = sigma
         del parzen
         gc.collect()
-    ind = np.argmax(lls)
-    max_ll = lls[ind]
-    return [sigmas[ind], max_ll]
+    return [best_sigma, best_ll, best_lls]

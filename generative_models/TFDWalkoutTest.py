@@ -190,7 +190,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     out_file = open(RESULT_PATH+"pt_gip_results.txt", 'wb')
     # Set initial learning rate and basic SGD hyper parameters
     cost_1 = [0. for i in range(10)]
-    learn_rate = 0.001
+    learn_rate = 0.002
     for i in range(500000):
         scale_1 = min(1.0, float(i) / 50000.0)
         scale_2 = min(1.0, float(i) / 100000.0)
@@ -640,7 +640,7 @@ def train_recon_from_pretrained_gip(extra_lam_kld=0.0):
 
 if __name__=="__main__":
     # FOR EXTREME KLD REGULARIZATION
-	pretrain_gip(extra_lam_kld=39.0, kld2_scale=0.0)
+	pretrain_gip(extra_lam_kld=39.0, kld2_scale=0.05)
 	train_walk_from_pretrained_gip(extra_lam_kld=39.0)
 
     # FOR KLD MODEL

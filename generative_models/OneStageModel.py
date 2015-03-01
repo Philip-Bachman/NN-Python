@@ -150,10 +150,12 @@ class OneStageModel(object):
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
-        self.kld_cost_1 = self._construct_kld_costs(kld2_scale=self.kld2_scale)
+        self.kld_l1_cost, self.kld_l2_cost = \
+                self._construct_kld_costs(kld2_scale=self.kld2_scale)
         act_reg_cost, param_reg_cost = self._construct_reg_costs()
         self.nll_cost = self.lam_nll[0] * self._construct_nll_cost()
-        self.kld_cost = self.lam_kld_1[0] * self.kld_cost_1
+        self.kld_cost = self.lam_kld_1[0] * self.kld_l1_cost #\
+                #(0.2*self.kld_l1_cost + 0.8*self.kld_l2_cost)
         self.reg_cost = self.lam_l2w[0] * param_reg_cost
         self.joint_cost = self.nll_cost + self.kld_cost + self.reg_cost
 
@@ -284,16 +286,24 @@ class OneStageModel(object):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
+        # construct a penalty that is L2-like near 0 and L1-like away from 0.
+        huber_pen = lambda x, d: \
+                ((1.0 / (2.0 * d)) * ((T.abs_(x) < d) * (x**2.0))) + \
+                ((T.abs_(x) >= d) * (T.abs_(x) - (d / 2.0)))
+        # do some basic preparation for computation
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
         prior_mean = self.z_prior_mean
         prior_logvar = self.z_prior_logvar
-        # construct KLd cost for the distributions over z
+        # compute the KLds between posteriors and priors. we compute the KLd
+        # independently for each input and each latent variable dimension
         kld_z = gaussian_kld(self.q_z_given_x.output_mean, \
                 self.q_z_given_x.output_logvar, \
                 prior_mean, prior_logvar)
         # compute the batch-wise costs
-        kld_cost_1 = T.sum(kld_z) / obs_count
-        return kld_cost_1
+        kld_l1_cost = T.sum(huber_pen(kld_z, 0.2)) / obs_count
+        #kld_l1_cost = T.sum(kld_z) / obs_count
+        kld_l2_cost = T.sum(kld_z**2.0) / obs_count
+        return [kld_l1_cost, kld_l2_cost]
 
     def _construct_reg_costs(self):
         """
@@ -311,9 +321,10 @@ class OneStageModel(object):
         """
         Construct theano function to train all networks jointly.
         """
-        outputs = [self.joint_cost, self.nll_cost, self.kld_cost_1, \
-                self.kld_cost, self.reg_cost, self.post_mean_norms, \
-                self.post_mean_logvars, self.post_mean_dim_vars]
+        outputs = [self.joint_cost, self.nll_cost, self.kld_l1_cost, \
+                self.kld_l2_cost, self.kld_cost, self.reg_cost, \
+                self.post_mean_norms, self.post_mean_logvars, \
+                self.post_mean_dim_vars]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs, \
                 updates=self.joint_updates)
@@ -327,7 +338,7 @@ class OneStageModel(object):
         Construct theano function to compute the assorted costs without
         applying any updates (e.g. to use with a validation set).
         """
-        outputs = [self.joint_cost, self.nll_cost, self.kld_cost_1, \
+        outputs = [self.joint_cost, self.nll_cost, self.kld_l1_cost, \
                 self.reg_cost]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
                 outputs=outputs)
@@ -366,6 +377,7 @@ def binarize_data(X):
 if __name__=="__main__":
     from load_data import load_udm, load_udm_ss, load_mnist
     import utils
+    from LogPDFs import cross_validate_sigma
     ##########################
     # Get some training data #
     ##########################
@@ -456,7 +468,7 @@ if __name__=="__main__":
     ################################################################
     costs = [0. for i in range(20)]
     post_mean_dim_vars = None
-    learn_rate = 0.002
+    learn_rate = 0.004
     for i in range(500000):
         scale = min(1.0, (float(i+1) / 10000.0))
         # randomly sample a minibatch
@@ -473,15 +485,16 @@ if __name__=="__main__":
         costs = [(costs[j] + result[j]) for j in range(len(result))]
         if ((i % 500) == 0):
             costs = [(v / 500.0) for v in costs]
-            post_mean_dim_vars = costs[7]
+            post_mean_dim_vars = costs[8]
             print("-- batch {0:d} --".format(i))
             print("    joint_cost: {0:.4f}".format(costs[0]))
             print("    nll_cost  : {0:.4f}".format(costs[1]))
-            print("    kld_cost_1: {0:.4f}".format(costs[2]))
-            print("    kld_cost  : {0:.4f}".format(costs[3]))
-            print("    reg_cost  : {0:.4f}".format(costs[4]))
-            print("    post_norm : {0:.4f}".format(costs[5]))
-            print("    post_lgvar: {0:.4f}".format(costs[6]))
+            print("    kld_l1    : {0:.4f}".format(costs[2]))
+            print("    kld_l2    : {0:.4f}".format(costs[3]))
+            print("    kld_cost  : {0:.4f}".format(costs[4]))
+            print("    reg_cost  : {0:.4f}".format(costs[5]))
+            print("    post_norm : {0:.4f}".format(costs[6]))
+            print("    post_lgvar: {0:.4f}".format(costs[7]))
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
             model_samps = OSM.sample_from_prior(500)
@@ -496,6 +509,10 @@ if __name__=="__main__":
             file_name = "OSM_POST_DIM_VARS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_mean_dim_vars.shape[0]), \
                     post_mean_dim_vars, file_name)
+        if ((i > 5000) and ((i % 2000) == 0)):
+            # test Parzen density estimator built from prior samples
+            model_samps = OSM.sample_from_prior(10000)
+            cross_validate_sigma(model_samps['xg'], Xva, [0.14, 0.15, 0.16, 0.17], 50)
     ########
     # DONE #
     ########

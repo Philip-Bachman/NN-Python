@@ -497,11 +497,15 @@ class InfNet(object):
         posterior encoded by self.mu/self.sigma and the isotropic Gaussian
         distribution with mean 0 and standard deviation self.prior_sigma.
         """
+        # construct a penalty that is L2-like near 0 and L1-like away from 0.
+        huber_pen = lambda x, d: \
+                ((1.0 / (2.0 * d)) * ((T.abs_(x) < d) * (x**2.0))) + \
+                ((T.abs_(x) >= d) * (T.abs_(x) - (d / 2.0)))
         prior_mu = 0.0
         prior_logvar = np.log(self.prior_sigma**2.0)
         post_klds = gaussian_kld(self.output_mean, self.output_logvar, \
                 prior_mu, prior_logvar)
-        kld_cost = T.sum(post_klds, axis=1, keepdims=True)
+        kld_cost = T.sum(huber_pen(post_klds, 0.2), axis=1, keepdims=True)
         return kld_cost
 
     def _construct_sample_posterior(self):

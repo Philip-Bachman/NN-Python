@@ -20,6 +20,7 @@ from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
+from LogPDFs import gaussian_kld
 
 #
 #
@@ -199,6 +200,7 @@ class GIPair(object):
         self.train_joint = self._construct_train_joint()
         self.compute_costs = self._construct_compute_costs()
         self.compute_ll_bound = self._construct_compute_ll_bound()
+        self.compute_post_stats = self._construct_compute_post_stats()
         return
 
     def set_all_sgd_params(self, lr_gn=0.01, lr_in=0.01, \
@@ -357,6 +359,26 @@ class GIPair(object):
         outputs = [self.joint_cost, self.data_nll_cost, self.post_kld_cost, \
                 self.other_reg_cost]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+                outputs=outputs)
+        return func
+
+    def _construct_compute_post_stats(self):
+        """
+        Construct theano function to compute some stats describing the latent
+        posteriors inferred by this model.
+        """
+        # construct the stats to compute
+        obs_count = T.cast(self.Xd.shape[0], 'floatX')
+        prior_mean = 0.0
+        prior_logvar = 0.0
+        all_klds = gaussian_kld(self.IN.output_mean, self.IN.output_logvar, \
+                prior_mean, prior_logvar)
+        obs_klds = T.sum(all_klds, axis=1)
+        dim_klds = T.sum(all_klds, axis=0) / obs_count
+        dim_vars = T.sum(self.IN.output_mean**2.0, axis=0) / obs_count
+        # make a theano function to compute them
+        outputs = [all_klds, obs_klds, dim_klds, dim_vars]
+        func = theano.function(inputs=[self.Xd, self.Xc, self.Xm], \
                 outputs=outputs)
         return func
 

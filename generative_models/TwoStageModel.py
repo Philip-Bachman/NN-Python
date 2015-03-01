@@ -155,7 +155,7 @@ class TwoStageModel(object):
                 grad_ll = self.x - xc
                 
             self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
-                    Xd=T.horizontal_stack(self.x, grad_ll))
+                    Xd=T.horizontal_stack(self.x, 5.0*grad_ll))
             #self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
             #        Xd=T.horizontal_stack(self.x, xc))
         self.zt_q = self.q_zt_given_x_xt.output
@@ -423,6 +423,11 @@ class TwoStageModel(object):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
+        # construct a penalty that is L2-like near 0 and L1-like away from 0.
+        huber_pen = lambda x, d: \
+                ((1.0 / (2.0 * d)) * ((T.abs_(x) < d) * (x**2.0))) + \
+                ((T.abs_(x) >= d) * (T.abs_(x) - (d / 2.0)))
+        # do some other stuff
         obs_count = T.cast(self.Xd.shape[0], 'floatX')
         prior_mean = self.z_prior_mean
         prior_logvar = self.z_prior_logvar
@@ -441,10 +446,10 @@ class TwoStageModel(object):
         kld_zt_glob = gaussian_kld(self.q_zt_given_x_xt.output_mean, \
                 self.q_zt_given_x_xt.output_logvar, \
                 prior_mean, prior_logvar)
-        kld_zt = (self.zt_mix_weight[0] * kld_zt_cond) + \
-                ((1.0 - self.zt_mix_weight[0]) * kld_zt_glob)
+        kld_zt = (self.zt_mix_weight[0] * huber_pen(kld_zt_cond, 0.2)) + \
+                ((1.0 - self.zt_mix_weight[0]) * huber_pen(kld_zt_glob, 0.2))
         # compute the batch-wise costs
-        kld_cost_1 = T.sum(kld_z) / obs_count
+        kld_cost_1 = T.sum(huber_pen(kld_z, 0.2)) / obs_count
         kld_cost_2 = T.sum(kld_zt) / obs_count
         return [kld_cost_1, kld_cost_2]
 
@@ -713,7 +718,7 @@ if __name__=="__main__":
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     costs = [0. for i in range(10)]
-    learn_rate = 0.002
+    learn_rate = 0.003
     for i in range(500000):
         if (((i + 1) % 60000) == 0):
             learn_rate = learn_rate * 0.75
@@ -721,7 +726,7 @@ if __name__=="__main__":
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = Xtr.take(tr_idx, axis=0) #binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = np.repeat(Xb, batch_reps, axis=0).astype(theano.config.floatX)
-        if (i < 30000):
+        if (i < 25000):
             scale = min(1.0, (float(i+1)/10000.0))
             # train the initial coarse approximation model
             TSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=0.0, \
@@ -731,8 +736,8 @@ if __name__=="__main__":
             TSM.set_lam_kld(lam_kld_1=25.0, lam_kld_2=0.0)
             TSM.set_lam_l2w(1e-4)
             TSM.set_zt_mix_weight(1.0)
-        elif (i < 60000):
-            scale = min(1.0, (float(i+1-30000)/10000.0))
+        elif (i < 50000):
+            scale = min(1.0, (float(i+1-25000)/10000.0))
             # train the secondary corrector model
             TSM.set_sgd_params(lr_1=0.0, lr_2=scale*learn_rate, \
                     mom_1=0.9, mom_2=0.99)
