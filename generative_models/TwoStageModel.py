@@ -246,17 +246,17 @@ class TwoStageModel(object):
         # Get the gradient of the joint cost for all optimizable parameters
         self.joint_grads = OrderedDict()
         for p in self.joint_params:
-            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1, 0.1)
+            self.joint_grads[p] = T.grad(self.joint_cost, p)
 
         # Construct the updates for the generator and inferencer networks
         self.group_1_updates = get_adam_updates(params=self.group_1_params, \
                 grads=self.joint_grads, alpha=self.lr_1, \
                 beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
-                mom2_init=1e-3, smoothing=1e-8)
+                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=20.0)
         self.group_2_updates = get_adam_updates(params=self.group_2_params, \
                 grads=self.joint_grads, alpha=self.lr_2, \
                 beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
-                mom2_init=1e-3, smoothing=1e-8)
+                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=20.0)
         self.joint_updates = OrderedDict()
         for k in self.group_1_updates:
             self.joint_updates[k] = self.group_1_updates[k]
@@ -589,7 +589,7 @@ if __name__=="__main__":
     z_dim = 50
     xt_dim = x_dim
     zt_dim = 100
-    x_type = 'gaussian'
+    x_type = 'bernoulli'
     xt_type = 'observed'
 
     # some InfNet instances to build the TwoStageModel from
@@ -655,7 +655,7 @@ if __name__=="__main__":
     params['kld2_scale'] = 0.0
     p_x_given_xt_zt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_x_given_xt_zt.init_biases(0.1)
+    p_x_given_xt_zt.init_biases(0.2)
     ###############
     # q_z_given_x #
     ###############
@@ -675,7 +675,7 @@ if __name__=="__main__":
     params['kld2_scale'] = 0.0
     q_z_given_x = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    q_z_given_x.init_biases(0.1)
+    q_z_given_x.init_biases(0.2)
     ###################
     # q_zt_given_x_xt #
     ###################
@@ -695,7 +695,7 @@ if __name__=="__main__":
     params['kld2_scale'] = 0.0
     q_zt_given_x_xt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    q_zt_given_x_xt.init_biases(0.1)
+    q_zt_given_x_xt.init_biases(0.2)
 
     ##############################################################
     # Define parameters for the TwoStageModel, and initialize it #
@@ -720,11 +720,11 @@ if __name__=="__main__":
     costs = [0. for i in range(10)]
     learn_rate = 0.003
     for i in range(500000):
-        if (((i + 1) % 60000) == 0):
-            learn_rate = learn_rate * 0.75
+        if (((i + 1) % 50000) == 0):
+            learn_rate = learn_rate * 0.66
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-        Xb = Xtr.take(tr_idx, axis=0) #binarize_data(Xtr.take(tr_idx, axis=0))
+        Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = np.repeat(Xb, batch_reps, axis=0).astype(theano.config.floatX)
         if (i < 25000):
             scale = min(1.0, (float(i+1)/10000.0))
@@ -733,17 +733,17 @@ if __name__=="__main__":
                     mom_1=0.9, mom_2=0.99)
             TSM.set_step_switch(0.0) # scale the corrector's contribution
             TSM.set_lam_nll(lam_nll=1.0)
-            TSM.set_lam_kld(lam_kld_1=25.0, lam_kld_2=0.0)
+            TSM.set_lam_kld(lam_kld_1=4.0, lam_kld_2=0.0)
             TSM.set_lam_l2w(1e-4)
             TSM.set_zt_mix_weight(1.0)
         elif (i < 50000):
-            scale = min(1.0, (float(i+1-25000)/10000.0))
+            scale = min(1.0, (float(i+1-25000)/25000.0))
             # train the secondary corrector model
-            TSM.set_sgd_params(lr_1=0.0, lr_2=scale*learn_rate, \
+            TSM.set_sgd_params(lr_1=0.0, lr_2=learn_rate, \
                     mom_1=0.9, mom_2=0.99)
             TSM.set_step_switch(1.0) # scale the corrector's contribution
             TSM.set_lam_nll(lam_nll=1.0)
-            TSM.set_lam_kld(lam_kld_1=25.0, lam_kld_2=scale)
+            TSM.set_lam_kld(lam_kld_1=4.0, lam_kld_2=0.2*scale)
             TSM.set_lam_l2w(1e-4)
             TSM.set_zt_mix_weight(1.0)
         else:
@@ -752,7 +752,7 @@ if __name__=="__main__":
                     mom_1=0.9, mom_2=0.99)
             TSM.set_step_switch(1.0) # scale the corrector's contribution
             TSM.set_lam_nll(lam_nll=1.0)
-            TSM.set_lam_kld(lam_kld_1=25.0, lam_kld_2=1.0)
+            TSM.set_lam_kld(lam_kld_1=4.0, lam_kld_2=0.2)
             TSM.set_lam_l2w(1e-4)
             TSM.set_zt_mix_weight(1.0)
         # perform a minibatch update and record the cost for this batch

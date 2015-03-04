@@ -178,17 +178,17 @@ class GIPair(object):
         # Get the gradient of the joint cost for all optimizable parameters
         self.joint_grads = OrderedDict()
         for p in self.joint_params:
-            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1, 0.1)
+            self.joint_grads[p] = T.grad(self.joint_cost, p)
 
         # Construct the updates for the generator and inferencer networks
         self.gn_updates = get_adam_updates(params=self.gn_params, \
                 grads=self.joint_grads, alpha=self.lr_gn, \
                 beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
-                mom2_init=1e-3, smoothing=1e-8)
+                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
         self.in_updates = get_adam_updates(params=self.in_params, \
                 grads=self.joint_grads, alpha=self.lr_in, \
                 beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
-                mom2_init=1e-3, smoothing=1e-8)
+                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
         self.joint_updates = OrderedDict()
         for k in self.gn_updates:
             self.joint_updates[k] = self.gn_updates[k]

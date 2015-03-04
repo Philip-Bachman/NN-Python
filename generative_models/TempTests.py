@@ -570,8 +570,8 @@ def test_gip_sigma_scale_tfd():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "TFD_WALKOUT_TEST_50D_SMALL/pt_gip_params_b100000_GN.pkl"
-    in_fname = "TFD_WALKOUT_TEST_50D_SMALL/pt_gip_params_b100000_IN.pkl"
+    gn_fname = "TFD_WALKOUT_TEST_50D_SMALL/pt_gip_params_b190000_GN.pkl"
+    in_fname = "TFD_WALKOUT_TEST_50D_SMALL/pt_gip_params_b190000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp)
     prior_dim = GN.latent_dim
@@ -654,22 +654,22 @@ def test_gip_sigma_scale_tfd():
     Xs = GIP.sample_from_prior(10000, sigma=1.0)
     [best_sigma, best_ll, best_lls] = \
             cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
-    best_lls = np.sort(best_lls)
     sort_idx = np.argsort(best_lls)
-    utils.plot_line(np.arange(best_lls.shape[0]), best_lls, "BEST_LLS_1.png")
-    bad_faces = Xva[sort_idx[0:1024]]
-    utils.visualize_samples(bad_faces, "BAD_FACES_1.png", num_rows=32)
+    sort_idx = sort_idx[0:1024]
+    utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "BEST_LLS_1.png")
+    utils.visualize_samples(Xva[sort_idx], "BAD_FACES_1.png", num_rows=32)
     ##########
     # AGAIN! #
     ##########
     Xs = GIP.sample_from_prior(10000, sigma=1.0)
+    tr_idx = npr.randint(low=0,high=tr_samples,size=(5000,))
+    Xva = Xtr.take(tr_idx, axis=0)
     [best_sigma, best_ll, best_lls] = \
             cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
-    best_lls = np.sort(best_lls)
     sort_idx = np.argsort(best_lls)
-    utils.plot_line(np.arange(best_lls.shape[0]), best_lls, "BEST_LLS_2.png")
-    bad_faces = Xva[sort_idx[0:1024]]
-    utils.visualize_samples(bad_faces, "BAD_FACES_2.png", num_rows=32)
+    sort_idx = sort_idx[0:1024]
+    utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "BEST_LLS_2.png")
+    utils.visualize_samples(Xva[sort_idx], "BAD_FACES_2.png", num_rows=32)
     return
 
 ###################

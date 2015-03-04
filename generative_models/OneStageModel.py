@@ -88,11 +88,15 @@ class OneStageModel(object):
         self.Xd = Xd
         self.Xc = Xc
         self.Xm = Xm
+        self.batch_reps = T.lscalar()
         self.x = apply_mask(self.Xd, self.Xc, self.Xm)
 
+        # self.z_gaps controls "dead zones" for the latent variables
+        zero_row = np.zeros((self.z_dim,)).astype(theano.config.floatX)
+        self.z_gaps = theano.shared(value=zero_row+0.1, name='tsm_z_gaps')
+        # self.output_bias/self.output_logvar modify the output distribution
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         zero_row = np.zeros((self.x_dim,)).astype(theano.config.floatX)
-        # self.output_bias/self.output_logvar modify the output distribution
         self.output_bias = theano.shared(value=zero_row, name='tsm_output_bias')
         self.output_logvar = theano.shared(value=zero_ary, name='tsm_output_logvar')
 
@@ -102,6 +106,8 @@ class OneStageModel(object):
         # inferencer model for latent prototypes given instances
         self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
         self.z = self.q_z_given_x.output
+        #self.z_g = T.minimum(0.0, self.z + self.z_gaps) + \
+        #        T.maximum(0.0, self.z - self.z_gaps)
         self.post_mean_dim_vars = T.mean(self.q_z_given_x.output_mean**2.0, axis=0)
         self.post_mean_norms = T.mean(self.q_z_given_x.output_mean**2.0)
         self.post_mean_logvars = T.mean(self.q_z_given_x.output_logvar)
@@ -143,37 +149,37 @@ class OneStageModel(object):
         self.group_1_params.extend(self.q_z_given_x.mlp_params)
         self.group_1_params.extend(self.p_xt_given_z.mlp_params)
         # deal with some additional helper parameters (add them to group 1)
-        other_params = [self.output_bias, self.output_logvar]
+        other_params = [self.output_bias, self.output_logvar] #, self.z_gaps]
         # Make a joint list of parameters group 1/2
         self.joint_params = self.group_1_params + other_params
 
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
         ###################################
-        self.kld_l1_cost, self.kld_l2_cost = \
-                self._construct_kld_costs(kld2_scale=self.kld2_scale)
+        self.nll_costs = self.lam_nll[0] * self._construct_nll_costs()
+        self.nll_cost = T.mean(self.nll_costs)
+        self.kld_costs_1, self.kld_costs_2 = self._construct_kld_costs()
+        self.kld_costs = self.lam_kld_1[0] * self.kld_costs_1
+        self.kld_cost = T.mean(self.kld_costs)
         act_reg_cost, param_reg_cost = self._construct_reg_costs()
-        self.nll_cost = self.lam_nll[0] * self._construct_nll_cost()
-        self.kld_cost = self.lam_kld_1[0] * self.kld_l1_cost #\
-                #(0.2*self.kld_l1_cost + 0.8*self.kld_l2_cost)
         self.reg_cost = self.lam_l2w[0] * param_reg_cost
         self.joint_cost = self.nll_cost + self.kld_cost + self.reg_cost
 
         # Get the gradient of the joint cost for all optimizable parameters
         self.joint_grads = OrderedDict()
         for p in self.joint_params:
-            self.joint_grads[p] = T.grad(self.joint_cost, p).clip(-0.1, 0.1)
+            self.joint_grads[p] = T.grad(self.joint_cost, p)
 
         # Construct the updates for the generator and inferencer networks
         self.joint_updates = get_adam_updates(params=self.joint_params, \
                 grads=self.joint_grads, alpha=self.lr_1, \
                 beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
-                mom2_init=1e-3, smoothing=1e-8)
+                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
 
         # Construct a function for jointly training the generator/inferencer
         self.train_joint = self._construct_train_joint()
-        self.compute_costs = self._construct_compute_costs()
-        #self.compute_ll_bound = self._construct_compute_ll_bound()
+        self.compute_fe_terms = self._construct_compute_fe_terms()
+        self.compute_post_klds = self._construct_compute_post_klds()
         self.sample_from_prior = self._construct_sample_from_prior()
         self.inf_weights = self.q_z_given_x.shared_layers[0].W
         self.gen_weights = self.p_xt_given_z.mu_layers[-1].W
@@ -237,52 +243,19 @@ class OneStageModel(object):
         self.q_z_given_x.shared_layers[0].b_in.set_value(new_bias)
         return
 
-    def _construct_compute_ll_bound(self):
-        """
-        Construct a function for computing the variational likelihood bound.
-        """
-        # setup some symbolic variables for theano to deal with
-        Xd = T.matrix()
-        Xc = T.zeros_like(Xd)
-        Xm = T.zeros_like(Xd)
-        # get symbolic var for posterior KLds
-        post_kld = self.IN.kld_cost
-        # get symbolic var for log likelihoods
-        log_likelihood = self.GN.compute_log_prob(self.IN.Xd)
-        # construct a theano function for actually computing stuff
-        outputs = [post_kld, log_likelihood]
-        out_func = theano.function([Xd], outputs=outputs, \
-                givens={ self.Xd: Xd, self.Xc: Xc, self.Xm: Xm })
-        # construct a function for computing multi-sample averages
-        def multi_sample_bound(X, sample_count=10):
-            post_klds = np.zeros((X.shape[0], 1))
-            log_likelihoods = np.zeros((X.shape[0], 1))
-            max_lls = np.zeros((X.shape[0], 1)) - 1e8
-            for i in range(sample_count):
-                result = out_func(X)
-                post_klds = post_klds + (1.0 * result[0])
-                log_likelihoods = log_likelihoods + (1.0 * result[1])
-                max_lls = np.maximum(max_lls, (1.0 * result[1]))
-            post_klds = post_klds / sample_count
-            log_likelihoods = log_likelihoods / sample_count
-            ll_bounds = log_likelihoods - post_klds
-            return [ll_bounds, post_klds, log_likelihoods, max_lls]
-        return multi_sample_bound
-
-    def _construct_nll_cost(self):
+    def _construct_nll_costs(self):
         """
         Construct the negative log-likelihood part of cost to minimize.
         """
-        obs_count = T.cast(self.Xd.shape[0], 'floatX')
         if self.x_type == 'bernoulli':
             ll_cost = log_prob_bernoulli(self.x, self.xg)
         else:
             ll_cost = log_prob_gaussian2(self.x, self.xg, \
                     log_vars=self.output_logvar[0])
-        nll_cost = -T.sum(ll_cost) / obs_count
+        nll_cost = -ll_cost
         return nll_cost
 
-    def _construct_kld_costs(self, kld2_scale=0.0):
+    def _construct_kld_costs(self):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
         """
@@ -291,7 +264,6 @@ class OneStageModel(object):
                 ((1.0 / (2.0 * d)) * ((T.abs_(x) < d) * (x**2.0))) + \
                 ((T.abs_(x) >= d) * (T.abs_(x) - (d / 2.0)))
         # do some basic preparation for computation
-        obs_count = T.cast(self.Xd.shape[0], 'floatX')
         prior_mean = self.z_prior_mean
         prior_logvar = self.z_prior_logvar
         # compute the KLds between posteriors and priors. we compute the KLd
@@ -299,11 +271,10 @@ class OneStageModel(object):
         kld_z = gaussian_kld(self.q_z_given_x.output_mean, \
                 self.q_z_given_x.output_logvar, \
                 prior_mean, prior_logvar)
-        # compute the batch-wise costs
-        kld_l1_cost = T.sum(huber_pen(kld_z, 0.2)) / obs_count
-        #kld_l1_cost = T.sum(kld_z) / obs_count
-        kld_l2_cost = T.sum(kld_z**2.0) / obs_count
-        return [kld_l1_cost, kld_l2_cost]
+        # compute the batch-wise L1 and L2 penalties on per-dim KLds
+        kld_l1_costs = T.sum(huber_pen(kld_z, 0.2), axis=1, keepdims=True)
+        kld_l2_costs = T.sum(kld_z**2.0, axis=1, keepdims=True)
+        return [kld_l1_costs, kld_l2_costs]
 
     def _construct_reg_costs(self):
         """
@@ -321,28 +292,80 @@ class OneStageModel(object):
         """
         Construct theano function to train all networks jointly.
         """
-        outputs = [self.joint_cost, self.nll_cost, self.kld_l1_cost, \
-                self.kld_l2_cost, self.kld_cost, self.reg_cost, \
-                self.post_mean_norms, self.post_mean_logvars, \
-                self.post_mean_dim_vars]
-        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
+        # setup some symbolic variables for theano to deal with
+        Xd = T.matrix()
+        Xc = T.matrix()
+        Xm = T.matrix()
+        # collect the values to output with each function evaluation
+        outputs = [self.joint_cost, self.nll_cost, self.kld_cost, \
+                self.reg_cost, self.nll_costs, self.kld_costs]
+        func = theano.function(inputs=[ Xd, Xc, Xm, self.batch_reps ], \
                 outputs=outputs, \
+                givens={ self.Xd: Xd.repeat(self.batch_reps, axis=0), \
+                         self.Xc: Xc.repeat(self.batch_reps, axis=0), \
+                         self.Xm: Xm.repeat(self.batch_reps, axis=0) }, \
                 updates=self.joint_updates)
         #theano.printing.pydotprint(func,
         #                           outfile="osm_train_graph.png",
         #                           var_with_name_simple=True)
         return func
 
-    def _construct_compute_costs(self):
+    def _construct_compute_post_klds(self):
         """
-        Construct theano function to compute the assorted costs without
-        applying any updates (e.g. to use with a validation set).
+        Construct theano function to compute the info about the variational
+        approximate posteriors for some inputs.
         """
-        outputs = [self.joint_cost, self.nll_cost, self.kld_l1_cost, \
-                self.reg_cost]
-        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm ], \
-                outputs=outputs)
-        return func
+        # setup some symbolic variables for theano to deal with
+        Xd = T.matrix()
+        Xc = T.zeros_like(Xd)
+        Xm = T.zeros_like(Xd)
+        prior_mean = self.z_prior_mean
+        prior_logvar = self.z_prior_logvar
+        all_klds = gaussian_kld(self.q_z_given_x.output_mean, \
+                self.q_z_given_x.output_logvar, \
+                prior_mean, prior_logvar)
+        # compile theano function for a one-sample free-energy estimate
+        kld_func = theano.function(inputs=[Xd], outputs=all_klds, \
+                givens={self.Xd: Xd, self.Xc: Xc, self.Xm: Xm})
+        return kld_func
+
+    def _construct_compute_fe_terms(self):
+        """
+        Construct theano function to compute the log-likelihood and posterior
+        KL-divergence terms for the variational free-energy.
+        """
+        # setup some symbolic variables for theano to deal with
+        Xd = T.matrix()
+        Xc = T.zeros_like(Xd)
+        Xm = T.zeros_like(Xd)
+        # construct values to output
+        if self.x_type == 'bernoulli':
+            ll_term = log_prob_bernoulli(self.x, self.xg)
+        else:
+            ll_term = log_prob_gaussian2(self.x, self.xg, \
+                    log_vars=self.output_logvar[0])
+        prior_mean = self.z_prior_mean
+        prior_logvar = self.z_prior_logvar
+        all_klds = gaussian_kld(self.q_z_given_x.output_mean, \
+                self.q_z_given_x.output_logvar, \
+                prior_mean, prior_logvar)
+        kld_term = T.sum(all_klds, axis=1)
+        # compile theano function for a one-sample free-energy estimate
+        fe_term_sample = theano.function(inputs=[Xd], \
+                outputs=[ll_term, kld_term], \
+                givens={self.Xd: Xd, self.Xc: Xc, self.Xm: Xm})
+        # construct a wrapper function for multi-sample free-energy estimate
+        def fe_term_estimator(X, sample_count):
+            ll_sum = np.zeros((X.shape[0],))
+            kld_sum = np.zeros((X.shape[0],))
+            for i in range(sample_count):
+                result = fe_term_sample(X)
+                ll_sum = ll_sum + result[0].ravel()
+                kld_sum = kld_sum + result[1].ravel()
+            mean_nll = -ll_sum / float(sample_count)
+            mean_kld = kld_sum / float(sample_count)
+            return [mean_nll, mean_kld]
+        return fe_term_estimator
 
     def _construct_sample_from_prior(self):
         """
@@ -363,8 +386,6 @@ class OneStageModel(object):
             return result_dict
         return prior_sampler
 
-
-
 def binarize_data(X):
     """
     Make a sample of bernoulli variables with probabilities given by X.
@@ -373,6 +394,63 @@ def binarize_data(X):
     probs = npr.rand(*X_shape)
     X_binary = 1.0 * (probs < X)
     return X_binary.astype(theano.config.floatX)
+
+def compute_fe_bound(OSM, X, sample_count):
+    """
+    Compute free-energy bound for X, in minibatches.
+    """
+    obs_count = X.shape[0]
+    batch_size = 2000
+    X_nll = np.zeros((obs_count,))
+    X_kld = np.zeros((obs_count,))
+    batch_start = 0
+    while True:
+        batch_end = min(obs_count, batch_start+batch_size)
+        print("batch index: {0:d} --> {1:d}".format(batch_start, batch_end))
+        Xb = X[batch_start:batch_end]
+        fe_terms = OSM.compute_fe_terms(Xb, sample_count)
+        X_nll[batch_start:batch_end] = fe_terms[0].ravel()
+        X_kld[batch_start:batch_end] = fe_terms[1].ravel()
+        # advance batch bounds
+        batch_start = batch_end
+        # quit when its the right time
+        if batch_start == obs_count:
+            break
+    X_fe = X_nll + X_kld
+    return [X_fe, X_nll, X_kld]
+
+def make_weights(weight_count):
+    weights = np.ones((weight_count,))
+    step = int(weight_count / 8.0)
+    for i in range(4):
+        weights[i*step:((i+1)*step)] = 2.0**(4-i)
+    weights = np.flipud(weights)
+    weights = weights / np.sum(weights)
+    return weights
+
+def collect_obs_costs(batch_costs, batch_reps):
+    """
+    Collect per-observation costs from a cost vector containing the cost for
+    multiple repetitions of each observation.
+    """
+    obs_count = int(batch_costs.shape[0] / batch_reps)
+    obs_costs = np.zeros((obs_count,))
+    obs_idx = -1
+    for i in range(batch_costs.shape[0]):
+        if ((i % batch_reps) == 0):
+            obs_idx = obs_idx + 1
+        obs_costs[obs_idx] = obs_costs[obs_idx] + batch_costs[i]
+    obs_costs = obs_costs / batch_reps
+    return obs_costs
+
+def row_shuffle(X):
+    """
+    Return a copy of X with shuffled rows.
+    """
+    shuf_idx = np.arange(X.shape[0])
+    npr.shuffle(shuf_idx)
+    X_shuf = X[shuf_idx]
+    return X_shuf
 
 if __name__=="__main__":
     from load_data import load_udm, load_udm_ss, load_mnist
@@ -391,6 +469,9 @@ if __name__=="__main__":
     tr_samples = Xtr.shape[0]
     batch_size = 250
     batch_reps = 10
+    carry_frac = 0.2
+    carry_size = int(batch_size * carry_frac)
+    carry_time = 100
 
     ###############################################
     # Setup some parameters for the OneStageModel #
@@ -467,48 +548,62 @@ if __name__=="__main__":
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     costs = [0. for i in range(20)]
-    post_mean_dim_vars = None
-    learn_rate = 0.004
+    obs_costs = np.zeros((batch_size,))
+    learn_rate = 0.002
     for i in range(500000):
-        scale = min(1.0, (float(i+1) / 10000.0))
-        # randomly sample a minibatch
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-        Xb = Xtr.take(tr_idx, axis=0) #binarize_data(Xtr.take(tr_idx, axis=0))
-        Xb = np.repeat(Xb, batch_reps, axis=0).astype(theano.config.floatX)
+        scale = min(1.0, (float(i+1) / 5000.0))
+        if True: #((i % carry_time) == 0):
+            # sample a fully random batch
+            batch_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
+        else:
+            # sample a partially random batch, which retains some portion of
+            # the worst scoring examples from the previous batch
+            fresh_idx = npr.randint(low=0,high=tr_samples,size=(batch_size-carry_size,))
+            batch_idx = np.concatenate((fresh_idx.ravel(), carry_idx.ravel()))
         # set model parameters for this update
-        OSM.set_sgd_params(lr_1=scale*learn_rate, mom_1=0.9, mom_2=0.99)
+        OSM.set_sgd_params(lr_1=scale*learn_rate, mom_1=0.8, mom_2=0.99)
         OSM.set_lam_nll(lam_nll=1.0)
         OSM.set_lam_kld(lam_kld_1=25.0)
         OSM.set_lam_l2w(1e-4)
+
         # perform a minibatch update and record the cost for this batch
-        result = OSM.train_joint(Xb, 0.0*Xb, 0.0*Xb)
+        Xb = Xtr.take(batch_idx, axis=0) #binarize_data(Xtr.take(fresh_idx, axis=0))
+        Xb = Xb.astype(theano.config.floatX)
+        result = OSM.train_joint(Xb, 0.0*Xb, 0.0*Xb, batch_reps)
+        batch_costs = result[4] + result[5]
+        obs_costs = collect_obs_costs(batch_costs, batch_reps)
+        carry_idx = batch_idx[np.argsort(-obs_costs)[0:carry_size]]
         costs = [(costs[j] + result[j]) for j in range(len(result))]
         if ((i % 500) == 0):
             costs = [(v / 500.0) for v in costs]
-            post_mean_dim_vars = costs[8]
             print("-- batch {0:d} --".format(i))
             print("    joint_cost: {0:.4f}".format(costs[0]))
             print("    nll_cost  : {0:.4f}".format(costs[1]))
-            print("    kld_l1    : {0:.4f}".format(costs[2]))
-            print("    kld_l2    : {0:.4f}".format(costs[3]))
-            print("    kld_cost  : {0:.4f}".format(costs[4]))
-            print("    reg_cost  : {0:.4f}".format(costs[5]))
-            print("    post_norm : {0:.4f}".format(costs[6]))
-            print("    post_lgvar: {0:.4f}".format(costs[7]))
+            print("    kld_cost  : {0:.4f}".format(costs[2]))
+            print("    reg_cost  : {0:.4f}".format(costs[3]))
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
+            Xva = row_shuffle(Xva)
             model_samps = OSM.sample_from_prior(500)
-            file_name = "OSM_SAMPLES_b{0:d}_XG.png".format(i)
+            file_name = "OSM_NC_SAMPLES_b{0:d}_XG.png".format(i)
             utils.visualize_samples(model_samps['xg'], file_name, num_rows=20)
-            file_name = "OSM_INF_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "OSM_NC_INF_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(OSM.inf_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
-            file_name = "OSM_GEN_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "OSM_NC_GEN_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(OSM.gen_weights.get_value(borrow=False), \
                     file_name, num_rows=20)
-            file_name = "OSM_POST_DIM_VARS_b{0:d}.png".format(i)
-            utils.plot_stem(np.arange(post_mean_dim_vars.shape[0]), \
-                    post_mean_dim_vars, file_name)
+            # compute information about free-energy on validation set
+            file_name = "OSM_NC_FREE_ENERGY_b{0:d}.png".format(i)
+            fe_terms = OSM.compute_fe_terms(Xva[0:5000], 20)
+            utils.plot_scatter(fe_terms[1], fe_terms[0], file_name, \
+                    x_label='Posterior KLd', y_label='Negative Log-likelihood')
+            # compute information about posterior KLds on validation set
+            file_name = "OSM_NC_POST_KLDS_b{0:d}.png".format(i)
+            post_klds = OSM.compute_post_klds(Xva[0:5000])
+            post_dim_klds = np.mean(post_klds, axis=0)
+            utils.plot_stem(np.arange(post_dim_klds.shape[0]), post_dim_klds, \
+                    file_name)
         if ((i > 5000) and ((i % 2000) == 0)):
             # test Parzen density estimator built from prior samples
             model_samps = OSM.sample_from_prior(10000)

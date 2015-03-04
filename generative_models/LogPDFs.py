@@ -159,7 +159,6 @@ def log_mean_exp(a):
     result = max_ + T.log(T.exp(a - max_.dimshuffle(0, 'x')).mean(1))
     return result 
 
-
 def theano_parzen(mu, sigma):
     """
     Credit: Yann N. Dauphin
@@ -171,7 +170,6 @@ def theano_parzen(mu, sigma):
     Z = mu.shape[1] * T.log(sigma * np.sqrt(np.pi * 2))
     parzen_func = theano.function([x], E - Z)
     return parzen_func
-
 
 def cross_validate_sigma(samples, data, sigmas, batch_size):
     """

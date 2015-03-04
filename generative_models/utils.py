@@ -277,5 +277,34 @@ def plot_line(x, y, f_name):
     plt.close(fig)
     return
 
+def plot_scatter(x, y, f_name, x_label=None, y_label=None):
+    """
+    Plot a scatter plot.
+    """
+    import matplotlib.pyplot as plt
+    if x_label is None:
+        x_label = 'Posterior KLd'
+    if y_label is None:
+        y_label = 'Expected Log-likelihood'
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    box = ax.get_position()
+    ax.set_position([box.x0+(0.05*box.width), box.y0+(0.05*box.height), 0.96*box.width, 0.96*box.height])
+    ax.set_xlabel(x_label, fontsize=22)
+    ax.set_ylabel(y_label, fontsize=22)
+    ax.hold(True)
+    ax.scatter(x, y, s=24, alpha=0.5, c=u'b', marker=u'o')
+    plt.sca(ax)
+    x_locs, x_labels = plt.xticks()
+    plt.xticks(x_locs, fontsize=18)
+    y_locs, y_labels = plt.yticks()
+    plt.yticks(y_locs, fontsize=18)
+    fig.savefig(f_name, dpi=None, facecolor='w', edgecolor='w', \
+        orientation='portrait', papertype=None, format='png', \
+        transparent=False, bbox_inches=None, pad_inches=0.1, \
+        frameon=None)
+    plt.close(fig)
+    return
+
 
 
