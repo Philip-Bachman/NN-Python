@@ -1,4 +1,5 @@
 import numpy as np
+import numpy.random as npr
 import theano
 import theano.tensor as T
 #from theano.tensor.shared_randomstreams import RandomStreams as RandStream
@@ -126,6 +127,24 @@ def apply_mask(Xd=None, Xc=None, Xm=None):
     """
     X_masked = ((1.0 - Xm) * Xd) + (Xm * Xc)
     return X_masked
+
+def binarize_data(X):
+    """
+    Make a sample of bernoulli variables with probabilities given by X.
+    """
+    X_shape = X.shape
+    probs = npr.rand(*X_shape)
+    X_binary = 1.0 * (probs < X)
+    return X_binary.astype(theano.config.floatX)
+
+def row_shuffle(X):
+    """
+    Return a copy of X with shuffled rows.
+    """
+    shuf_idx = np.arange(X.shape[0])
+    npr.shuffle(shuf_idx)
+    X_shuf = X[shuf_idx]
+    return X_shuf
 
 ######################################
 # BASIC FULLY-CONNECTED HIDDEN LAYER #

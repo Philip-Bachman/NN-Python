@@ -83,6 +83,10 @@ class InfNet(object):
         #####################################################
         self.params = params
         self.lam_l2a = params['lam_l2a']
+        if 'build_theano_funcs' in params:
+            self.build_theano_funcs = params['build_theano_funcs']
+        else:
+            self.build_theano_funcs = True
         if 'vis_drop' in params:
             self.vis_drop = params['vis_drop']
         else:
@@ -422,9 +426,13 @@ class InfNet(object):
         # Construct a theano function for sampling from the approximate
         # posteriors inferred by this model for some collection of points
         # in the "data space".
-        self.sample_posterior = self._construct_sample_posterior()
-        self.mean_posterior = theano.function([self.Xd], \
-                outputs=self.output_mean)
+        if self.build_theano_funcs:
+            self.sample_posterior = self._construct_sample_posterior()
+            self.mean_posterior = theano.function([self.Xd], \
+                    outputs=self.output_mean)
+        else:
+            self.sample_posterior = None
+            self.mean_posterior = None
 
         ########################################################
         # CONSTRUCT FUNCTIONS FOR RICA PRETRAINING INPUT LAYER #

@@ -94,6 +94,10 @@ class GenNet(object):
         assert(not (params is None))
         self.params = params
         lam_l2a = self.params['lam_l2a']
+        if 'build_theano_funcs' in params:
+            self.build_theano_funcs = params['build_theano_funcs']
+        else:
+            self.build_theano_funcs = True
         if 'vis_drop' in self.params:
             # Drop rate on the latent variables
             self.vis_drop = self.params['vis_drop']
@@ -353,12 +357,18 @@ class GenNet(object):
         self.act_reg_cost = lam_l2a * self._act_reg_cost()
         # Construct a sampler for drawing independent samples from this model's
         # isotropic Gaussian prior, and a sampler for the model distribution.
-        self.sample_from_prior = self._construct_prior_sampler()
-        self.sample_from_model = self._construct_model_sampler()
-        self.scaled_sampler = self._construct_scaled_sampler()
-        # Construct a function for passing points from the latent/prior space
-        # through the transform induced by the current model parameters.
-        self.transform_prior = self._construct_transform_prior()
+        if self.build_theano_funcs:
+            self.sample_from_prior = self._construct_prior_sampler()
+            self.sample_from_model = self._construct_model_sampler()
+            self.scaled_sampler = self._construct_scaled_sampler()
+            # Construct a function for passing points from the latent/prior space
+            # through the transform induced by the current model parameters.
+            self.transform_prior = self._construct_transform_prior()
+        else:
+            self.sample_from_prior = None
+            self.sample_from_model = None
+            self.scaled_sampler = None
+            self.transform_prior = None
 
         ########################################################
         # CONSTRUCT FUNCTIONS FOR RICA PRETRAINING OUTPUT MEAN #

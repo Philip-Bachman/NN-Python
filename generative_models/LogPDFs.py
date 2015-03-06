@@ -89,6 +89,16 @@ def gaussian_kld(mu_left, logvar_left, mu_right, logvar_right):
             ((mu_left - mu_right)**2.0 / T.exp(logvar_right)) - 1.0)
     return gauss_klds
 
+def gaussian_kld_BN(logvar_left, logvar_right):
+    """
+    Compute KL divergence between a bunch of univariate Gaussian distributions
+    with the given means and log-variances.
+    We do KL(N(mu_left, logvar_left) || N(mu_right, logvar_right)).
+    """
+    gauss_klds = 0.5 * (logvar_right - logvar_left + \
+            (T.exp(logvar_left) / T.exp(logvar_right)) + \
+            (1.0 / T.exp(logvar_right)) - 1.0)
+    return gauss_klds
 
 #################################
 # Log-gamma function for theano #
