@@ -228,10 +228,13 @@ class PVModel:
                 print("Batch {0:d}/{1:d}, loss {2:.4f}".format(b, batch_count, L/obs_count))
                 L = 0.0
         # Set self.context_layer back to what it was prior to retraining
-        self.word_layer.reset_grads()
         self.context_layer = prev_context_layer
-        self.context_laye.rest_grads()
-        self.class_layer.reset_grads()
+        # reset gradient and adagrad momentum acccumulators, which get
+        # modified during the feedforward->backprop cycles performed while
+        # inferring some context vectors.
+        self.word_layer.reset_grads_and_moms()
+        self.context_layer.reset_grads_and_moms()
+        self.class_layer.reset_grads_and_moms()
         return new_context_layer
 
 ####################################
@@ -691,13 +694,18 @@ def test_pv_model():
     ngram_sampler = cu.PhraseSampler(tr_phrases, sg_window)
 
     # Train all parameters using the training set phrases
-    for i in range(100):
+    for i in range(5):
         pvm.train(ngram_sampler, hsm_code_keys, hsm_code_signs, 300, 10001, \
                 train_ctx=True, train_lut=True, train_cls=True, learn_rate=1e-3)
         [s_keys, n_keys, s_words, n_words] = some_nearest_words( k2w, 10, \
                 W1=pvm.word_layer.params['W'], W2=None)
         for w in range(10):
             print("{0:s}: {1:s}".format(s_words[w],", ".join(n_words[w])))
+
+    context_vectors = pvm.infer_context_vectors( \
+            ngram_sampler, hsm_code_keys, hsm_code_signs, \
+            300, 20001, learn_rate=1e-3)
+    return
 
 def test_w2v_model():
     data_dir = './training_text'
@@ -741,8 +749,8 @@ def test_w2v_model():
 
 if __name__=="__main__":
     #test_cam_model()
-    #test_pv_model()
-    test_w2v_model()
+    test_pv_model()
+    #test_w2v_model()
     #####
     #####
     #####

@@ -122,7 +122,7 @@ class IRModel(object):
         # shared global prior -- e.g. zero mean and unit variance.
         self.zt_reg_weight = theano.shared(value=zero_ary, name='irm_zt_reg_weight')
         self.set_zt_reg_weight(0.2)
-        # self.init_bias directyl provides xt0 if self.simple_init is True
+        # self.init_bias directly provides xt0 if self.simple_init is True
         zero_row = np.zeros((self.xt_dim,)).astype(theano.config.floatX)
         self.init_bias = theano.shared(value=zero_row, name='irm_init_bias')
         # self.output_bias/self.output_logvar modify the output distribution
@@ -163,11 +163,16 @@ class IRModel(object):
             # distribution over zti will use the gradient of log-likelihood
             grad_ll = 2.0 * (self.x - self.xt_transform(self.xt[i]))
             # now we build the model for variational zti given xti
-            #self.q_zti_given_x_xti = q_zti_given_x_xti.shared_param_clone(rng=rng, \
-            #        Xd=T.horizontal_stack(self.x, grad_ll))
-            self.q_zti_given_x_xti.append(\
-                    q_zti_given_x_xti.shared_param_clone(rng=rng, \
-                    Xd=grad_ll))
+            if (q_zti_given_x_xti.shared_layers[0].in_dim > self.xt_dim):
+                # q_zti_given_x_xti takes both x and xti as input...
+                self.q_zti_given_x_xti.append( \
+                        q_zti_given_x_xti.shared_param_clone(rng=rng, \
+                        Xd=T.horizontal_stack(self.x, grad_ll)))
+            else:
+                # q_zti_given_x_xti takes only xti as input...
+                self.q_zti_given_x_xti.append(\
+                        q_zti_given_x_xti.shared_param_clone(rng=rng, \
+                        Xd=grad_ll))
             zti_q = self.q_zti_given_x_xti[i].output
             # make zti samples that can be switched between zti_p and zti_q
             self.zt.append( ((self.train_switch[0] * zti_q) + \
@@ -178,6 +183,7 @@ class IRModel(object):
                     p_xti_given_xti_zti.shared_param_clone(rng=rng, \
                     Xd=self.zt[i]))
             xti_step = self.p_xti_given_xti_zti[i].output_mean
+            # use a simple additive step, for now...
             self.xt.append( (self.xt[i] + xti_step) )
 
         ######################################################################
@@ -257,7 +263,7 @@ class IRModel(object):
         # Construct a function for jointly training the generator/inferencer
         print("Compiling training function...")
         self.train_joint = self._construct_train_joint()
-        #self.compute_post_klds = self._construct_compute_post_klds()
+        self.compute_post_klds = self._construct_compute_post_klds()
         #self.compute_fe_terms = self._construct_compute_fe_terms()
         self.sample_from_prior = self._construct_sample_from_prior()
         # make easy access points for some interesting parameters
@@ -267,7 +273,15 @@ class IRModel(object):
         else:
             self.inf_1_weights = None
             self.gen_1_weights = None
-        self.inf_2_weights = self.q_zti_given_x_xti[0].shared_layers[0].W
+        # DO SOME STUFF?!
+        if (q_zti_given_x_xti.shared_layers[0].in_dim > self.xt_dim):
+            # q_zti_given_x_xti takes both x and xti as input...
+            self.inf_2_weights = self.q_zti_given_x_xti[0].shared_layers[0].W[:self.x_dim]
+            self.inf_3_weights = self.q_zti_given_x_xti[0].shared_layers[0].W[self.x_dim:]
+        else:
+            # q_zti_given_x_xti takes only xti as input...
+            self.inf_2_weights = self.q_zti_given_x_xti[0].shared_layers[0].W
+            self.inf_3_weights = self.q_zti_given_x_xti[0].shared_layers[0].W
         self.gen_2_weights = self.p_xti_given_xti_zti[0].mu_layers[-1].W
         return
 
@@ -364,20 +378,24 @@ class IRModel(object):
         Construct the negative log-likelihood part of cost to minimize.
         """
         obs_count = T.cast(self.x.shape[0], 'floatX')
-        # for now, we just compare with the final xt, i.e. self.xt[-1]
-        # -- for latent xt, we'll need to use self.p_x_given_xti_zti
-        xt_output = self.xt_transform(self.xt[-1])
-        if self.x_type == 'bernoulli':
-            ll_cost = log_prob_bernoulli(self.x, xt_output)
-        else:
-            ll_cost = log_prob_gaussian2(self.x, xt_output, \
-                    log_vars=self.output_logvar[0])
-        nll_cost = -T.sum(ll_cost) / obs_count
+        # average log-likelihood over the refinement sequence
+        nll_costs = []
+        for i in range(self.ir_steps):
+            xti = self.xt_transform(self.xt[i+1])
+            if self.x_type == 'bernoulli':
+                ll_cost = log_prob_bernoulli(self.x, xti)
+            else:
+                ll_cost = log_prob_gaussian2(self.x, xti, \
+                        log_vars=self.output_logvar[0])
+            nll_cost = -T.sum(ll_cost) / obs_count
+            nll_costs.append(nll_cost)
+        nll_cost = nll_costs[-1]
+        #nll_cost = sum(nll_costs) / float(self.ir_steps)
         return nll_cost
 
     def _construct_kld_costs(self):
         """
-        Construct the posterior KL-ivergence part of cost to minimize.
+        Construct the posterior KL-divergence part of cost to minimize.
         """
         # construct a penalty that is L2-like near 0 and L1-like away from 0.
         huber_pen = lambda x, d: \
@@ -448,20 +466,41 @@ class IRModel(object):
         # setup some symbolic variables for theano to deal with
         x = T.matrix()
         # construct symbolic expressions for the desired KLds
-        kld_z = gaussian_kld(self.q_z_given_x.output_mean, \
-                self.q_z_given_x.output_logvar, \
-                0.0, 0.0)
-        kld_zt_cond = gaussian_kld(self.q_zti_given_x_xti.output_mean, \
-                self.q_zti_given_x_xti.output_logvar, \
-                self.p_zti_given_xti.output_mean, \
-                self.p_zti_given_xti.output_logvar)
-        kld_zt_glob = gaussian_kld(self.p_zti_given_xti.output_mean, \
-                self.p_zti_given_xti.output_logvar, 0.0, 0.0)
-        all_klds = [kld_z, kld_zt_cond, kld_zt_glob]
+        cond_klds = []
+        glob_klds = []
+        for i in range(self.ir_steps):
+            kld_zt_cond = gaussian_kld(self.q_zti_given_x_xti[i].output_mean, \
+                    self.q_zti_given_x_xti[i].output_logvar, \
+                    self.p_zti_given_xti[i].output_mean, \
+                    self.p_zti_given_xti[i].output_logvar)
+            kld_zt_glob = gaussian_kld(self.p_zti_given_xti[i].output_mean, \
+                    self.p_zti_given_xti[i].output_logvar, 0.0, 0.0)
+            cond_klds.append(kld_zt_cond)
+            glob_klds.append(kld_zt_glob)
+        # gather conditional and global klds for all IR steps
+        all_klds = cond_klds + glob_klds
+        # gather kld for initialization step, if we're doing one
+        if not self.simple_init:
+            kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
+                    self.q_z_given_x.output_logvar, \
+                    0.0, 0.0)
+            all_klds.append(kld_z_all)
         # compile theano function for a one-sample free-energy estimate
         kld_func = theano.function(inputs=[x], outputs=all_klds, \
                 givens={ self.x: x })
-        return kld_func
+        def post_kld_computer(X):
+            f_all_klds = kld_func(X)
+            if self.simple_init:
+                f_kld_z = 0.0
+            else:
+                f_kld_z = f_all_klds[-1]
+            f_kld_zt_cond = np.zeros(f_all_klds[0].shape)
+            f_kld_zt_glob = np.zeros(f_all_klds[0].shape)
+            for j in range(self.ir_steps):
+                f_kld_zt_cond += f_all_klds[j]
+                f_kld_zt_glob += f_all_klds[j + self.ir_steps]
+            return [f_kld_z, f_kld_zt_cond, f_kld_zt_glob]
+        return post_kld_computer
 
     def _construct_sample_from_prior(self):
         """
@@ -471,7 +510,7 @@ class IRModel(object):
         """
         z_sym = T.matrix()
         x_sym = T.matrix()
-        oputs = self.xt
+        oputs = [self.xt_transform(xti) for xti in self.xt]
         if not self.simple_init:
             sample_func = theano.function(inputs=[z_sym, x_sym], outputs=oputs, \
                     givens={ self.z: z_sym, \
@@ -547,7 +586,7 @@ if __name__=="__main__":
     params['build_theano_funcs'] = False
     p_zti_given_xti = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_zti_given_xti.init_biases(0.1)
+    p_zti_given_xti.init_biases(0.2)
     #######################
     # p_xti_given_xti_zti #
     #######################
@@ -606,28 +645,31 @@ if __name__=="__main__":
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
     IRM.set_output_bias(0.0*obs_mean)
-    IRM.set_init_bias(obs_mean_logit)
+    IRM.set_init_bias(0.5*obs_mean_logit)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     costs = [0. for i in range(10)]
     learn_rate = 0.003
-    for i in range(500000):
-        scale = min(1.0 (float(i+1) / 2500))
-        if (((i + 1) % 20000) == 0):
+    for i in range(150000):
+        scale_1 = min(1.0, ((i+1) / 5000.0))
+        scale_2 = min(1.0, ((i+1) / 5000.0))
+        if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.9
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
         # train the coarse approximation and corrector model jointly
-        IRM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
+        IRM.set_sgd_params(lr_1=scale_1*learn_rate, lr_2=scale_1*learn_rate, \
                 mom_1=0.8, mom_2=0.99)
+        IRM.set_train_switch(1.0)
         IRM.set_lam_nll(lam_nll=1.0)
-        IRM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
-        IRM.set_lam_l2w(1e-4)
-        IRM.set_zt_reg_weight(0.2)
+        IRM.set_lam_kld(lam_kld_1=(0.1 + 0.9*scale_2), \
+                lam_kld_2=(0.1 + 0.9*scale_2))
+        IRM.set_lam_l2w(1e-5)
+        IRM.set_zt_reg_weight(0.1)
         # perform a minibatch update and record the cost for this batch
         result = IRM.train_joint(Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
@@ -645,23 +687,23 @@ if __name__=="__main__":
             for s in range(IRM.ir_steps+1):
                 file_name = "IRM_SAMPLES_b{0:d}_XT{1:d}.png".format(i, s)
                 utils.visualize_samples(model_samps[s], file_name, num_rows=20)
-            file_name = "IRM_INF_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "IRM_INF_WEIGHTS_X_b{0:d}.png".format(i)
             utils.visualize_samples(IRM.inf_2_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
             file_name = "IRM_GEN_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(IRM.gen_2_weights.get_value(borrow=False), \
                     file_name, num_rows=20)
             # compute information about posterior KLds on validation set
-            # post_klds = IRM.compute_post_klds(Xva[0:5000])
+            post_klds = IRM.compute_post_klds(Xva[0:5000])
             # file_name = "IRM_Z_POST_KLDS_b{0:d}.png".format(i)
             # utils.plot_stem(np.arange(post_klds[0].shape[1]), \
             #         np.mean(post_klds[0], axis=0), file_name)
-            # file_name = "IRM_ZTC_POST_KLDS_b{0:d}.png".format(i)
-            # utils.plot_stem(np.arange(post_klds[1].shape[1]), \
-            #         np.mean(post_klds[1], axis=0), file_name)
-            # file_name = "IRM_ZTG_POST_KLDS_b{0:d}.png".format(i)
-            # utils.plot_stem(np.arange(post_klds[2].shape[1]), \
-            #         np.mean(post_klds[2], axis=0), file_name)
+            file_name = "IRM_ZTC_POST_KLDS_b{0:d}.png".format(i)
+            utils.plot_stem(np.arange(post_klds[1].shape[1]), \
+                    np.mean(post_klds[1], axis=0), file_name)
+            file_name = "IRM_ZTG_POST_KLDS_b{0:d}.png".format(i)
+            utils.plot_stem(np.arange(post_klds[2].shape[1]), \
+                    np.mean(post_klds[2], axis=0), file_name)
     ########
     # DONE #
     ########

@@ -151,9 +151,9 @@ class TwoStageModel(object):
                 grad_ll = self.x - xc
                 
             #self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
-            #        Xd=T.horizontal_stack(self.x, 5.0*grad_ll))
+            #        Xd=T.horizontal_stack(self.x, 2.0*grad_ll))
             self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
-                    Xd=(5.0*grad_ll))
+                    Xd=(2.0*grad_ll))
         self.zt_q = self.q_zt_given_x_xt.output
         # make a zt that switches between self.zt_p and self.zt_q
         self.zt = (self.train_switch[0] * self.zt_q) + \
@@ -561,7 +561,7 @@ if __name__=="__main__":
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 250
+    batch_size = 500
     batch_reps = 10
 
     ###############################################
@@ -569,7 +569,7 @@ if __name__=="__main__":
     ###############################################
     prior_sigma = 1.0
     x_dim = Xtr.shape[1]
-    z_dim = 50
+    z_dim = 100
     xt_dim = x_dim
     zt_dim = 100
     x_type = 'bernoulli'
@@ -583,7 +583,7 @@ if __name__=="__main__":
     # p_xt_given_z #
     ################
     params = {}
-    shared_config = [z_dim, 250, 250]
+    shared_config = [z_dim, 500, 500]
     top_config = [shared_config[-1], xt_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -643,7 +643,7 @@ if __name__=="__main__":
     # q_z_given_x #
     ###############
     params = {}
-    shared_config = [x_dim, 250, 250]
+    shared_config = [x_dim, 500, 500]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -695,35 +695,38 @@ if __name__=="__main__":
             params=tsm_params)
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
-    TSM.set_output_bias(obs_mean_logit)
+    TSM.set_output_bias(0.5*obs_mean_logit)
     TSM.set_input_bias(-obs_mean)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     costs = [0. for i in range(10)]
-    learn_rate = 0.003
-    for i in range(500000):
-        scale = min(1.0 (float(i+1) / 2500))
-        if (((i + 1) % 20000) == 0):
-            learn_rate = learn_rate * 0.9
+    learn_rate = 0.005
+    for i in range(150000):
+        scale_1 = min(1.0, ((i+1) / 5000.0))
+        scale_2 = min(1.0, ((i+1) / 10000.0))
+        if (((i + 1) % 10000) == 0):
+            learn_rate = learn_rate * 0.85
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
         # train the coarse approximation and corrector model jointly
-        TSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
+        TSM.set_sgd_params(lr_1=scale_1*learn_rate, lr_2=scale_1*learn_rate, \
                 mom_1=0.8, mom_2=0.99)
+        TSM.set_train_switch(1.0) # set to training mode
         TSM.set_step_switch(1.0) # scale the corrector's contribution
         TSM.set_lam_nll(lam_nll=1.0)
-        TSM.set_lam_kld(lam_kld_1=3.0, lam_kld_2=0.01)
+        TSM.set_lam_kld(lam_kld_1=(0.1 + 1.4*scale_2), \
+                lam_kld_2=(0.1 + 1.4*scale_2))
         TSM.set_lam_l2w(1e-5)
-        TSM.set_zt_reg_weight(0.2)
+        TSM.set_zt_reg_weight(0.1)
         # perform a minibatch update and record the cost for this batch
         result = TSM.train_joint(Xb, 0.0*Xb, 0.0*Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
         if ((i % 500) == 0):
-            costs = [(v / 500.0) for v in costs]
+            costs = [(v / 250.0) for v in costs]
             print("-- batch {0:d} --".format(i))
             print("    joint_cost: {0:.4f}".format(costs[0]))
             print("    nll_cost  : {0:.4f}".format(costs[1]))
