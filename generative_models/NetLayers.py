@@ -146,6 +146,27 @@ def row_shuffle(X):
     X_shuf = X[shuf_idx]
     return X_shuf
 
+# code from the lasagne library
+def ortho_matrix(shape=None, gain=1.0):
+    """
+    Orthogonal matrix initialization. For n-dimensional shapes where n > 2,
+    the n-1 trailing axes are flattened. For convolutional layers, this
+    corresponds to the fan-in, so this makes the initialization usable for
+    both dense and convolutional layers.
+    """
+    # relu gain for elided activations
+    if gain == 'relu':
+        gain = np.sqrt(2)
+    if len(shape) < 2:
+        raise RuntimeError("Only shapes of length 2 or more are supported.")
+    flat_shape = (shape[0], np.prod(shape[1:]))
+    a = npr.normal(0.0, 1.0, flat_shape)
+    u, _, v = np.linalg.svd(a, full_matrices=False)
+    q = u if u.shape == flat_shape else v # pick the one with the correct shape
+    q = q.reshape(shape)
+    W = gain * q[:shape[0], :shape[1]]
+    return W
+
 ######################################
 # BASIC FULLY-CONNECTED HIDDEN LAYER #
 ######################################
@@ -211,36 +232,20 @@ class HiddenLayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            if self.pool_size <= 10000:
-                # Generate random initial filters in a typical way
-                W_init = 1.0 * np.asarray(rng.normal( \
-                          size=(self.in_dim, self.filt_count)), \
-                          dtype=theano.config.floatX)
-            else:
-                # Generate groups of random filters to pool over such that
-                # intra-group correlations are stronger than inter-group
-                # correlations, to encourage pooling over similar filters...
-                filters = []
-                f_size = (self.in_dim, 1)
-                for g_num in range(self.pool_count):
-                    g_filt = 1.0 * rng.normal(size=f_size)
-                    for f_num in range(self.pool_size):
-                        f_filt = g_filt + 0.2 * rng.normal(size=f_size)
-                        filters.append(f_filt)
-                W_init = np.hstack(filters).astype(theano.config.floatX)
-            #print("W_scale: {0:.4f}".format(W_scale))
-            W = theano.shared(value=(W_scale*W_init), name="{0:s}_W".format(name))
+            # Generate initial filters using orthogonal random trick
+            W_init = ortho_matrix(shape=(self.in_dim, self.filt_count), \
+                    gain=W_scale)
+            W_init = W_init.astype(theano.config.floatX)
+            W = theano.shared(value=W_init, name="{0:s}_W".format(name))
         if b is None:
             b_init = np.zeros((self.filt_count,), dtype=theano.config.floatX)
             b = theano.shared(value=b_init, name="{0:s}_b".format(name))
-
 
         # Set layer weights and biases
         self.W = W
         self.b = b
 
         # Compute linear "pre-activation" for this layer
-        #self.linear_output = 10.0 * T.tanh((T.dot(self.noisy_input, self.W) + self.b) / 10.0)
         self.linear_output = T.dot(self.noisy_input, self.W) + self.b
 
         # Add noise to the pre-activation features (if desired)

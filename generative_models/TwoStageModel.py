@@ -106,6 +106,9 @@ class TwoStageModel(object):
         # a shared global prior (e.g. zero mean and unit variance)
         self.zt_reg_weight = theano.shared(value=zero_ary, name='tsm_zt_reg_weight')
         self.set_zt_reg_weight(0.2)
+        # setup a weight for mixing L1/L2 regularization on posterior KLds
+        self.l1_mix_weight = theano.shared(value=zero_ary, name='tsm_l1_mix_weight')
+        self.set_l1_mix_weight(1.0)
         # make some parameters for biases on the reconstructions. these
         # parameters get updated during training, as they affect the objective
         zero_row = np.zeros((self.x_dim,)).astype(theano.config.floatX)
@@ -263,7 +266,7 @@ class TwoStageModel(object):
         self.train_joint = self._construct_train_joint()
         self.compute_costs = self._construct_compute_costs()
         self.compute_post_klds = self._construct_compute_post_klds()
-        #self.compute_ll_bound = self._construct_compute_ll_bound()
+        self.compute_fe_terms = self._construct_compute_fe_terms()
         self.sample_from_prior = self._construct_sample_from_prior()
         # make easy access points for some interesting parameters
         self.inf_1_weights = self.q_z_given_x.shared_layers[0].W
@@ -355,6 +358,17 @@ class TwoStageModel(object):
         self.zt_reg_weight.set_value(new_val)
         return
 
+    def set_l1_mix_weight(self, l1_mix_weight=1.0):
+        """
+        Set the weight for mixing L1/L2 penaltied on posterior KLds.
+        """
+        assert((l1_mix_weight >= 0.0) and (l1_mix_weight <= 1.0))
+        zero_ary = np.zeros((1,))
+        new_val = zero_ary + l1_mix_weight
+        new_val = new_val.astype(theano.config.floatX)
+        self.l1_mix_weight.set_value(new_val)
+        return
+
     def set_output_bias(self, new_bias=None):
         """
         Set the output layer bias.
@@ -371,36 +385,42 @@ class TwoStageModel(object):
         self.q_z_given_x.shared_layers[0].b_in.set_value(new_bias)
         return
 
-    def _construct_compute_ll_bound(self):
+    def _construct_compute_fe_terms(self):
         """
-        Construct a function for computing the variational likelihood bound.
+        Construct a function for computing terms in variational free energy.
         """
         # setup some symbolic variables for theano to deal with
         Xd = T.matrix()
         Xc = T.zeros_like(Xd)
         Xm = T.zeros_like(Xd)
-        # get symbolic var for posterior KLds
-        post_kld = self.IN.kld_cost
-        # get symbolic var for log likelihoods
-        log_likelihood = self.GN.compute_log_prob(self.IN.Xd)
-        # construct a theano function for actually computing stuff
-        outputs = [post_kld, log_likelihood]
-        out_func = theano.function([Xd], outputs=outputs, \
-                givens={ self.Xd: Xd, self.Xc: Xc, self.Xm: Xm })
-        # construct a function for computing multi-sample averages
-        def multi_sample_bound(X, sample_count=10):
-            post_klds = np.zeros((X.shape[0], 1))
-            log_likelihoods = np.zeros((X.shape[0], 1))
-            max_lls = np.zeros((X.shape[0], 1)) - 1e8
+        # construct values to output
+        if self.x_type == 'bernoulli':
+            ll_term = log_prob_bernoulli(self.x, self.xg)
+        else:
+            ll_term = log_prob_gaussian2(self.x, self.xg, \
+                    log_vars=self.output_logvar[0])
+        prior_mean = self.z_prior_mean
+        prior_logvar = self.z_prior_logvar
+        all_klds = gaussian_kld(self.q_z_given_x.output_mean, \
+                self.q_z_given_x.output_logvar, \
+                prior_mean, prior_logvar)
+        kld_term = T.sum(all_klds, axis=1)
+        # compile theano function for a one-sample free-energy estimate
+        fe_term_sample = theano.function(inputs=[Xd], \
+                outputs=[ll_term, kld_term], \
+                givens={self.Xd: Xd, self.Xc: Xc, self.Xm: Xm})
+        # construct a wrapper function for multi-sample free-energy estimate
+        def fe_term_estimator(X, sample_count):
+            ll_sum = np.zeros((X.shape[0],))
+            kld_sum = np.zeros((X.shape[0],))
             for i in range(sample_count):
-                result = out_func(X)
-                post_klds = post_klds + (1.0 * result[0])
-                log_likelihoods = log_likelihoods + (1.0 * result[1])
-                max_lls = np.maximum(max_lls, (1.0 * result[1]))
-            post_klds = post_klds / sample_count
-            log_likelihoods = log_likelihoods / sample_count
-            ll_bounds = log_likelihoods - post_klds
-            return [ll_bounds, post_klds, log_likelihoods, max_lls]
+                result = fe_term_sample(X)
+                ll_sum = ll_sum + result[0].ravel()
+                kld_sum = kld_sum + result[1].ravel()
+            mean_nll = -ll_sum / float(sample_count)
+            mean_kld = kld_sum / float(sample_count)
+            return [mean_nll, mean_kld]
+        return fe_term_estimator
         return multi_sample_bound
 
     def _construct_nll_cost(self):
@@ -441,7 +461,7 @@ class TwoStageModel(object):
         kld_zt_glob = gaussian_kld(self.p_zt_given_xt.output_mean, \
                 self.p_zt_given_xt.output_logvar, 0.0, 0.0)
         kld_zt = huber_pen(kld_zt_cond, 0.01) + \
-                (self.zt_reg_weight[0] * huber_pen(kld_zt_glob, 0.01))
+                (self.zt_reg_weight[0] * kld_zt_glob**2.0)
         # compute the batch-wise costs
         kld_cost_1 = T.sum(huber_pen(kld_z, 0.01)) / obs_count
         kld_cost_2 = T.sum(kld_zt) / obs_count
@@ -561,7 +581,7 @@ if __name__=="__main__":
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 500
+    batch_size = 250
     batch_reps = 10
 
     ###############################################
@@ -593,7 +613,7 @@ if __name__=="__main__":
     params['lam_l2a'] = 1e-3
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.0
+    params['bias_noise'] = 0.1
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     p_xt_given_z = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
@@ -613,7 +633,7 @@ if __name__=="__main__":
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.0
+    params['bias_noise'] = 0.1
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     p_zt_given_xt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
@@ -633,7 +653,7 @@ if __name__=="__main__":
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.0
+    params['bias_noise'] = 0.1
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     p_x_given_xt_zt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
@@ -653,7 +673,7 @@ if __name__=="__main__":
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.0
+    params['bias_noise'] = 0.1
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     q_z_given_x = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
@@ -673,7 +693,7 @@ if __name__=="__main__":
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.0
+    params['bias_noise'] = 0.1
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     q_zt_given_x_xt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
@@ -705,9 +725,9 @@ if __name__=="__main__":
     learn_rate = 0.005
     for i in range(150000):
         scale_1 = min(1.0, ((i+1) / 5000.0))
-        scale_2 = min(1.0, ((i+1) / 10000.0))
+        scale_2 = min(1.0, ((i+1) / 5000.0))
         if (((i + 1) % 10000) == 0):
-            learn_rate = learn_rate * 0.85
+            learn_rate = learn_rate * 0.9
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
@@ -718,14 +738,13 @@ if __name__=="__main__":
         TSM.set_train_switch(1.0) # set to training mode
         TSM.set_step_switch(1.0) # scale the corrector's contribution
         TSM.set_lam_nll(lam_nll=1.0)
-        TSM.set_lam_kld(lam_kld_1=(0.1 + 1.4*scale_2), \
-                lam_kld_2=(0.1 + 1.4*scale_2))
+        TSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
         TSM.set_lam_l2w(1e-5)
-        TSM.set_zt_reg_weight(0.1)
+        TSM.set_zt_reg_weight(0.2)
         # perform a minibatch update and record the cost for this batch
         result = TSM.train_joint(Xb, 0.0*Xb, 0.0*Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
-        if ((i % 500) == 0):
+        if ((i % 250) == 0):
             costs = [(v / 250.0) for v in costs]
             print("-- batch {0:d} --".format(i))
             print("    joint_cost: {0:.4f}".format(costs[0]))
@@ -735,7 +754,7 @@ if __name__=="__main__":
             print("    kld_cost  : {0:.4f}".format(costs[4]))
             print("    reg_cost  : {0:.4f}".format(costs[5]))
             costs = [0.0 for v in costs]
-        if ((i % 2000) == 0):
+        if ((i % 1000) == 0):
             Xva = row_shuffle(Xva)
             model_samps = TSM.sample_from_prior(500)
             file_name = "TSM_SAMPLES_b{0:d}_XT.png".format(i)

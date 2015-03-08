@@ -190,7 +190,7 @@ class InfNet(object):
                 i_noise = 0.0
                 b_noise = self.bias_noise
             # set in-bound weights to have norm self.init_scale
-            i_scale = (1.0 / np.sqrt(in_dim)) * self.init_scale
+            i_scale = self.init_scale
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -257,7 +257,7 @@ class InfNet(object):
             i_noise = 0.0
             b_noise = self.bias_noise
             # set in-bound weights to have norm self.init_scale
-            i_scale = (1.0 / np.sqrt(in_dim)) * self.init_scale
+            i_scale = self.init_scale
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -324,10 +324,10 @@ class InfNet(object):
             i_noise = 0.0
             b_noise = self.bias_noise
             # set in-bound weights to have norm self.init_scale
-            i_scale = (1.0 / np.sqrt(in_dim)) * self.init_scale
+            i_scale = self.init_scale
             if last_layer:
                 # set in-bound weights for logvar predictions to 0
-                i_scale = 0.0
+                i_scale = 0.1 * i_scale
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
@@ -341,7 +341,6 @@ class InfNet(object):
                 self.shared_param_dicts['sigma'].append( \
                         {'W': new_layer.W, 'b': new_layer.b, \
                          'b_in': new_layer.b_in, 's_in': new_layer.s_in})
-                #new_layer.b.set_value((new_layer.b.get_value(borrow=False) - 1.0))
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -404,8 +403,8 @@ class InfNet(object):
 
         # The output of this inference network is given by the noisy output
         # of the final layers of its mu and sigma networks.
-        self.output_mean = self.mu_layers[-1].noisy_linear
-        self.output_logvar = self.sigma_layers[-1].noisy_linear
+        self.output_mean = self.mu_layers[-1].linear_output
+        self.output_logvar = self.sigma_layers[-1].linear_output
         self.output_sigma = self.sigma_init_scale * self.sigma_scale[0] * \
                 T.exp(0.5 * self.output_logvar)
 
