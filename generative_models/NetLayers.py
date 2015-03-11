@@ -233,6 +233,9 @@ class HiddenLayer(object):
         # Get some random initial weights and biases, if not given
         if W is None:
             # Generate initial filters using orthogonal random trick
+            #W_shape = (self.in_dim, self.filt_count)
+            #W_scale = W_scale * (1.0 / np.sqrt(self.in_dim))
+            #W_init = W_scale * npr.normal(0.0, 1.0, W_shape)
             W_init = ortho_matrix(shape=(self.in_dim, self.filt_count), \
                     gain=W_scale)
             W_init = W_init.astype(theano.config.floatX)

@@ -105,53 +105,53 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     ##########################
     # NETWORK CONFIGURATIONS #
     ##########################
-    # gn_params = {}
-    # gn_config = [PRIOR_DIM, 1500, 1500, data_dim]
-    # gn_params['mlp_config'] = gn_config
-    # gn_params['activation'] = relu_actfun
-    # gn_params['out_type'] = 'gaussian'
-    # gn_params['mean_transform'] = 'sigmoid'
-    # gn_params['logvar_type'] = 'single_shared'
-    # gn_params['init_scale'] = 1.0
-    # gn_params['lam_l2a'] = 1e-2
-    # gn_params['vis_drop'] = 0.0
-    # gn_params['hid_drop'] = 0.0
-    # gn_params['bias_noise'] = 0.0
-    # # choose some parameters for the continuous inferencer
-    # in_params = {}
-    # shared_config = [data_dim, 1500, 1500]
-    # top_config = [shared_config[-1], PRIOR_DIM]
-    # in_params['shared_config'] = shared_config
-    # in_params['mu_config'] = top_config
-    # in_params['sigma_config'] = top_config
-    # in_params['activation'] = relu_actfun
-    # in_params['init_scale'] = 1.0
-    # in_params['lam_l2a'] = 1e-2
-    # in_params['vis_drop'] = 0.0
-    # in_params['hid_drop'] = 0.0
-    # in_params['bias_noise'] = 0.0
-    # in_params['input_noise'] = 0.0
-    # in_params['kld2_scale'] = kld2_scale
-    # # Initialize the base networks for this GIPair
-    # IN = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
-    #         params=in_params, shared_param_dicts=None)
-    # GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
-    #         params=gn_params, shared_param_dicts=None)
-    # # Initialize biases in IN and GN
-    # IN.init_biases(0.2)
-    # GN.init_biases(0.2)
+    gn_params = {}
+    gn_config = [PRIOR_DIM, 1500, 1500, data_dim]
+    gn_params['mlp_config'] = gn_config
+    gn_params['activation'] = relu_actfun
+    gn_params['out_type'] = 'gaussian'
+    gn_params['mean_transform'] = 'sigmoid'
+    gn_params['logvar_type'] = 'single_shared'
+    gn_params['init_scale'] = 1.0
+    gn_params['lam_l2a'] = 1e-2
+    gn_params['vis_drop'] = 0.0
+    gn_params['hid_drop'] = 0.0
+    gn_params['bias_noise'] = 0.0
+    # choose some parameters for the continuous inferencer
+    in_params = {}
+    shared_config = [data_dim, 1500, 1500]
+    top_config = [shared_config[-1], PRIOR_DIM]
+    in_params['shared_config'] = shared_config
+    in_params['mu_config'] = top_config
+    in_params['sigma_config'] = top_config
+    in_params['activation'] = relu_actfun
+    in_params['init_scale'] = 1.0
+    in_params['lam_l2a'] = 1e-2
+    in_params['vis_drop'] = 0.0
+    in_params['hid_drop'] = 0.0
+    in_params['bias_noise'] = 0.0
+    in_params['input_noise'] = 0.0
+    in_params['kld2_scale'] = kld2_scale
+    # Initialize the base networks for this GIPair
+    IN = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
+            params=in_params, shared_param_dicts=None)
+    GN = GenNet(rng=rng, Xp=Xp, prior_sigma=prior_sigma, \
+            params=gn_params, shared_param_dicts=None)
+    # Initialize biases in IN and GN
+    IN.init_biases(0.2)
+    GN.init_biases(0.2)
 
     ######################################
     # LOAD AND RESTART FROM SAVED PARAMS #
     ######################################
-    gn_fname = RESULT_PATH+"pt_gip_params_b110000_GN.pkl"
-    in_fname = RESULT_PATH+"pt_gip_params_b110000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, \
-            new_params=None)
-    GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp, \
-            new_params=None)
-    in_params = IN.params
-    gn_params = GN.params
+    # gn_fname = RESULT_PATH+"pt_gip_params_b110000_GN.pkl"
+    # in_fname = RESULT_PATH+"pt_gip_params_b110000_IN.pkl"
+    # IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, \
+    #         new_params=None)
+    # GN = GNet.load_gennet_from_file(f_name=gn_fname, rng=rng, Xp=Xp, \
+    #         new_params=None)
+    # in_params = IN.params
+    # gn_params = GN.params
 
     #########################
     # INITIALIZE THE GIPAIR #
@@ -168,8 +168,7 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
     cost_1 = [0. for i in range(10)]
     learn_rate = 0.001
     for i in range(110001, 500000):
-        scale_1 = min(1.0, float(i) / 20000.0)
-        scale_2 = min(1.0, float(i) / 10000.0)
+        scale = min(1.0, float(i) / 20000.0)
         if (i > 75000) and ((i + 1) % 50000 == 0):
             learn_rate = learn_rate * 0.5
         # do a minibatch update of the model, and compute some costs
@@ -179,11 +178,11 @@ def pretrain_gip(extra_lam_kld=0.0, kld2_scale=0.0):
         Xc_batch = 0.0 * Xd_batch
         Xm_batch = 0.0 * Xd_batch
         # do a minibatch update of the model, and compute some costs
-        GIP.set_all_sgd_params(lr_gn=(scale_1*learn_rate), \
-                lr_in=(scale_1*learn_rate), mom_1=0.9, mom_2=0.99)
+        GIP.set_all_sgd_params(lr_gn=(scale*learn_rate), \
+                lr_in=(scale*learn_rate), mom_1=0.9, mom_2=0.99)
         #GIP.set_lr(lr=(2.0*scale_1*learn_rate), net='IN')
         GIP.set_lam_nll(1.0)
-        GIP.set_lam_kld(1.0 + extra_lam_kld*scale_2)
+        GIP.set_lam_kld(1.0 + extra_lam_kld*scale)
         outputs = GIP.train_joint(Xd_batch, Xc_batch, Xm_batch)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         if ((i % 1000) == 0):

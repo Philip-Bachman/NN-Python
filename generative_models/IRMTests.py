@@ -65,7 +65,7 @@ def test_with_constant_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.4
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -85,7 +85,7 @@ def test_with_constant_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.4
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -105,7 +105,7 @@ def test_with_constant_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.4
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -129,7 +129,7 @@ def test_with_constant_init():
             p_xti_given_xti_zti=p_xti_given_xti_zti, \
             q_z_given_x=None, q_zti_given_x_xti=q_zti_given_x_xti, \
             x_dim=x_dim, z_dim=z_dim, xt_dim=xt_dim, zt_dim=zt_dim, \
-            ir_steps=4, params=irm_params)
+            ir_steps=3, params=irm_params)
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
     IRM.set_output_bias(0.0*obs_mean)
@@ -139,12 +139,12 @@ def test_with_constant_init():
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     costs = [0. for i in range(10)]
-    learn_rate = 0.003
+    learn_rate = 0.005
     for i in range(150000):
         scale_1 = min(1.0, ((i+1) / 10000.0))
         scale_2 = min(1.0, ((i+1) / 10000.0))
         if (((i + 1) % 10000) == 0):
-            learn_rate = learn_rate * 0.9
+            learn_rate = learn_rate * 0.8
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
@@ -156,7 +156,7 @@ def test_with_constant_init():
         IRM.set_lam_nll(lam_nll=1.0)
         IRM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
         IRM.set_lam_l2w(1e-5)
-        IRM.set_kzg_weight(0.1)
+        IRM.set_kzg_weight(0.01)
         # perform a minibatch update and record the cost for this batch
         result = IRM.train_joint(Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
@@ -191,9 +191,9 @@ def test_with_constant_init():
                     file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             post_klds = IRM.compute_post_klds(Xva[0:5000])
-            file_name = "CI_Z_KLDS_b{0:d}.png".format(i)
-            utils.plot_stem(np.arange(post_klds[0].shape[1]), \
-                    np.mean(post_klds[0], axis=0), file_name)
+            # file_name = "CI_Z_KLDS_b{0:d}.png".format(i)
+            # utils.plot_stem(np.arange(post_klds[0].shape[1]), \
+            #         np.mean(post_klds[0], axis=0), file_name)
             file_name = "CI_ZTI_COND_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_klds[1].shape[1]), \
                     np.mean(post_klds[1], axis=0), file_name)
@@ -228,7 +228,7 @@ def test_with_model_init():
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 500
+    batch_size = 300
     batch_reps = 10
 
     ############################################################
@@ -255,7 +255,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.4
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 1e-3
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -275,7 +275,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.4
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -295,7 +295,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.4
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -315,7 +315,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.4
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -335,7 +335,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.4
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -371,24 +371,28 @@ def test_with_model_init():
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     costs = [0. for i in range(10)]
-    learn_rate = 0.003
-    for i in range(150000):
-        scale_1 = min(1.0, ((i+1) / 10000.0))
-        scale_2 = min(1.0, ((i+1) / 10000.0))
-        if (((i + 1) % 10000) == 0):
-            learn_rate = learn_rate * 0.9
+    learn_rate = 0.005
+    for i in range(250000):
+        scale = min(1.0, ((i+1) / 8000.0))
+        if (((i + 1) % 60000) == 0):
+            learn_rate = learn_rate * 0.8
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
         # train the coarse approximation and corrector model jointly
-        IRM.set_sgd_params(lr_1=scale_1*learn_rate, lr_2=scale_1*learn_rate, \
-                mom_1=0.8, mom_2=0.99)
+        if False: #((i < 10000) and ((i % 100) > 75)):
+            IRM.set_sgd_params(lr_1=0.0*learn_rate, lr_2=scale*learn_rate, \
+                    mom_1=0.8, mom_2=0.99)
+        else:
+            IRM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
+                    mom_1=scale*0.9, mom_2=0.99)
         IRM.set_train_switch(1.0)
+        IRM.set_l1l2_weight(scale)
         IRM.set_lam_nll(lam_nll=1.0)
         IRM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
         IRM.set_lam_l2w(1e-5)
-        IRM.set_kzg_weight(0.1)
+        IRM.set_kzg_weight(0.01)
         # perform a minibatch update and record the cost for this batch
         result = IRM.train_joint(Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
@@ -451,5 +455,5 @@ def test_with_model_init():
     return
 
 if __name__=="__main__":
-    test_with_constant_init()
-    #test_with_model_init()
+    #test_with_constant_init()
+    test_with_model_init()

@@ -121,6 +121,9 @@ class IRModel(object):
         # shared global prior -- e.g. zero mean and unit variance.
         self.kzg_weight = theano.shared(value=zero_ary, name='irm_kzg_weight')
         self.set_kzg_weight(0.1)
+        # this weight balances l1 vs. l2 penalty on posterior KLds
+        self.l1l2_weight = theano.shared(value=zero_ary, name='irm_l1l2_weight')
+        self.set_l1l2_weight(1.0)
         # self.init_bias directly provides xt0 if self.model_init is False
         zero_row = np.zeros((self.xt_dim,)).astype(theano.config.floatX)
         self.init_bias = theano.shared(value=zero_row, name='irm_init_bias')
@@ -160,7 +163,7 @@ class IRModel(object):
             zti_p = self.p_zti_given_xti[i].output
             # input to the variational approximation of the current conditional
             # distribution over zti will use the gradient of log-likelihood
-            grad_ll = 2.0 * (self.x - self.xt_transform(self.xt[i]))
+            grad_ll = 4.0 * (self.x - self.xt_transform(self.xt[i]))
             # now we build the model for variational zti given xti
             if (q_zti_given_x_xti.shared_layers[0].in_dim > self.xt_dim):
                 # q_zti_given_x_xti takes both x and xti as input...
@@ -365,6 +368,17 @@ class IRModel(object):
         self.kzg_weight.set_value(new_val)
         return
 
+    def set_l1l2_weight(self, l1l2_weight=1.0):
+        """
+        Set the weight for shaping penalty on posterior KLds.
+        """
+        assert((l1l2_weight >= 0.0) and (l1l2_weight <= 1.0))
+        zero_ary = np.zeros((1,))
+        new_val = zero_ary + l1l2_weight
+        new_val = new_val.astype(theano.config.floatX)
+        self.l1l2_weight.set_value(new_val)
+        return
+
     def set_output_bias(self, new_bias=None):
         """
         Set the output layer bias.
@@ -420,7 +434,9 @@ class IRModel(object):
                     self.p_zti_given_xti[i].output_mean, \
                     self.p_zti_given_xti[i].output_logvar, \
                     0.0, 0.0)
-            kld_zti_conds.append(T.sum(huber_pen(kld_zti_cond, 0.01), \
+            kld_zti_cond_l1l2 = (self.l1l2_weight[0] * kld_zti_cond) + \
+                    ((1.0 - self.l1l2_weight[0]) * kld_zti_cond**2.0)
+            kld_zti_conds.append(T.sum(kld_zti_cond_l1l2, \
                     axis=1, keepdims=True))
             kld_zti_globs.append(T.sum(kld_zti_glob**2.0, \
                     axis=1, keepdims=True))
@@ -432,7 +448,9 @@ class IRModel(object):
             kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
                     self.q_z_given_x.output_logvar, \
                     0.0, 0.0)
-            kld_z = T.sum(huber_pen(kld_z_all, 0.01), \
+            kld_z_l1l2 = (self.l1l2_weight[0] * kld_z_all) + \
+                    ((1.0 - self.l1l2_weight[0]) * kld_z_all**2.0)
+            kld_z = T.sum(kld_z_l1l2, \
                     axis=1, keepdims=True)
         else:
             kld_z = T.zeros_like(kld_zti_conds[0])

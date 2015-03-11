@@ -506,7 +506,7 @@ if __name__=="__main__":
     params['kld2_scale'] = 0.0
     p_xt_given_z = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_xt_given_z.init_biases(0.2)
+    p_xt_given_z.init_biases(0.1)
     ###############
     # q_z_given_x #
     ###############
@@ -526,7 +526,7 @@ if __name__=="__main__":
     params['kld2_scale'] = 0.0
     q_z_given_x = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    q_z_given_x.init_biases(0.2)
+    q_z_given_x.init_biases(0.1)
 
     ##############################################################
     # Define parameters for the OneStageModel, and initialize it #

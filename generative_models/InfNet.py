@@ -327,7 +327,7 @@ class InfNet(object):
             i_scale = self.init_scale
             if last_layer:
                 # set in-bound weights for logvar predictions to 0
-                i_scale = 0.1 * i_scale
+                i_scale = 0.0 * i_scale
             if not self.is_clone:
                 ##########################################
                 # Initialize a layer with new parameters #
