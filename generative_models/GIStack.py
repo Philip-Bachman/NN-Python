@@ -21,7 +21,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import relu_actfun, softplus_actfun, \
-                      safe_softmax, safe_log
+                      safe_softmax
 from DKCode import get_adam_updates, get_adadelta_updates
 from GenNet import GenNet
 from InfNet import InfNet
@@ -48,7 +48,7 @@ def smooth_entropy(p, lam_smooth=1e-3):
     """
     dist_size = T.cast(p.shape[1], 'floatX')
     p_sm = smooth_softmax(p, lam_smooth=lam_smooth)
-    ent_sm = -T.sum((safe_log(p_sm) * p_sm), axis=1, keepdims=True)
+    ent_sm = -T.sum((T.log(p_sm) * p_sm), axis=1, keepdims=True)
     return ent_sm
 
 def smooth_kl_divergence(p, q, lam_smooth=1e-3):
@@ -61,7 +61,7 @@ def smooth_kl_divergence(p, q, lam_smooth=1e-3):
     p_sm = smooth_softmax(p, lam_smooth=lam_smooth)
     q_sm = smooth_softmax(q, lam_smooth=lam_smooth)
     # This term is: cross_entropy(p, q) - entropy(p)
-    kl_sm = T.sum(((safe_log(p_sm) - safe_log(q_sm)) * p_sm), axis=1, keepdims=True)
+    kl_sm = T.sum(((T.log(p_sm) - T.log(q_sm)) * p_sm), axis=1, keepdims=True)
     return kl_sm
 
 def smooth_cross_entropy(p, q):
@@ -74,7 +74,7 @@ def smooth_cross_entropy(p, q):
     p_sm = smooth_softmax(p, lam_smooth=lam_smooth)
     q_sm = smooth_softmax(q, lam_smooth=lam_smooth)
     # This term is: entropy(p) + kl_divergence(p, q)
-    ce_sm = -T.sum((p_sm * safe_log(q_sm)), axis=1, keepdims=True)
+    ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
     return ce_sm
 
 def cat_entropy(p):
@@ -83,7 +83,7 @@ def cat_entropy(p):
     taking the softmax transform of p.
     """
     p_sm = smooth_softmax(p, lam_smooth=1e-4)
-    row_ents = -T.sum((p_sm * safe_log(p_sm)), axis=1, keepdims=True)
+    row_ents = -T.sum((p_sm * T.log(p_sm)), axis=1, keepdims=True)
     return row_ents
 
 def cat_cost_xent(Yp, Yd, lam_smooth=1e-4):
@@ -100,7 +100,7 @@ def cat_cost_xent(Yp, Yd, lam_smooth=1e-4):
     # inputs' rows and is all ones for rows that are unsupervised
     wacky_mat = (Yp_sm * row_mask) + (1. - row_mask)
     # compute cross-entropy (classification) loss
-    cat_cost = -T.sum(safe_log(wacky_mat[row_idx,(Yd.flatten()-1)])) \
+    cat_cost = -T.sum(T.log(wacky_mat[row_idx,(Yd.flatten()-1)])) \
             / (T.sum(row_mask) + 1e-4)
     return cat_cost
 

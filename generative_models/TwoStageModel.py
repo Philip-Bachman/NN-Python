@@ -15,10 +15,8 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      safe_log, apply_mask
-from GenNet import GenNet
+                      apply_mask
 from InfNet import InfNet
-from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 
@@ -35,7 +33,6 @@ from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 class TwoStageModel(object):
     """
     Controller for training a two-stepping, self-correcting VAE.
-
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
         Xd: symbolic "data" input to this 2S-VAE
@@ -106,9 +103,6 @@ class TwoStageModel(object):
         # a shared global prior (e.g. zero mean and unit variance)
         self.zt_reg_weight = theano.shared(value=zero_ary, name='tsm_zt_reg_weight')
         self.set_zt_reg_weight(0.2)
-        # setup a weight for mixing L1/L2 regularization on posterior KLds
-        self.l1_mix_weight = theano.shared(value=zero_ary, name='tsm_l1_mix_weight')
-        self.set_l1_mix_weight(1.0)
         # make some parameters for biases on the reconstructions. these
         # parameters get updated during training, as they affect the objective
         zero_row = np.zeros((self.x_dim,)).astype(theano.config.floatX)
@@ -266,7 +260,6 @@ class TwoStageModel(object):
         self.train_joint = self._construct_train_joint()
         self.compute_costs = self._construct_compute_costs()
         self.compute_post_klds = self._construct_compute_post_klds()
-        self.compute_fe_terms = self._construct_compute_fe_terms()
         self.sample_from_prior = self._construct_sample_from_prior()
         # make easy access points for some interesting parameters
         self.inf_1_weights = self.q_z_given_x.shared_layers[0].W
@@ -358,17 +351,6 @@ class TwoStageModel(object):
         self.zt_reg_weight.set_value(new_val)
         return
 
-    def set_l1_mix_weight(self, l1_mix_weight=1.0):
-        """
-        Set the weight for mixing L1/L2 penaltied on posterior KLds.
-        """
-        assert((l1_mix_weight >= 0.0) and (l1_mix_weight <= 1.0))
-        zero_ary = np.zeros((1,))
-        new_val = zero_ary + l1_mix_weight
-        new_val = new_val.astype(theano.config.floatX)
-        self.l1_mix_weight.set_value(new_val)
-        return
-
     def set_output_bias(self, new_bias=None):
         """
         Set the output layer bias.
@@ -384,44 +366,6 @@ class TwoStageModel(object):
         new_bias = new_bias.astype(theano.config.floatX)
         self.q_z_given_x.shared_layers[0].b_in.set_value(new_bias)
         return
-
-    def _construct_compute_fe_terms(self):
-        """
-        Construct a function for computing terms in variational free energy.
-        """
-        # setup some symbolic variables for theano to deal with
-        Xd = T.matrix()
-        Xc = T.zeros_like(Xd)
-        Xm = T.zeros_like(Xd)
-        # construct values to output
-        if self.x_type == 'bernoulli':
-            ll_term = log_prob_bernoulli(self.x, self.xg)
-        else:
-            ll_term = log_prob_gaussian2(self.x, self.xg, \
-                    log_vars=self.output_logvar[0])
-        prior_mean = self.z_prior_mean
-        prior_logvar = self.z_prior_logvar
-        all_klds = gaussian_kld(self.q_z_given_x.output_mean, \
-                self.q_z_given_x.output_logvar, \
-                prior_mean, prior_logvar)
-        kld_term = T.sum(all_klds, axis=1)
-        # compile theano function for a one-sample free-energy estimate
-        fe_term_sample = theano.function(inputs=[Xd], \
-                outputs=[ll_term, kld_term], \
-                givens={self.Xd: Xd, self.Xc: Xc, self.Xm: Xm})
-        # construct a wrapper function for multi-sample free-energy estimate
-        def fe_term_estimator(X, sample_count):
-            ll_sum = np.zeros((X.shape[0],))
-            kld_sum = np.zeros((X.shape[0],))
-            for i in range(sample_count):
-                result = fe_term_sample(X)
-                ll_sum = ll_sum + result[0].ravel()
-                kld_sum = kld_sum + result[1].ravel()
-            mean_nll = -ll_sum / float(sample_count)
-            mean_kld = kld_sum / float(sample_count)
-            return [mean_nll, mean_kld]
-        return fe_term_estimator
-        return multi_sample_bound
 
     def _construct_nll_cost(self):
         """
@@ -460,11 +404,10 @@ class TwoStageModel(object):
                 self.p_zt_given_xt.output_logvar)
         kld_zt_glob = gaussian_kld(self.p_zt_given_xt.output_mean, \
                 self.p_zt_given_xt.output_logvar, 0.0, 0.0)
-        kld_zt = huber_pen(kld_zt_cond, 0.01) + \
-                (self.zt_reg_weight[0] * kld_zt_glob**2.0)
+        kld_zt = kld_zt_cond + (self.zt_reg_weight[0] * kld_zt_glob**2.0)
         # compute the batch-wise costs
-        kld_cost_1 = T.sum(huber_pen(kld_z, 0.01)) / obs_count
-        kld_cost_2 = T.sum(kld_zt) / obs_count
+        kld_cost_1 = (T.sum(kld_z) + T.sum(kld_zt)) / obs_count
+        kld_cost_2 = (T.sum(kld_z**2.0) + T.sum(kld_zt_cond**2.0)) / obs_count
         return [kld_cost_1, kld_cost_2]
 
     def _construct_reg_costs(self):
@@ -581,17 +524,17 @@ if __name__=="__main__":
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 250
-    batch_reps = 10
+    batch_size = 300
+    batch_reps = 5
 
     ###############################################
     # Setup some parameters for the TwoStageModel #
     ###############################################
     prior_sigma = 1.0
     x_dim = Xtr.shape[1]
-    z_dim = 100
+    z_dim = 20
     xt_dim = x_dim
-    zt_dim = 100
+    zt_dim = 50
     x_type = 'bernoulli'
     xt_type = 'observed'
 
@@ -609,11 +552,11 @@ if __name__=="__main__":
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 1e-3
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.1
+    params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     p_xt_given_z = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
@@ -629,11 +572,11 @@ if __name__=="__main__":
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.1
+    params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     p_zt_given_xt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
@@ -649,16 +592,16 @@ if __name__=="__main__":
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.1
+    params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     p_x_given_xt_zt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_x_given_xt_zt.init_biases(0.2)
+    p_x_given_xt_zt.init_biases(0.1)
     ###############
     # q_z_given_x #
     ###############
@@ -669,16 +612,16 @@ if __name__=="__main__":
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.1
+    params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     q_z_given_x = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    q_z_given_x.init_biases(0.2)
+    q_z_given_x.init_biases(0.1)
     ###################
     # q_zt_given_x_xt #
     ###################
@@ -689,16 +632,16 @@ if __name__=="__main__":
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
-    params['bias_noise'] = 0.1
+    params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
     q_zt_given_x_xt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    q_zt_given_x_xt.init_biases(0.2)
+    q_zt_given_x_xt.init_biases(0.1)
 
     ##############################################################
     # Define parameters for the TwoStageModel, and initialize it #
@@ -724,8 +667,7 @@ if __name__=="__main__":
     costs = [0. for i in range(10)]
     learn_rate = 0.005
     for i in range(150000):
-        scale_1 = min(1.0, ((i+1) / 5000.0))
-        scale_2 = min(1.0, ((i+1) / 5000.0))
+        scale = min(1.0, ((i+1) / 2500.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.9
         # randomly sample a minibatch
@@ -733,14 +675,14 @@ if __name__=="__main__":
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
         # train the coarse approximation and corrector model jointly
-        TSM.set_sgd_params(lr_1=scale_1*learn_rate, lr_2=scale_1*learn_rate, \
-                mom_1=0.8, mom_2=0.99)
+        TSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
+                mom_1=0.9, mom_2=0.99)
         TSM.set_train_switch(1.0) # set to training mode
         TSM.set_step_switch(1.0) # scale the corrector's contribution
         TSM.set_lam_nll(lam_nll=1.0)
-        TSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
+        TSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=0.0)
         TSM.set_lam_l2w(1e-5)
-        TSM.set_zt_reg_weight(0.2)
+        TSM.set_zt_reg_weight(0.01)
         # perform a minibatch update and record the cost for this batch
         result = TSM.train_joint(Xb, 0.0*Xb, 0.0*Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
@@ -756,11 +698,14 @@ if __name__=="__main__":
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
             Xva = row_shuffle(Xva)
-            model_samps = TSM.sample_from_prior(500)
-            file_name = "TSM_SAMPLES_b{0:d}_XT.png".format(i)
-            utils.visualize_samples(model_samps['xt'], file_name, num_rows=20)
-            file_name = "TSM_SAMPLES_b{0:d}_XG.png".format(i)
-            utils.visualize_samples(model_samps['xg'], file_name, num_rows=20)
+            samp_count = 512
+            model_samps = TSM.sample_from_prior(samp_count)
+            joint_samps = np.zeros((2*samp_count, x_dim))
+            for s in range(samp_count):
+                joint_samps[2*s] = model_samps['xt'][s]
+                joint_samps[2*s + 1] = model_samps['xg'][s]
+            file_name = "TSM_SAMPLES_b{0:d}_XTXG.png".format(i)
+            utils.visualize_samples(joint_samps, file_name, num_rows=32)
             file_name = "TSM_INF_1_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(TSM.inf_1_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
@@ -788,10 +733,3 @@ if __name__=="__main__":
     # DONE #
     ########
     print("TESTING COMPLETE!")
-
-
-
-
-##############
-# EYE BUFFER #
-##############

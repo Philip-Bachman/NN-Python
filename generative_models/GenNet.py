@@ -15,7 +15,7 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun, safe_log, \
+from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
                       max_normalize
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2
 

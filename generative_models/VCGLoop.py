@@ -16,16 +16,11 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, safe_log, softplus_actfun, \
+from NetLayers import HiddenLayer, DiscLayer, softplus_actfun, \
                       apply_mask
+from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 from DKCode import get_adam_updates, get_adadelta_updates
-from GIPair import GIPair
-
-#################
-# FOR PROFILING #
-#################
-#from theano import ProfileMode
-#profmode = theano.ProfileMode(optimizer='fast_run', linker=theano.gof.OpWiseCLinker())
+from OneStageModel import OneStageModel
 
 #############################
 # SOME HANDY LOSS FUNCTIONS #
@@ -79,76 +74,6 @@ def hinge_sq_loss(Yh, Yt=0.0):
     loss = T.sum((residual * (residual > 0.0))**2.0)
     return loss
 
-def ulh_loss(Yh, Yt=0.0, delta=0.5):
-    """
-    Unilateral Huberized least-squares loss for Yh, given target Yt.
-    """
-    residual = Yt - Yh
-    quad_loss = residual**2.0
-    line_loss = (2.0 * delta * abs(residual)) - delta**2.0
-    # Construct mask for quadratic loss region
-    quad_mask = (abs(residual) < delta) * (residual > 0.0)
-    # Construct mask for linear loss region
-    line_mask = (abs(residual) >= delta) * (residual > 0.0)
-    # Combine the quadratic and linear losses
-    loss = T.sum((quad_loss * quad_mask) + (line_loss * line_mask))
-    return loss
-
-def cat_entropy(p):
-    """
-    Compute the entropy of (row-wise) categorical distributions in p.
-    """
-    row_ents = -T.sum((p * safe_log(p)), axis=1, keepdims=True)
-    return row_ents
-
-def cat_prior_dir(p, alpha=0.1):
-    """
-    Log probability under a dirichlet prior, with dirichlet parameter alpha.
-    """
-    log_prob = T.sum((1.0 - alpha) * safe_log(p))
-    return log_prob
-
-def cat_prior_ent(p, ent_weight=1.0):
-    """
-    Log probability under an "entropy-type" prior, with some "weight".
-    """
-    log_prob = -cat_entropy * ent_weight
-    return log_prob
-
-def binarize_data(X):
-    """
-    Make a sample of bernoulli variables with probabilities given by X.
-    """
-    X_shape = X.shape
-    probs = npr.rand(*X_shape)
-    X_binary = 1.0 * (probs < X)
-    return X_binary.astype(theano.config.floatX)
-
-def sample_masks(X, drop_prob=0.3):
-    """
-    Sample a binary mask to apply to the matrix X, with rate mask_prob.
-    """
-    probs = npr.rand(*X.shape)
-    mask = 1.0 * (probs > drop_prob)
-    return mask.astype(theano.config.floatX)
-
-def sample_patch_masks(X, im_shape, patch_shape):
-    """
-    Sample a random patch mask for each image in X.
-    """
-    obs_count = X.shape[0]
-    rs = patch_shape[0]
-    cs = patch_shape[1]
-    off_row = npr.randint(1,high=(im_shape[0]-rs-1), size=(obs_count,))
-    off_col = npr.randint(1,high=(im_shape[1]-cs-1), size=(obs_count,))
-    dummy = np.zeros(im_shape)
-    mask = np.zeros(X.shape)
-    for i in range(obs_count):
-        dummy = (0.0 * dummy) + 1.0
-        dummy[off_row[i]:(off_row[i]+rs), off_col[i]:(off_col[i]+cs)] = 0.0
-        mask[i,:] = dummy.ravel()
-    return mask.astype(theano.config.floatX)
-
 class VCGLoop(object):
     """
     Controller for training a self-looping VAE using guidance provided by a
@@ -161,22 +86,29 @@ class VCGLoop(object):
     inputs. A reconstruction policy can readily be trained to share the same
     parameters as a policy for generating transitions while self-looping.
 
-    The generator must be an instance of the GenNet class implemented in
-    "GenNet.py". The discriminator must be an instance of the PeaNet class,
+    The generator must be an instance of the InfNet class implemented in
+    "InfNet.py". The discriminator must be an instance of the PeaNet class,
     as implemented in "PeaNet.py". The inferencer must be an instance of the
     InfNet class implemented in "InfNet.py".
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
         Xd: symbolic var for providing points for starting the Markov Chain
+        Xc: symbolic var for providing points for starting the Markov Chain
+        Xm: symbolic var for providing masks to mix Xd with Xc
         Xt: symbolic var for providing samples from the target distribution
         i_net: The InfNet instance that will serve as the inferencer
-        g_net: The GenNet instance that will serve as the generator
+        g_net: The InfNet instance that will serve as the generator
         d_net: The PeaNet instance that will serve as the discriminator
         chain_len: number of steps to unroll the VAE Markov Chain
         data_dim: dimension of the generated data
         prior_dim: dimension of the model prior
         params: a dict of parameters for controlling various costs
+            x_type: can be "bernoulli" or "gaussian"
+            xt_transform: optional transform for gaussian means
+            logvar_bound: optional bound on gaussian output logvar
+            cost_decay: rate of decay for VAE costs in unrolled chain
+            chain_type: can be 'walkout' or 'walkback'
             lam_l2d: regularization on squared discriminator output
     """
     def __init__(self, rng=None, Xd=None, Xc=None, Xm=None, Xt=None, \
@@ -186,6 +118,8 @@ class VCGLoop(object):
         self.rng = RandStream(rng.randint(100000))
         self.data_dim = data_dim
         self.prior_dim = prior_dim
+        self.prior_mean = 0.0
+        self.prior_logvar = 0.0
         if params is None:
             self.params = {}
         else:
@@ -194,12 +128,31 @@ class VCGLoop(object):
             self.cost_decay = self.params['cost_decay']
         else:
             self.cost_decay = 0.1
-        if 'chain_type' in params:
-            assert((params['chain_type'] == 'walkback') or \
-                (params['chain_type'] == 'walkout'))
-            self.chain_type = params['chain_type']
+        if 'chain_type' in self.params:
+            assert((self.params['chain_type'] == 'walkback') or \
+                (self.params['chain_type'] == 'walkout'))
+            self.chain_type = self.params['chain_type']
         else:
             self.chain_type = 'walkout'
+        if 'xt_transform' in self.params:
+            assert((self.params['xt_transform'] == 'sigmoid') or \
+                    (self.params['xt_transform'] == 'none'))
+            if self.params['xt_transform'] == 'sigmoid':
+                self.xt_transform = lambda x: T.nnet.sigmoid(x)
+            else:
+                self.xt_transform = lambda x: x
+        else:
+            self.xt_transform = lambda x: T.nnet.sigmoid(x)
+        if 'logvar_bound' in self.params:
+            self.logvar_bound = self.params['logvar_bound']
+        else:
+            self.logvar_bound = 10
+        #
+        # x_type: this tells if we're using bernoulli or gaussian model for
+        #         the observations
+        #
+        self.x_type = self.params['x_type']
+        assert((self.x_type == 'bernoulli') or (self.x_type == 'gaussian'))
 
         # symbolic var for inputting samples for initializing the VAE chain
         self.Xd = Xd
@@ -217,14 +170,14 @@ class VCGLoop(object):
         self.Id = T.arange(self.chain_len * self.Xd.shape[0]) + self.Xt.shape[0]
 
         # get a clone of the desired VAE, for easy access
-        self.GIP = GIPair(rng=rng, Xd=self.Xd, Xc=self.Xc, Xm=self.Xm, \
-                g_net=g_net, i_net=i_net, data_dim=self.data_dim, \
-                prior_dim=self.prior_dim, params=None, shared_param_dicts=None)
-        self.IN = self.GIP.IN
-        self.GN = self.GIP.GN
-        self.kld2_scale = self.IN.kld2_scale
-        self.use_encoder = self.IN.use_encoder
-        assert(self.use_encoder == self.GN.use_decoder)
+        self.OSM = OneStageModel(rng=rng, Xd=self.Xd, Xc=self.Xc, Xm=self.Xm, \
+                p_x_given_z=g_net, q_z_given_x=i_net, x_dim=self.data_dim, \
+                z_dim=self.prior_dim, params=self.params)
+        self.IN = self.OSM.q_z_given_x
+        self.GN = self.OSM.p_x_given_z
+        self.transform_x_to_z = self.OSM.transform_x_to_z
+        self.transform_z_to_x = self.OSM.transform_z_to_x
+        self.bounded_logvar = self.OSM.bounded_logvar
         # self-loop some clones of the main VAE into a chain.
         # ** All VAEs in the chain share the same Xc and Xm, which are the
         #    symbolic inputs for providing the observed portion of the input
@@ -235,26 +188,12 @@ class VCGLoop(object):
         self.Xg_chain = []
         _Xd = self.Xd
         for i in range(self.chain_len):
-            if (i == 0):
-                # start the chain with data provided by user
-                _IN = self.IN.shared_param_clone(rng=rng, \
-                        Xd=apply_mask(Xd=_Xd, Xc=self.Xc, Xm=self.Xm))
-                _GN = self.GN.shared_param_clone(rng=rng, Xp=_IN.output)
-            else:
-                # continue the chain with samples from previous VAE
-                _IN = self.IN.shared_param_clone(rng=rng, \
-                        Xd=apply_mask(Xd=_Xd, Xc=self.Xc, Xm=self.Xm))
-                _GN = self.GN.shared_param_clone(rng=rng, Xp=_IN.output)
-            if self.use_encoder:
-                # use the "decoded" output of the previous generator as input
-                # to the next inferencer, which will re-encode it prior to
-                # inference
-                _Xd = _GN.output_decoded
-            else:
-                # use the "encoded" output of the previous generator as input
-                # to the next inferencer, as the inferencer won't try to 
-                # re-encode it prior to inference
-                _Xd = _GN.output
+            # create a VAE infer/generate pair with _Xd as input and with
+            # masking variables shared by all VAEs in this chain
+            _IN = self.IN.shared_param_clone(rng=rng, \
+                    Xd=apply_mask(Xd=_Xd, Xc=self.Xc, Xm=self.Xm))
+            _GN = self.GN.shared_param_clone(rng=rng, Xd=_IN.output)
+            _Xd = self.xt_transform(_GN.output_mean)
             self.IN_chain.append(_IN)
             self.GN_chain.append(_GN)
             self.Xg_chain.append(_Xd)
@@ -272,9 +211,6 @@ class VCGLoop(object):
         # init shared var for weighting posterior KL-div from prior
         self.lam_chain_kld = theano.shared(value=zero_ary, name='vcg_lam_chain_kld')
         self.set_lam_chain_kld(lam_chain_kld=1.0)
-        # init shared var for weighting chain diffusion rate (a.k.a. velocity)
-        self.lam_chain_vel = theano.shared(value=zero_ary, name='vcg_lam_chain_vel')
-        self.set_lam_chain_vel(lam_chain_vel=1.0)
         # init shared var for weighting nll of data given posterior sample
         self.lam_mask_nll = theano.shared(value=zero_ary, name='vcg_lam_mask_nll')
         self.set_lam_mask_nll(lam_mask_nll=0.0)
@@ -322,8 +258,9 @@ class VCGLoop(object):
             for pnl in pn[0:-1]:
                 self.dn_params.extend(pnl.params)
         self.in_params = [p for p in self.IN.mlp_params]
+        self.in_params.append(self.OSM.output_logvar)
         self.gn_params = [p for p in self.GN.mlp_params]
-        self.joint_params = self.dn_params + self.in_params + self.gn_params
+        self.joint_params = self.in_params + self.gn_params + self.dn_params
 
         # Now construct a binary discriminator layer for each proto-net in the
         # discriminator network. And, add their params to optimization list.
@@ -346,33 +283,29 @@ class VCGLoop(object):
         self.chain_nll_cost = self.lam_chain_nll[0] * \
                 self._construct_chain_nll_cost(cost_decay=self.cost_decay)
         self.chain_kld_cost = self.lam_chain_kld[0] * \
-                self._construct_chain_kld_cost(cost_decay=self.cost_decay, \
-                        kld2_scale=self.kld2_scale)
-        self.chain_vel_cost = self.lam_chain_vel[0] * \
-                self._construct_chain_vel_cost()
+                self._construct_chain_kld_cost(cost_decay=self.cost_decay)
         self.mask_nll_cost = self.lam_mask_nll[0] * \
                 self._construct_mask_nll_cost()
         self.mask_kld_cost = self.lam_mask_kld[0] * \
-                self._construct_mask_kld_cost(kld2_scale=self.kld2_scale)
+                self._construct_mask_kld_cost()
         self.other_reg_cost = self._construct_other_reg_cost()
-        self.gip_cost = self.disc_cost_gn + self.chain_nll_cost + \
-                self.chain_kld_cost + self.chain_vel_cost + \
-                self.mask_nll_cost + self.mask_kld_cost + \
-                self.other_reg_cost
+        self.osm_cost = self.disc_cost_gn + self.chain_nll_cost + \
+                self.chain_kld_cost + self.mask_nll_cost + \
+                self.mask_kld_cost + self.other_reg_cost
         # compute total cost on the discriminator and VB generator/inferencer
-        self.joint_cost = self.dn_cost + self.gip_cost
+        self.joint_cost = self.dn_cost + self.osm_cost
 
         # grab the gradients for all parameters to optimize
         self.joint_grads = OrderedDict()
         for p in self.dn_params:
             # grads for discriminator network params use a separate cost
-            self.joint_grads[p] = T.grad(self.dn_cost, p).clip(-0.1,0.1)
+            self.joint_grads[p] = T.grad(self.dn_cost, p)
         for p in self.in_params:
-            # grads for generator network use the GIPair's cost
-            self.joint_grads[p] = T.grad(self.gip_cost, p).clip(-0.1,0.1)
+            # grads for generator network use the OneStageModel's cost
+            self.joint_grads[p] = T.grad(self.osm_cost, p)
         for p in self.gn_params:
-            # grads for generator network use the GIPair's cost
-            self.joint_grads[p] = T.grad(self.gip_cost, p).clip(-0.1,0.1)
+            # grads for generator network use the OneStageModel's cost
+            self.joint_grads[p] = T.grad(self.osm_cost, p)
 
         # construct the updates for the discriminator, generator and 
         # inferencer networks. all networks share the same first/second
@@ -381,21 +314,15 @@ class VCGLoop(object):
         self.dn_updates = get_adam_updates(params=self.dn_params, \
                 grads=self.joint_grads, alpha=self.lr_dn, \
                 beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
-                mom2_init=1e-3, smoothing=1e-8)
+                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
         self.gn_updates = get_adam_updates(params=self.gn_params, \
                 grads=self.joint_grads, alpha=self.lr_gn, \
                 beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
-                mom2_init=1e-3, smoothing=1e-8)
+                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
         self.in_updates = get_adam_updates(params=self.in_params, \
                 grads=self.joint_grads, alpha=self.lr_in, \
                 beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
-                mom2_init=1e-3, smoothing=1e-8)
-        #self.dn_updates = get_adadelta_updates(params=self.dn_params, \
-        #        grads=self.joint_grads, alpha=self.lr_dn, beta1=0.98)
-        #self.gn_updates = get_adadelta_updates(params=self.gn_params, \
-        #        grads=self.joint_grads, alpha=self.lr_gn, beta1=0.98)
-        #self.in_updates = get_adadelta_updates(params=self.in_params, \
-        #        grads=self.joint_grads, alpha=self.lr_in, beta1=0.98)
+                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
 
         # bag up all the updates required for training
         self.joint_updates = OrderedDict()
@@ -490,15 +417,6 @@ class VCGLoop(object):
         self.lam_chain_kld.set_value(new_lam.astype(theano.config.floatX))
         return
 
-    def set_lam_chain_vel(self, lam_chain_vel=1.0):
-        """
-        Set the strength of regularization on Markov Chain velocity.
-        """
-        zero_ary = np.zeros((1,))
-        new_lam = zero_ary + lam_chain_vel
-        self.lam_chain_vel.set_value(new_lam.astype(theano.config.floatX))
-        return
-
     def set_lam_mask_nll(self, lam_mask_nll=0.0):
         """
         Set weight for controlling the influence of the data likelihood.
@@ -575,6 +493,18 @@ class VCGLoop(object):
         gn_cost = self.dw_gn[0] * T.sum(gn_costs)
         return [dn_cost, gn_cost]
 
+    def _log_prob_wrapper(self, x_true, x_apprx):
+        """
+        Wrap log-prob with switching for bernoulli/gaussian output types.
+        """
+        if self.x_type == 'bernoulli':
+            ll_cost = log_prob_bernoulli(x_true, x_apprx)
+        else:
+            ll_cost = log_prob_gaussian2(self.x, self.xg, \
+                    log_vars=self.bounded_logvar)
+        nll_cost = -ll_cost
+        return nll_cost
+
     def _construct_chain_nll_cost(self, cost_decay=0.1):
         """
         Construct the negative log-likelihood part of cost to minimize.
@@ -595,22 +525,16 @@ class VCGLoop(object):
             else:
                 # train with walkout roll-outs -- reconstruct previous point
                 IN_i = self.IN_chain[i]
-            GN_i = self.GN_chain[i]
-            if self.use_encoder:
-                # compare encoded output of the generator with the encoded
-                # non-control input to the inferencer
-                c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd_encoded)) / obs_count
-            else:
-                # compare encoded output of the generator with the unencoded
-                # non-control input to the inferencer
-                c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd)) / obs_count
+            x_true = IN_i.Xd
+            x_apprx = self.Xg_chain[i]
+            c = T.mean(self._log_prob_wrapper(x_true, x_apprx))
             nll_costs.append(step_weight * c)
             step_weights.append(step_weight)
             step_weight = step_weight * step_decay
         nll_cost = sum(nll_costs) / sum(step_weights)
         return nll_cost
 
-    def _construct_chain_kld_cost(self, cost_decay=0.1, kld2_scale=0.0):
+    def _construct_chain_kld_cost(self, cost_decay=0.1):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
 
@@ -627,32 +551,16 @@ class VCGLoop(object):
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
             # basic variational term on KL divergence between post and prior
-            kld_cost_1 = IN_i.kld_cost
-            # extra term for the squre of KLd in excess of the mean
-            kld_too_big = theano.gradient.consider_constant( \
-                    (IN_i.kld_cost > kld_mean))
-            kld_cost_2 = kld2_scale * \
-                    (kld_too_big * (IN_i.kld_cost - kld_mean))**2.0
-            # combine the two types of KLd costs
-            c = T.sum(kld_cost_1 + kld_cost_2) / obs_count
+            kld_i = gaussian_kld(IN_i.output_mean, IN_i.output_logvar, \
+                    self.prior_mean, self.prior_logvar)
+            kld_i_costs = T.sum(kld_i, axis=1)
+            # sum and reweight the KLd cost for this step in the chain
+            c = T.mean(kld_i_costs)
             kld_costs.append(step_weight * c)
             step_weights.append(step_weight)
             step_weight = step_weight * step_decay
         kld_cost = sum(kld_costs) / sum(step_weights)
         return kld_cost
-
-    def _construct_chain_vel_cost(self):
-        """
-        Construct the Markov Chain velocity part of cost to minimize.
-
-        This is for operation in "free chain" mode, where a seed point is used
-        to initialize a long(ish) running markov chain.
-        """
-        obs_count = T.cast(self.Xd.shape[0], 'floatX')
-        IN_start = self.IN_chain[0]
-        GN_end = self.GN_chain[-1]
-        vel_cost = T.sum(GN_end.compute_log_prob(Xd=IN_start.Xd)) / obs_count
-        return vel_cost
 
     def _construct_mask_nll_cost(self):
         """
@@ -661,26 +569,20 @@ class VCGLoop(object):
         This is for "iterative reconstruction" when the seed input is subject
         to partial masking.
         """
-        obs_count = T.cast(self.Xd.shape[0], 'floatX')
         nll_costs = []
         for i in range(self.chain_len):
-            IN_i = self.IN_chain[i]
-            GN_i = self.GN_chain[i]
-            if self.use_encoder:
-                # compare encoded output of the generator to the encoded
-                # representation of control input to the inferencer
-                c = -T.sum(GN_i.compute_log_prob(Xd=IN_i.Xd_encoded)) / obs_count
-            else:
-                # compare encoded output of the generator to the unencoded
-                # control input to the inferencer, but only measure NLL for
-                # input dimensions that are not part of the "control set"
-                c = -T.sum(GN_i.masked_log_prob(Xc=self.Xc, Xm=self.Xm)) \
-                        / obs_count
+            # compare encoded output of the generator to the unencoded
+            # control input to the inferencer, but only measure NLL for
+            # input dimensions that are not part of the "control set"
+            x_true = self.Xc
+            x_apprx = self.Xg_chain[i]
+            nll = self._log_prob_wrapper(x_true, x_apprx)
+            c = T.mean(nll)
             nll_costs.append(self.mask_nll_weights[i] * c)
         nll_cost = sum(nll_costs)
         return nll_cost
 
-    def _construct_mask_kld_cost(self, kld2_scale=0.0):
+    def _construct_mask_kld_cost(self):
         """
         Construct the posterior KL-d from prior part of cost to minimize.
 
@@ -693,14 +595,11 @@ class VCGLoop(object):
         for i in range(self.chain_len):
             IN_i = self.IN_chain[i]
             # basic variational term on KL divergence between post and prior
-            kld_cost_1 = IN_i.kld_cost
-            # extra term for the squre of KLd in excess of the mean
-            kld_too_big = theano.gradient.consider_constant( \
-                    (IN_i.kld_cost > kld_mean))
-            kld_cost_2 = kld2_scale * \
-                    (kld_too_big * (IN_i.kld_cost - kld_mean))**2.0
+            kld_i = gaussian_kld(IN_i.output_mean, IN_i.output_logvar, \
+                    self.prior_mean, self.prior_logvar)
+            kld_i_costs = T.sum(kld_i, axis=1)
             # combine the two types of KLd costs
-            c = T.sum(kld_cost_1 + kld_cost_2) / obs_count
+            c = T.mean(kld_i_costs)
             kld_costs.append(c)
         kld_cost = sum(kld_costs) / float(self.chain_len)
         return kld_cost
@@ -708,7 +607,7 @@ class VCGLoop(object):
     def _construct_other_reg_cost(self):
         """
         Construct the cost for low-level basic regularization. E.g. for
-        applying l2 regularization to the network activations and parameters.
+        applying l2 regularization to the network parameters.
         """
         gp_cost = sum([T.sum(par**2.0) for par in self.gn_params])
         ip_cost = sum([T.sum(par**2.0) for par in self.in_params])
@@ -720,11 +619,10 @@ class VCGLoop(object):
         Construct theano function to train generator and discriminator jointly.
         """
         outputs = [self.joint_cost, self.chain_nll_cost, self.chain_kld_cost, \
-                self.chain_vel_cost, self.mask_nll_cost, self.mask_kld_cost, \
-                self.disc_cost_gn, self.disc_cost_dn, self.other_reg_cost]
+                self.mask_nll_cost, self.mask_kld_cost, self.disc_cost_gn, \
+                self.disc_cost_dn, self.other_reg_cost]
         func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Xt ], \
-                outputs=outputs, updates=self.joint_updates) # , \
-                #mode=profmode)
+                outputs=outputs, updates=self.joint_updates)
         return func
 
     def sample_from_chain(self, X_d, X_c=None, X_m=None, loop_iters=5, \
@@ -733,25 +631,230 @@ class VCGLoop(object):
         Sample for several rounds through the I<->G loop, initialized with the
         the "data variable" samples in X_d.
         """
-        result = self.GIP.sample_from_chain(X_d, X_c=X_c, X_m=X_m, \
+        result = self.OSM.sample_from_chain(X_d, X_c=X_c, X_m=X_m, \
                 loop_iters=loop_iters, sigma_scale=sigma_scale)
         return result
 
-    def sample_from_prior(self, samp_count, sigma=None):
+    def sample_from_prior(self, samp_count):
         """
         Draw independent samples from the model's prior, using the gaussian
-        continuous prior of the underlying GenNet. Use a user-defined sigma.
+        continuous prior of the underlying GenNet.
         """
-        if sigma is None:
-            sigma = self.GN.prior_sigma
-        # sample from the GenNet, with either the GenNet's prior sigma or some
-        # user-defined sigma
-        Xs = self.GN.scaled_sampler(samp_count, sigma)
+        Xs = self.OSM.sample_from_prior(samp_count)
         return Xs
 
+
+
+
+def sample_masks(X, drop_prob=0.3):
+    """
+    Sample a binary mask to apply to the matrix X, with rate mask_prob.
+    """
+    probs = npr.rand(*X.shape)
+    mask = 1.0 * (probs > drop_prob)
+    return mask.astype(theano.config.floatX)
+
+def sample_patch_masks(X, im_shape, patch_shape):
+    """
+    Sample a random patch mask for each image in X.
+    """
+    obs_count = X.shape[0]
+    rs = patch_shape[0]
+    cs = patch_shape[1]
+    off_row = npr.randint(1,high=(im_shape[0]-rs-1), size=(obs_count,))
+    off_col = npr.randint(1,high=(im_shape[1]-cs-1), size=(obs_count,))
+    dummy = np.zeros(im_shape)
+    mask = np.zeros(X.shape)
+    for i in range(obs_count):
+        dummy = (0.0 * dummy) + 1.0
+        dummy[off_row[i]:(off_row[i]+rs), off_col[i]:(off_col[i]+cs)] = 0.0
+        mask[i,:] = dummy.ravel()
+    return mask.astype(theano.config.floatX)
+
+
 if __name__=="__main__":
-    # TEST CODE IS ELSEWHERE
-    print("NO TEST CODE HERE!")
+    import utils
+    from load_data import load_udm, load_udm_ss, load_mnist
+    from NetLayers import binarize_data, row_shuffle, relu_actfun
+    from LogPDFs import cross_validate_sigma
+    from InfNet import InfNet
+    from PeaNet import PeaNet
+    ##########################
+    # Get some training data #
+    ##########################
+    rng = np.random.RandomState(1234)
+    dataset = 'data/mnist.pkl.gz'
+    datasets = load_udm(dataset, zero_mean=False)
+    Xtr_shared = datasets[0][0]
+    Xva_shared = datasets[1][0]
+    Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
+    Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
+    tr_samples = Xtr.shape[0]
+    batch_size = 100
+    batch_reps = 5
+
+    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
+    Xtr_mean = (0.0 * Xtr_mean) + np.mean(np.mean(Xtr,axis=1))
+    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0)
+
+    ###############################################
+    # Setup some parameters for the OneStageModel #
+    ###############################################
+    prior_sigma = 1.0
+    x_dim = Xtr.shape[1]
+    z_dim = 100
+    x_type = 'bernoulli'
+    # symbolic varaibles for inputs to the computation graph
+    Xd = T.matrix('Xd_base')
+    Xc = T.matrix('Xc_base')
+    Xm = T.matrix('Xm_base')
+    Xt = T.matrix('Xt_base')
+
+    ###########################
+    # Setup generator network #
+    ###########################
+    params = {}
+    shared_config = [z_dim, 250, 250]
+    top_config = [shared_config[-1], x_dim]
+    params['shared_config'] = shared_config
+    params['mu_config'] = top_config
+    params['sigma_config'] = top_config
+    params['activation'] = relu_actfun
+    params['init_scale'] = 1.0
+    params['lam_l2a'] = 1e-3
+    params['vis_drop'] = 0.0
+    params['hid_drop'] = 0.0
+    params['bias_noise'] = 0.0
+    params['input_noise'] = 0.0
+    GN = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
+            params=params, shared_param_dicts=None)
+    GN.init_biases(0.1)
+    ############################
+    # Setup inferencer network #
+    ############################
+    params = {}
+    shared_config = [x_dim, 250, 250]
+    top_config = [shared_config[-1], z_dim]
+    params['shared_config'] = shared_config
+    params['mu_config'] = top_config
+    params['sigma_config'] = top_config
+    params['activation'] = relu_actfun
+    params['init_scale'] = 1.0
+    params['lam_l2a'] = 1e-3
+    params['vis_drop'] = 0.0
+    params['hid_drop'] = 0.0
+    params['bias_noise'] = 0.0
+    params['input_noise'] = 0.0
+    IN = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
+            params=params, shared_param_dicts=None)
+    IN.init_biases(0.1)
+    ###############################
+    # Setup discriminator network #
+    ###############################
+    params = {}
+    # Set up some proto-networks
+    pc0 = [x_dim, 500, 500, 10]
+    params['proto_configs'] = [pc0]
+    # Set up some spawn networks
+    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
+    params['spawn_configs'] = [sc0]
+    params['spawn_weights'] = [1.0]
+    # Set remaining params
+    params['init_scale'] = 0.25
+    params['lam_l2a'] = 1e-2
+    params['vis_drop'] = 0.2
+    params['hid_drop'] = 0.5
+    # Initialize a network object to use as the discriminator
+    DN = PeaNet(rng=rng, Xd=Xd, params=params)
+    DN.init_biases(0.1)
+
+    ########################################################
+    # Define parameters for the VCGLoop, and initialize it #
+    ########################################################
+    print("Building the VCGLoop...")
+    vcgl_params = {}
+    vcgl_params['x_type'] = x_type
+    vcgl_params['xt_transform'] = 'sigmoid'
+    vcgl_params['logvar_bound'] = 3.0
+    vcgl_params['cost_decay'] = 0.1
+    vcgl_params['chain_type'] = 'walkout'
+    vcgl_params['lam_l2d'] = 5e-2
+    VCGL = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, \
+                 i_net=IN, g_net=GN, d_net=DN, chain_len=3, \
+                 data_dim=x_dim, prior_dim=z_dim, params=vcgl_params)
+
+    ####################################################
+    # Train the VCGLoop by unrolling and applying BPTT #
+    ####################################################
+    learn_rate = 0.001
+    cost_1 = [0. for i in range(10)]
+    for i in range(1000000):
+        scale = float(min((i+1), 2000)) / 2000.0
+        if ((i+1 % 50000) == 0):
+            learn_rate = learn_rate * 0.8
+        ########################################
+        # TRAIN THE CHAIN IN FREE-RUNNING MODE #
+        ########################################
+        VCGL.set_all_sgd_params(learn_rate=(scale*learn_rate), \
+                mom_1=0.9, mom_2=0.999)
+        VCGL.set_disc_weights(dweight_gn=2.0, dweight_dn=2.0)
+        VCGL.set_lam_chain_nll(1.0)
+        VCGL.set_lam_chain_kld(1.0)
+        VCGL.set_lam_mask_nll(0.0)
+        VCGL.set_lam_mask_kld(0.0)
+        # get some data to train with
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
+        Xd_batch = Xtr.take(tr_idx, axis=0)
+        print("batch max: {0:.4f}".format(np.max(Xd_batch.ravel())))
+        Xc_batch = 0.0 * Xd_batch
+        Xm_batch = 0.0 * Xd_batch
+        # do 5 repetitions of the batch
+        Xd_batch = np.repeat(Xd_batch, batch_reps, axis=0)
+        Xc_batch = np.repeat(Xc_batch, batch_reps, axis=0)
+        Xm_batch = np.repeat(Xm_batch, batch_reps, axis=0)
+        # examples from the target distribution, to train discriminator
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_reps*batch_size,))
+        Xt_batch = Xtr.take(tr_idx, axis=0)
+        # do a minibatch update of the model, and compute some costs
+        outputs = VCGL.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch)
+        cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
+        if ((i % 100) == 0):
+            cost_1 = [(v / 100.0) for v in cost_1]
+            o_str_1 = "batch: {0:d}, joint_cost: {1:.4f}, chain_nll_cost: {2:.4f}, chain_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
+                    i, cost_1[0], cost_1[1], cost_1[2], cost_1[5], cost_1[6])
+            print(o_str_1)
+            cost_1 = [0. for v in cost_1]
+        if ((i % 200) == 0):
+            tr_idx = npr.randint(low=0,high=Xtr.shape[0],size=(5,))
+            va_idx = npr.randint(low=0,high=Xva.shape[0],size=(5,))
+            Xd_batch = np.vstack([Xtr.take(tr_idx, axis=0), Xva.take(va_idx, axis=0)])
+            # draw some chains of samples from the VAE loop
+            file_name = "pt_walk_chain_samples_b{0:d}.png".format(i)
+            Xd_samps = np.repeat(Xd_batch, 3, axis=0)
+            sample_lists = VCGL.OSM.sample_from_chain(Xd_samps, loop_iters=20)
+            Xs = np.vstack(sample_lists["data samples"])
+            utils.visualize_samples(Xs, file_name, num_rows=20)
+            # draw some masked chains of samples from the VAE loop
+            file_name = "pt_walk_mask_samples_b{0:d}.png".format(i)
+            Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
+            Xc_samps = np.repeat(Xd_batch, 3, axis=0)
+            Xm_rand = sample_masks(Xc_samps, drop_prob=0.2)
+            Xm_patch = sample_patch_masks(Xc_samps, (28,28), (14,14))
+            Xm_samps = Xm_rand * Xm_patch
+            sample_lists = VCGL.OSM.sample_from_chain(Xd_samps, \
+                    X_c=Xc_samps, X_m=Xm_samps, loop_iters=20)
+            Xs = np.vstack(sample_lists["data samples"])
+            utils.visualize_samples(Xs, file_name, num_rows=20)
+            # draw some samples independently from the GenNet's prior
+            file_name = "pt_walk_prior_samples_b{0:d}.png".format(i)
+            Xs = VCGL.sample_from_prior(20*20)
+            utils.visualize_samples(Xs, file_name, num_rows=20)
+
+    ########
+    # DONE #
+    ########
+    print("TESTING COMPLETE!")
 
 
 

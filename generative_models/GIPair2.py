@@ -15,7 +15,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      safe_log, apply_mask
+                      apply_mask
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet

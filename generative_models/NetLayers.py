@@ -46,7 +46,7 @@ def relu_actfun(x):
 
 def softplus_actfun(x, scale=1.0):
     """Compute rescaled softplus activation for x."""
-    #x_softplus = safe_log(1.0 + T.exp(x))
+    #x_softplus = T.log(1.0 + T.exp(x))
     x_softplus = (1.0 / scale) * T.nnet.softplus(scale*x)
     return x_softplus
 
@@ -101,7 +101,7 @@ def smooth_kl_divergence(p, q):
     p_sm = smooth_softmax(p)
     q_sm = smooth_softmax(q)
     # This term is: cross_entropy(p, q) - entropy(p)
-    kl_sm = T.sum(((safe_log(p_sm) - safe_log(q_sm)) * p_sm), axis=1, keepdims=True)
+    kl_sm = T.sum(((T.log(p_sm) - T.log(q_sm)) * p_sm), axis=1, keepdims=True)
     return kl_sm
 
 def smooth_cross_entropy(p, q):
@@ -111,15 +111,8 @@ def smooth_cross_entropy(p, q):
     p_sm = smooth_softmax(p)
     q_sm = smooth_softmax(q)
     # This term is: entropy(p) + kl_divergence(p, q)
-    ce_sm = -T.sum((p_sm * safe_log(q_sm)), axis=1, keepdims=True)
+    ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
     return ce_sm
-
-def safe_log(x):
-    """
-    Log that doesn't NaN out for reasonably non-negative numbers.
-    """
-    safe_log_x = T.log(x + 1e-10)
-    return safe_log_x
 
 def apply_mask(Xd=None, Xc=None, Xm=None):
     """

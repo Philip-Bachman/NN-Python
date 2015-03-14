@@ -10,7 +10,7 @@ import cPickle
 #from theano.tensor.shared_randomstreams import RandomStreams as RandStream
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
-from NetLayers import HiddenLayer, JoinLayer, DAELayer, safe_log, \
+from NetLayers import HiddenLayer, JoinLayer, DAELayer, \
                       relu_actfun, safe_softmax
 
 #####################################################################
@@ -24,7 +24,7 @@ def smooth_kl_divergence(p, q):
     p_sm = safe_softmax(p)
     q_sm = safe_softmax(q)
     # This term is: cross_entropy(p, q) - entropy(p)
-    kl_sm = T.sum(((safe_log(p_sm) - safe_log(q_sm)) * p_sm), axis=1, keepdims=True)
+    kl_sm = T.sum(((T.log(p_sm) - T.log(q_sm)) * p_sm), axis=1, keepdims=True)
     return kl_sm
 
 def smooth_js_divergence(p, q):
@@ -34,8 +34,8 @@ def smooth_js_divergence(p, q):
     p_sm = safe_softmax(p)
     q_sm = safe_softmax(q)
     mean_dist = (p_sm + q_sm) / 2.0
-    js_1 = T.sum(p_sm * (safe_log(p_sm) - safe_log(mean_dist)), axis=1, keepdims=True)
-    js_2 = T.sum(q_sm * (safe_log(q_sm) - safe_log(mean_dist)), axis=1, keepdims=True)
+    js_1 = T.sum(p_sm * (T.log(p_sm) - T.log(mean_dist)), axis=1, keepdims=True)
+    js_2 = T.sum(q_sm * (T.log(q_sm) - T.log(mean_dist)), axis=1, keepdims=True)
     js_div = (js_1 + js_2) / 2.0
     return js_div
 
@@ -46,7 +46,7 @@ def smooth_cross_entropy(p, q):
     p_sm = safe_softmax(p)
     q_sm = safe_softmax(q)
     # This term is: entropy(p) + kl_divergence(p, q)
-    ce_sm = -T.sum((p_sm * safe_log(q_sm)), axis=1, keepdims=True)
+    ce_sm = -T.sum((p_sm * T.log(q_sm)), axis=1, keepdims=True)
     return ce_sm
 
 
@@ -180,7 +180,8 @@ class PeaNet(object):
                             name=pnl_name, W_scale=i_scale)
                     proto_net.append(new_layer)
                     self.shared_param_dicts.append( \
-                            {'W': new_layer.W, 'b': new_layer.b})
+                            {'W': new_layer.W, 'b': new_layer.b, \
+                             'b_in': new_layer.b_in, 's_in': new_layer.s_in})
                 else:
                     ##################################################
                     # Initialize a layer with some shared parameters #
@@ -191,6 +192,7 @@ class PeaNet(object):
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
                             W=init_params['W'], b=init_params['b'], \
+                            b_in=init_params['b_in'], s_in=init_params['s_in'], \
                             name=pnl_name, W_scale=i_scale)
                     proto_net.append(new_layer)
                 next_input = proto_net[-1].output
@@ -233,6 +235,7 @@ class PeaNet(object):
                         pool_size=pool_size, drop_rate=drop_prob, \
                         input_noise=layer_in, bias_noise=bias_noise, \
                         W=proto_layer.W, b=proto_layer.b, \
+                        b_in=proto_layer.b_in, s_in=proto_layer.s_in, \
                         in_dim=in_dim, out_dim=out_dim))
                 next_input = spawn_net[-1].output
                 layer_num = layer_num + 1

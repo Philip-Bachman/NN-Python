@@ -16,7 +16,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
-                      softplus_actfun, safe_log
+                      softplus_actfun
 from LogPDFs import gaussian_kld
 
 ####################################

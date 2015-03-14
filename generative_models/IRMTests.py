@@ -12,7 +12,7 @@ import theano.tensor as T
 
 # phil's sweetness
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
-from NetLayers import relu_actfun, softplus_actfun, safe_log, \
+from NetLayers import relu_actfun, softplus_actfun, \
                       apply_mask, binarize_data, row_shuffle
 from GenNet import GenNet
 from InfNet import InfNet
@@ -228,17 +228,17 @@ def test_with_model_init():
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 300
-    batch_reps = 10
+    batch_size = 500
+    batch_reps = 6
 
     ############################################################
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
     prior_sigma = 1.0
     x_dim = Xtr.shape[1]
-    z_dim = 100
+    z_dim = 25
     xt_dim = x_dim
-    zt_dim = 200
+    zt_dim = 100
     x_type = 'bernoulli'
     xt_type = 'observed'
 
@@ -255,7 +255,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 1e-3
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -275,7 +275,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -295,7 +295,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -315,7 +315,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -335,7 +335,7 @@ def test_with_model_init():
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -365,7 +365,7 @@ def test_with_model_init():
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
     IRM.set_output_bias(0.0*obs_mean)
-    IRM.set_init_bias(0.25*obs_mean_logit)
+    IRM.set_init_bias(0.5*obs_mean_logit)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -373,22 +373,18 @@ def test_with_model_init():
     costs = [0. for i in range(10)]
     learn_rate = 0.005
     for i in range(250000):
-        scale = min(1.0, ((i+1) / 8000.0))
-        if (((i + 1) % 60000) == 0):
-            learn_rate = learn_rate * 0.8
+        scale = min(1.0, ((i+1) / 10000.0))
+        l1l2_weight = 1.0 #min(1.0, ((i+1) / 2500.0))
+        if (((i + 1) % 20000) == 0):
+            learn_rate = learn_rate * 0.85
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
-        # train the coarse approximation and corrector model jointly
-        if False: #((i < 10000) and ((i % 100) > 75)):
-            IRM.set_sgd_params(lr_1=0.0*learn_rate, lr_2=scale*learn_rate, \
-                    mom_1=0.8, mom_2=0.99)
-        else:
-            IRM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
-                    mom_1=scale*0.9, mom_2=0.99)
+        IRM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
+                mom_1=(scale*0.75), mom_2=0.99)
         IRM.set_train_switch(1.0)
-        IRM.set_l1l2_weight(scale)
+        IRM.set_l1l2_weight(l1l2_weight)
         IRM.set_lam_nll(lam_nll=1.0)
         IRM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
         IRM.set_lam_l2w(1e-5)
@@ -416,37 +412,37 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MI_SAMPLES_b{0:d}.png".format(i)
+            file_name = "MZ_SAMPLES_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # visualize some important weights in the model
-            file_name = "MI_INF_1_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_INF_1_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(IRM.inf_1_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
-            file_name = "MI_GEN_1_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_GEN_1_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(IRM.gen_1_weights.get_value(borrow=False), \
                     file_name, num_rows=20)
-            file_name = "MI_INF_2_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_INF_2_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(IRM.inf_2_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
-            file_name = "MI_GEN_2_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_GEN_2_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(IRM.gen_2_weights.get_value(borrow=False), \
                     file_name, num_rows=20)
-            file_name = "MI_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
             utils.visualize_samples(IRM.gen_inf_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             post_klds = IRM.compute_post_klds(Xva[0:5000])
-            file_name = "MI_Z_KLDS_b{0:d}.png".format(i)
+            file_name = "MZ_Z_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_klds[0].shape[1]), \
                     np.mean(post_klds[0], axis=0), file_name)
-            file_name = "MI_ZTI_COND_KLDS_b{0:d}.png".format(i)
+            file_name = "MZ_ZTI_COND_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_klds[1].shape[1]), \
                     np.mean(post_klds[1], axis=0), file_name)
-            file_name = "MI_ZTI_GLOB_KLDS_b{0:d}.png".format(i)
+            file_name = "MZ_ZTI_GLOB_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_klds[2].shape[1]), \
                     np.mean(post_klds[2], axis=0), file_name)
             # compute information about free-energy on validation set
-            file_name = "MI_FREE_ENERGY_b{0:d}.png".format(i)
+            file_name = "MZ_FREE_ENERGY_b{0:d}.png".format(i)
             fe_terms = IRM.compute_fe_terms(binarize_data(Xva[0:5000]), 20)
             fe_mean = np.mean(fe_terms[0]) + np.mean(fe_terms[1])
             print("    nll_bound : {0:.4f}".format(fe_mean))

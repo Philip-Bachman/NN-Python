@@ -15,7 +15,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      safe_log, apply_mask
+                      apply_mask
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
@@ -163,7 +163,7 @@ class IRModel(object):
             zti_p = self.p_zti_given_xti[i].output
             # input to the variational approximation of the current conditional
             # distribution over zti will use the gradient of log-likelihood
-            grad_ll = 4.0 * (self.x - self.xt_transform(self.xt[i]))
+            grad_ll = 2.0 * (self.x - self.xt_transform(self.xt[i]))
             # now we build the model for variational zti given xti
             if (q_zti_given_x_xti.shared_layers[0].in_dim > self.xt_dim):
                 # q_zti_given_x_xti takes both x and xti as input...
