@@ -23,167 +23,144 @@ from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 
 #
-#
 # Important symbolic variables:
 #   Xd: Xd represents input at the "data variables" of the inferencer
 #
-#
 
-class IRModel(object):
+class MultiStageModel(object):
     """
     Controller for training a multi-step iterative refinement model.
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
-        x_in: symbolic "data" input to this IRModel
-        p_xt0_given_z: InfNet for xt0 given z
-        p_zti_given_xti: InfNet for zti given xti
-        p_xti_given_xti_zti: InfNet for xti given xti and zti
-        p_x_given_xti_zti: InfNet for x given xti and zti
+        x_in: symbolic "data" input to this MultiStageModel
+        p_s0_given_z: InfNet for s0 given z
+        p_hi_given_si: InfNet for hi given si
+        p_sip1_given_si_hi: InfNet for sip1 given si and hi
+        p_x_given_si_hi: InfNet for x given si and hi
         q_z_given_x: InfNet for z given x
-        q_zti_given_x_xti: InfNet for zt given x and xt
-        x_dim: dimension of the "instances" variables
-        z_dim: dimension of the "latent prototypes" variables
-        xt_dim: dimension of the "prototypes" variables
-        zt_dim: dimension of the "variations" variables
+        q_hi_given_x_si: InfNet for hi given x and si
+        model_init: whether to use the model-based initial stage
+        obs_dim: dimension of the observations to generate
+        rnn_dim: dimension of the "RNN state"
+        z_dim: dimension of the "initial" latent space
+        zt_dim: dimension of the "primary" latent space
         ir_steps: number of "iterative refinement" steps to perform
         params: REQUIRED PARAMS SHOWN BELOW
                 x_type: can be "bernoulli" or "gaussian"
-                xt_type: can be "latent" or "observed"
-                xt_transform: can be 'none' or 'sigmoid'
+                obs_transform: can be 'none' or 'sigmoid'
     """
     def __init__(self, rng=None, x_in=None, \
-            p_xt0_given_z=None, p_zti_given_xti=None, p_xti_given_xti_zti=None, \
-            p_x_given_xti_zti=None, q_z_given_x=None, q_zti_given_x_xti=None, \
-            x_dim=None, z_dim=None, xt_dim=None, zt_dim=None, \
+            p_s0_given_z=None, p_hi_given_si=None, p_sip1_given_si_hi=None, \
+            p_x_given_si_hi=None, q_z_given_x=None, q_hi_given_x_si=None, \
+            obs_dim=None, z_dim=None, zt_dim=None, rnn_dim=None, \
             ir_steps=2, params=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
 
-        # TODO: implement functionality for working with "latent" xt
-        assert(p_x_given_xti_zti is None)
-        assert(params['xt_type'] == 'observed')
+        # TODO: implement functionality for working with "latent" si
+        assert(p_x_given_si_hi is None)
 
-        # if p_xt0_given_z is None, we'll assume a constant model for xt0.
-        # in this case, no model for q_z_given_x will be learned.
-        if p_xt0_given_z is None:
-            assert(q_z_given_x is None)
-        if q_z_given_x is None:
-            assert(p_xt0_given_z is None)
-        if (p_xt0_given_z is None):
-            self.model_init = False
-        else:
-            self.model_init = True
+        # decide whether to initialize from a model or from a "constant"
+        self.model_init = model_init
 
         # grab the user-provided parameters
-        if params is None:
-            self.params = {}
-        else:
-            self.params = params
+        self.params = params
         self.x_type = self.params['x_type']
-        self.xt_type = self.params['xt_type']
-        if 'xt_transform' in self.params:
-            assert((self.params['xt_transform'] == 'sigmoid') or \
-                    (self.params['xt_transform'] == 'none'))
-            if self.params['xt_transform'] == 'sigmoid':
-                self.xt_transform = lambda x: T.nnet.sigmoid(x)
-            else:
-                self.xt_transform = lambda x: x
-        else:
-            self.xt_transform = lambda x: T.nnet.sigmoid(x)
-        #
-        # x_type: this tells if we're using bernoulli or gaussian model for
-        #         the observations
-        # xt_type: this tells how we incorporate the protoypes in the model
-        #
         assert((self.x_type == 'bernoulli') or (self.x_type == 'gaussian'))
-        assert((self.xt_type == 'latent') or (self.xt_type == 'observed'))
+        if 'obs_transform' in self.params:
+            assert((self.params['obs_transform'] == 'sigmoid') or \
+                    (self.params['obs_transform'] == 'none'))
+            if self.params['obs_transform'] == 'sigmoid':
+                self.obs_transform = lambda x: T.nnet.sigmoid(x)
+            else:
+                self.obs_transform = lambda x: x
+        else:
+            self.obs_transform = lambda x: T.nnet.sigmoid(x)
         if self.x_type == 'bernoulli':
-            self.xt_transfrom = lambda x: T.nnet.sigmoid(x)
+            self.obs_transform = lambda x: T.nnet.sigmoid(x)
 
         # record the dimensions of various spaces relevant to this model
-        self.x_dim = x_dim
+        self.obs_dim = obs_dim
+        self.rnn_dim = rnn_dim
         self.z_dim = z_dim
-        self.xt_dim = xt_dim
         self.zt_dim = zt_dim
         self.ir_steps = ir_steps
 
         # record the symbolic variables that will provide inputs to the
-        # computation graph created to describe this IRModel
+        # computation graph created to describe this MultiStageModel
         self.x = x_in
         self.batch_reps = T.lscalar()
 
         # setup switching variable for changing between sampling/training
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-        self.train_switch = theano.shared(value=zero_ary, name='irm_train_switch')
+        self.train_switch = theano.shared(value=zero_ary, name='msm_train_switch')
         self.set_train_switch(1.0)
-        # setup a weight for pulling priors over zti given xti towards a
+        # setup a weight for pulling priors over hi given si towards a
         # shared global prior -- e.g. zero mean and unit variance.
-        self.kzg_weight = theano.shared(value=zero_ary, name='irm_kzg_weight')
+        self.kzg_weight = theano.shared(value=zero_ary, name='msm_kzg_weight')
         self.set_kzg_weight(0.1)
         # this weight balances l1 vs. l2 penalty on posterior KLds
-        self.l1l2_weight = theano.shared(value=zero_ary, name='irm_l1l2_weight')
+        self.l1l2_weight = theano.shared(value=zero_ary, name='msm_l1l2_weight')
         self.set_l1l2_weight(1.0)
-        # self.output_bias/self.output_logvar modify the output distribution
-        zero_row = np.zeros((self.x_dim,)).astype(theano.config.floatX)
-        self.output_bias = theano.shared(value=zero_row, name='irm_output_bias')
-        self.output_logvar = theano.shared(value=zero_ary, name='irm_output_logvar')
 
-        ##############################
-        # Setup self.z and self.xt0. #
-        ##############################
-        print("Building IR step 0...")
+        #############################
+        # Setup self.z and self.s0. #
+        #############################
+        print("Building MSM step 0...")
+        self.p_s0_given_z = p_s0_given_z.shared_param_clone(rng=rng, Xd=self.z)
+        self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
         if self.model_init: # initialize from a generative model
-            self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
             self.z = self.q_z_given_x.output
-            self.p_xt0_given_z = p_xt0_given_z.shared_param_clone(rng=rng, Xd=self.z)
-            self.xt0 = self.p_xt0_given_z.output_mean + self.output_bias
+            self.s0 = self.p_s0_given_z.output_mean
         else: # initialize from a learned constant
-            self.q_z_given_x = None
-            self.p_xt0_given_z = None
-            self.z = T.matrix()
-            self.xt0 = T.zeros_like(self.x) + self.output_bias
-        ################################################################
-        # Setup the iterative refinement loop, starting from self.xt0. #
-        ################################################################
-        self.p_zti_given_xti = []     # holds p_zti_given_xti for each i
-        self.p_xti_given_xti_zti = [] # holds p_xti_given_xti_zti for each i
-        self.q_zti_given_x_xti = []   # holds q_zti_given_x_xti for each i
-        self.xt = [self.xt0]          # holds xt for each i
-        self.zt = []                  # holds zt for each i
+            self.z = 0.0 * self.q_z_given_x.output
+            self.s0 = (0.0 * self.p_s0_given_z.output_mean) + \
+                    self.p_s0_given_z.mu_layers[-1].b
+        self.s0_obs = self.s0[:,:self.obs_dim]
+        self.s0_rnn = T.nnet.tanh(self.s0[:,self.obs_dim:])
+        self.s0_jnt = T.horizontal_stack(self.s0_obs, self.s0_rnn)
+        self.output_logvar = self.p_s0_given_z.sigma_layers[-1].b
+        self.bounded_logvar = (1.0 / 8.0) * T.tanh(8.0 * self.output_logvar)
+
+        ###############################################################
+        # Setup the iterative refinement loop, starting from self.s0. #
+        ###############################################################
+        self.p_hi_given_si = []       # holds p_hi_given_si for each i
+        self.p_sip1_given_si_hi = []  # holds p_sip1_given_si_hi for each i
+        self.q_hi_given_x_si = []     # holds q_hi_given_x_si for each i
+        self.si = [self.s0_jnt]       # holds si for each i
+        self.hi = []                  # holds hi for each i
         for i in range(self.ir_steps):
-            print("Building IR step {0:d}...".format(i+1))
-            # get samples of next zti, conditioned on current xti
-            self.p_zti_given_xti.append( \
-                    p_zti_given_xti.shared_param_clone(rng=rng, \
-                    Xd=self.xt_transform(self.xt[i])))
-            zti_p = self.p_zti_given_xti[i].output
-            # input to the variational approximation of the current conditional
-            # distribution over zti will use the gradient of log-likelihood
-            grad_ll = 1.0 * (self.x - self.xt_transform(self.xt[i]))
-            # now we build the model for variational zti given xti
-            if (q_zti_given_x_xti.shared_layers[0].in_dim > self.xt_dim):
-                # q_zti_given_x_xti takes both x and xti as input...
-                self.q_zti_given_x_xti.append( \
-                        q_zti_given_x_xti.shared_param_clone(rng=rng, \
-                        Xd=T.horizontal_stack(self.x, grad_ll)))
-            else:
-                # q_zti_given_x_xti takes only xti as input...
-                self.q_zti_given_x_xti.append(\
-                        q_zti_given_x_xti.shared_param_clone(rng=rng, \
-                        Xd=grad_ll))
-            zti_q = self.q_zti_given_x_xti[i].output
-            # make zti samples that can be switched between zti_p and zti_q
-            self.zt.append( ((self.train_switch[0] * zti_q) + \
-                    ((1.0 - self.train_switch[0]) * zti_p)) )
-            # only zti goes into p_xti_given_xti_zti. then xti is combined with the
-            # output of p_xti_given_xti_zti to get xt{i+1}.
-            self.p_xti_given_xti_zti.append( \
-                    p_xti_given_xti_zti.shared_param_clone(rng=rng, \
-                    Xd=self.zt[i]))
-            xti_step = self.p_xti_given_xti_zti[i].output_mean
-            # use a simple additive step, for now...
-            self.xt.append( (self.xt[i] + xti_step) )
+            print("Building MSM step {0:d}...".format(i+1))
+            sim1 = self.si[i]
+            sim1_obs = sim1[:,:self.obs_dim]
+            sim1_rnn = sim1[:,self.obs_dim:]
+            # get samples of next hi, conditioned on current si
+            self.p_hi_given_si.append( \
+                    p_hi_given_si.shared_param_clone(rng=rng, \
+                    Xd=T.horizontal_stack( \
+                    self.obs_transform(sim1_obs), sim1_rnn)))
+            hi_p = self.p_hi_given_si[i].output
+            # now we build the model for variational hi given si
+            self.q_hi_given_x_si.append(\
+                    q_hi_given_x_si.shared_param_clone(rng=rng, \
+                    Xd=T.horizontal_stack( \
+                    self.obs_transform(sim1_obs), sim1_rnn, self.x)))
+            hi_q = self.q_hi_given_x_si[i].output
+            # make hi samples that can be switched between hi_p and hi_q
+            self.hi.append( ((self.train_switch[0] * hi_q) + \
+                    ((1.0 - self.train_switch[0]) * hi_p)) )
+            # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
+            self.p_sip1_given_si_hi.append( \
+                    p_sip1_given_si_hi.shared_param_clone(rng=rng, \
+                    Xd=T.horizontal_stack(self.hi[i], sim1_rnn)))
+            # construct the updated si_obs and si_rnn
+            si_obs = sim1_obs + self.p_sip1_given_si_hi[i].output_mean
+            si_rnn = si_rnn
+            si_jnt = T.horizontal_stack(si_obs, si_rnn)
+            # record the updated state of the generative process
+            self.si.append(si_jnt)
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -191,50 +168,47 @@ class IRModel(object):
 
         # shared var learning rate for generator and inferencer
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-        self.lr_1 = theano.shared(value=zero_ary, name='irm_lr_1')
-        self.lr_2 = theano.shared(value=zero_ary, name='irm_lr_2')
+        self.lr_1 = theano.shared(value=zero_ary, name='msm_lr_1')
+        self.lr_2 = theano.shared(value=zero_ary, name='msm_lr_2')
         # shared var momentum parameters for generator and inferencer
-        self.mom_1 = theano.shared(value=zero_ary, name='irm_mom_1')
-        self.mom_2 = theano.shared(value=zero_ary, name='irm_mom_2')
-        self.it_count = theano.shared(value=zero_ary, name='irm_it_count')
+        self.mom_1 = theano.shared(value=zero_ary, name='msm_mom_1')
+        self.mom_2 = theano.shared(value=zero_ary, name='msm_mom_2')
+        self.it_count = theano.shared(value=zero_ary, name='msm_it_count')
         # init parameters for controlling learning dynamics
         self.set_sgd_params()
         # init shared var for weighting nll of data given posterior sample
-        self.lam_nll = theano.shared(value=zero_ary, name='irm_lam_nll')
+        self.lam_nll = theano.shared(value=zero_ary, name='msm_lam_nll')
         self.set_lam_nll(lam_nll=1.0)
         # init shared var for weighting prior kld against reconstruction
-        self.lam_kld_1 = theano.shared(value=zero_ary, name='irm_lam_kld_1')
-        self.lam_kld_2 = theano.shared(value=zero_ary, name='irm_lam_kld_2')
+        self.lam_kld_1 = theano.shared(value=zero_ary, name='msm_lam_kld_1')
+        self.lam_kld_2 = theano.shared(value=zero_ary, name='msm_lam_kld_2')
         self.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
         # init shared var for controlling l2 regularization on params
-        self.lam_l2w = theano.shared(value=zero_ary, name='irm_lam_l2w')
+        self.lam_l2w = theano.shared(value=zero_ary, name='msm_lam_l2w')
         self.set_lam_l2w(1e-5)
 
         # Grab all of the "optimizable" parameters in "group 1"
         self.group_1_params = []
         if self.model_init:
             self.group_1_params.extend(self.q_z_given_x.mlp_params)
-            self.group_1_params.extend(self.p_xt0_given_z.mlp_params)
+            self.group_1_params.extend(self.p_s0_given_z.mlp_params)
         # Grab all of the "optimizable" parameters in "group 2"
         self.group_2_params = []
         for i in range(self.ir_steps):
-            self.group_2_params.extend(self.q_zti_given_x_xti[i].mlp_params)
-            self.group_2_params.extend(self.p_zti_given_xti[i].mlp_params)
-            self.group_2_params.extend(self.p_xti_given_xti_zti[i].mlp_params)
-        # deal with some additional helper parameters (add them to group 1)
-        other_params = [self.output_bias, self.output_logvar]
-        self.group_1_params.extend(other_params)
+            self.group_2_params.extend(self.q_hi_given_x_si[i].mlp_params)
+            self.group_2_params.extend(self.p_hi_given_si[i].mlp_params)
+            self.group_2_params.extend(self.p_sip1_given_si_hi[i].mlp_params)
         # Make a joint list of parameters group 1/2
         self.joint_params = self.group_1_params + self.group_2_params
 
         #################################
         # CONSTRUCT THE KLD-BASED COSTS #
         #################################
-        self.kld_z, self.kld_zti_cond, self.kld_zti_glob = \
+        self.kld_z, self.kld_hi_cond, self.kld_hi_glob = \
                 self._construct_kld_costs()
         self.kld_cost = (self.lam_kld_1[0] * T.mean(self.kld_z)) + \
-                (self.lam_kld_2[0] * (T.mean(self.kld_zti_cond) + \
-                (self.kzg_weight[0] * T.mean(self.kld_zti_glob))))
+                (self.lam_kld_2[0] * (T.mean(self.kld_hi_cond) + \
+                (self.kzg_weight[0] * T.mean(self.kld_hi_glob))))
         #################################
         # CONSTRUCT THE NLL-BASED COSTS #
         #################################
@@ -276,21 +250,13 @@ class IRModel(object):
         # make easy access points for some interesting parameters
         if self.model_init:
             self.inf_1_weights = self.q_z_given_x.shared_layers[0].W
-            self.gen_1_weights = self.p_xt0_given_z.mu_layers[-1].W
+            self.gen_1_weights = self.p_s0_given_z.mu_layers[-1].W
         else:
             self.inf_1_weights = None
             self.gen_1_weights = None
-        # DO SOME STUFF?!
-        if (q_zti_given_x_xti.shared_layers[0].in_dim > self.xt_dim):
-            # q_zti_given_x_xti takes both x and xti as input...
-            self.inf_2_weights = self.q_zti_given_x_xti[0].shared_layers[0].W[:self.x_dim]
-            self.inf_3_weights = self.q_zti_given_x_xti[0].shared_layers[0].W[self.x_dim:]
-        else:
-            # q_zti_given_x_xti takes only xti as input...
-            self.inf_2_weights = self.q_zti_given_x_xti[0].shared_layers[0].W
-            self.inf_3_weights = self.q_zti_given_x_xti[0].shared_layers[0].W
-        self.gen_2_weights = self.p_xti_given_xti_zti[0].mu_layers[-1].W
-        self.gen_inf_weights = self.p_zti_given_xti[0].shared_layers[0].W
+        self.inf_2_weights = self.q_hi_given_x_si[0].shared_layers[0].W
+        self.gen_2_weights = self.p_sip1_given_si_hi[0].mu_layers[-1].W
+        self.gen_inf_weights = self.p_hi_given_si[0].shared_layers[0].W
         return
 
     def set_sgd_params(self, lr_1=0.01, lr_2=0.01, \
@@ -389,7 +355,7 @@ class IRModel(object):
         Set the output layer bias.
         """
         new_bias = new_bias.astype(theano.config.floatX)
-        self.output_bias.set_value(new_bias)
+        self.p_s0_given_z.mu_layers[-1].b.set_value(new_bias)
         return
 
     def _construct_nll_costs(self):
@@ -397,12 +363,13 @@ class IRModel(object):
         Construct the negative log-likelihood part of free energy.
         """
         # average log-likelihood over the refinement sequence
-        xti = self.xt_transform(self.xt[-1])
+        sn = self.si[-1]
+        xh = self.obs_transform(sn[:,:self.obs_dim])
         if self.x_type == 'bernoulli':
-            ll_costs = log_prob_bernoulli(self.x, xti)
+            ll_costs = log_prob_bernoulli(self.x, xh)
         else:
-            ll_costs = log_prob_gaussian2(self.x, xti, \
-                    log_vars=self.output_logvar[0])
+            ll_costs = log_prob_gaussian2(self.x, xh, \
+                    log_vars=self.bounded_logvar)
         nll_costs = -ll_costs
         return nll_costs
 
@@ -414,32 +381,32 @@ class IRModel(object):
         huber_pen = lambda x, d: \
                 ((1.0 / (2.0 * d)) * ((T.abs_(x) < d) * (x**2.0))) + \
                 ((T.abs_(x) >= d) * (T.abs_(x) - (d / 2.0)))
-        # construct KLd cost for the distributions over zti. the prior over
-        # zti is given by a distribution conditioned on xti, which we estimate
-        # using self.p_zti_given_xti[i]. the conditionals produced by each
-        # self.p_zti_given_xti[i] will also be regularized towards a shared
+        # construct KLd cost for the distributions over hi. the prior over
+        # hi is given by a distribution conditioned on si, which we estimate
+        # using self.p_hi_given_si[i]. the conditionals produced by each
+        # self.p_hi_given_si[i] will also be regularized towards a shared
         # prior, e.g. a Gaussian with zero mean and unit variance.
-        kld_zti_conds = []
-        kld_zti_globs = []
+        kld_hi_conds = []
+        kld_hi_globs = []
         for i in range(self.ir_steps):
-            kld_zti_cond = gaussian_kld( \
-                    self.q_zti_given_x_xti[i].output_mean, \
-                    self.q_zti_given_x_xti[i].output_logvar, \
-                    self.p_zti_given_xti[i].output_mean, \
-                    self.p_zti_given_xti[i].output_logvar)
-            kld_zti_glob = gaussian_kld( \
-                    self.p_zti_given_xti[i].output_mean, \
-                    self.p_zti_given_xti[i].output_logvar, \
+            kld_hi_cond = gaussian_kld( \
+                    self.q_hi_given_x_si[i].output_mean, \
+                    self.q_hi_given_x_si[i].output_logvar, \
+                    self.p_hi_given_si[i].output_mean, \
+                    self.p_hi_given_si[i].output_logvar)
+            kld_hi_glob = gaussian_kld( \
+                    self.p_hi_given_si[i].output_mean, \
+                    self.p_hi_given_si[i].output_logvar, \
                     0.0, 0.0)
-            kld_zti_cond_l1l2 = (self.l1l2_weight[0] * kld_zti_cond) + \
-                    ((1.0 - self.l1l2_weight[0]) * kld_zti_cond**2.0)
-            kld_zti_conds.append(T.sum(kld_zti_cond_l1l2, \
+            kld_hi_cond_l1l2 = (self.l1l2_weight[0] * kld_hi_cond) + \
+                    ((1.0 - self.l1l2_weight[0]) * kld_hi_cond**2.0)
+            kld_hi_conds.append(T.sum(kld_hi_cond_l1l2, \
                     axis=1, keepdims=True))
-            kld_zti_globs.append(T.sum(kld_zti_glob**2.0, \
+            kld_hi_globs.append(T.sum(kld_hi_glob**2.0, \
                     axis=1, keepdims=True))
         # compute the batch-wise costs
-        kld_zti_cond = sum(kld_zti_conds)
-        kld_zti_glob = sum(kld_zti_globs)
+        kld_hi_cond = sum(kld_hi_conds)
+        kld_hi_glob = sum(kld_hi_globs)
         # construct KLd cost for the distributions over z
         if self.model_init:
             kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
@@ -450,8 +417,8 @@ class IRModel(object):
             kld_z = T.sum(kld_z_l1l2, \
                     axis=1, keepdims=True)
         else:
-            kld_z = T.zeros_like(kld_zti_conds[0])
-        return [kld_z, kld_zti_cond, kld_zti_glob]
+            kld_z = T.zeros_like(kld_hi_conds[0])
+        return [kld_z, kld_hi_cond, kld_hi_glob]
 
     def _construct_reg_costs(self):
         """
@@ -485,7 +452,7 @@ class IRModel(object):
         x_in = T.matrix()
         # construct values to output
         nll = self._construct_nll_costs()
-        kld = self.kld_z + self.kld_zti_cond
+        kld = self.kld_z + self.kld_hi_cond
         # compile theano function for a one-sample free-energy estimate
         fe_term_sample = theano.function(inputs=[x_in], \
                 outputs=[nll, kld], givens={self.x: x_in})
@@ -513,14 +480,14 @@ class IRModel(object):
         cond_klds = []
         glob_klds = []
         for i in range(self.ir_steps):
-            kld_zt_cond = gaussian_kld(self.q_zti_given_x_xti[i].output_mean, \
-                    self.q_zti_given_x_xti[i].output_logvar, \
-                    self.p_zti_given_xti[i].output_mean, \
-                    self.p_zti_given_xti[i].output_logvar)
-            kld_zt_glob = gaussian_kld(self.p_zti_given_xti[i].output_mean, \
-                    self.p_zti_given_xti[i].output_logvar, 0.0, 0.0)
-            cond_klds.append(kld_zt_cond)
-            glob_klds.append(kld_zt_glob)
+            kld_hi_cond = gaussian_kld(self.q_hi_given_x_si[i].output_mean, \
+                    self.q_hi_given_x_si[i].output_logvar, \
+                    self.p_hi_given_si[i].output_mean, \
+                    self.p_hi_given_si[i].output_logvar)
+            kld_hi_glob = gaussian_kld(self.p_hi_given_si[i].output_mean, \
+                    self.p_hi_given_si[i].output_logvar, 0.0, 0.0)
+            cond_klds.append(kld_hi_cond)
+            glob_klds.append(kld_hi_glob)
         # gather conditional and global klds for all IR steps
         all_klds = cond_klds + glob_klds
         # gather kld for initialization step, if we're doing one
@@ -538,23 +505,23 @@ class IRModel(object):
                 f_kld_z = f_all_klds[-1]
             else:
                 f_kld_z = 0.0
-            f_kld_zt_cond = np.zeros(f_all_klds[0].shape)
-            f_kld_zt_glob = np.zeros(f_all_klds[0].shape)
+            f_kld_hi_cond = np.zeros(f_all_klds[0].shape)
+            f_kld_hi_glob = np.zeros(f_all_klds[0].shape)
             for j in range(self.ir_steps):
-                f_kld_zt_cond += f_all_klds[j]
-                f_kld_zt_glob += f_all_klds[j + self.ir_steps]
-            return [f_kld_z, f_kld_zt_cond, f_kld_zt_glob]
+                f_kld_hi_cond += f_all_klds[j]
+                f_kld_hi_glob += f_all_klds[j + self.ir_steps]
+            return [f_kld_z, f_kld_hi_cond, f_kld_hi_glob]
         return post_kld_computer
 
     def _construct_sample_from_prior(self):
         """
         Construct a function for drawing independent samples from the
-        distribution generated by this IRModel. This function returns the
-        full sequence of "partially completed" examples.
+        distribution generated by this MultiStageModel. This function returns
+        the full sequence of "partially completed" examples.
         """
         z_sym = T.matrix()
         x_sym = T.matrix()
-        oputs = [self.xt_transform(xti) for xti in self.xt]
+        oputs = [self.obs_transform(s[:,:self.obs_dim]) for s in self.si]
         if self.model_init:
             sample_func = theano.function(inputs=[z_sym, x_sym], outputs=oputs, \
                     givens={ self.z: z_sym, \
@@ -563,7 +530,7 @@ class IRModel(object):
             sample_func = theano.function(inputs=[x_sym], outputs=oputs, \
                     givens={ self.x: T.zeros_like(x_sym) })
         def prior_sampler(samp_count):
-            x_samps = np.zeros((samp_count, self.x_dim))
+            x_samps = np.zeros((samp_count, self.obs_dim))
             x_samps = x_samps.astype(theano.config.floatX)
             old_switch = self.train_switch.get_value(borrow=False)
             # set model to generation mode

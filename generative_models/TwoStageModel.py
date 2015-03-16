@@ -43,9 +43,9 @@ class TwoStageModel(object):
         p_x_given_xt_zt: InfNet for x given xt and zt
         q_z_given_x: InfNet for z given x
         q_zt_given_x_xt: InfNet for zt given x and xt
-        x_dim: dimension of the "instances" variables
+        obs_dim: dimension of the "instances" variables
         z_dim: dimension of the "latent prototypes" variables
-        xt_dim: dimension of the "prototypes" variables
+        rnn_dim: dimension of the "RNN" portion of state
         zt_dim: dimension of the "variations" variables
         params: REQUIRED PARAMS SHOWN BELOW
                 x_type: can be "bernoulli" or "gaussian"
@@ -55,9 +55,9 @@ class TwoStageModel(object):
             Xd=None, Xc=None, Xm=None, \
             p_xt_given_z=None, p_zt_given_xt=None, p_x_given_xt_zt=None, \
             q_z_given_x=None, q_zt_given_x_xt=None, \
-            x_dim=None, z_dim=None, xt_dim=None, zt_dim=None, \
+            obs_dim=None, z_dim=None, rnn_dim=None, zt_dim=None, \
             params=None):
-        # setup a rng for this GIPair
+        # setup a rng for this TwoStageModel
         self.rng = RandStream(rng.randint(100000))
 
         # grab the user-provided parameters
@@ -67,23 +67,24 @@ class TwoStageModel(object):
             self.params = params
         self.x_type = self.params['x_type']
         self.xt_type = self.params['xt_type']
+        self.obs_transform = lambda x: T.nnet.sigmoid(x)
         #
         # x_type: this tells if we're using bernoulli or gaussian model for
         #         the observations
         # xt_type: this tells how we incorporate the protoypes in the model
         #
         assert((self.x_type == 'bernoulli') or (self.x_type == 'gaussian'))
-        assert((self.xt_type == 'latent') or (self.xt_type == 'observed'))
+        assert((self.xt_type == 'observed'))
 
         # record the dimensions of various spaces relevant to this model
-        self.x_dim = x_dim
+        self.obs_dim = obs_dim
         self.z_dim = z_dim
-        self.xt_dim = xt_dim
+        self.rnn_dim = rnn_dim
         self.zt_dim = zt_dim
 
         # set parameters for the isotropic Gaussian prior over z
-        self.z_prior_mean = 0.0
-        self.z_prior_logvar = 0.0
+        self.prior_mean = 0.0
+        self.prior_logvar = 0.0
 
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this TwoStageModel
@@ -97,15 +98,13 @@ class TwoStageModel(object):
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         self.train_switch = theano.shared(value=zero_ary, name='tsm_train_switch')
         self.set_train_switch(0.0)
-        self.step_switch = theano.shared(value=zero_ary, name='tsm_step_switch')
-        self.set_step_switch(0.0)
         # setup a weight for pulling conditional priors over zt towards
         # a shared global prior (e.g. zero mean and unit variance)
         self.zt_reg_weight = theano.shared(value=zero_ary, name='tsm_zt_reg_weight')
-        self.set_zt_reg_weight(0.2)
+        self.set_zt_reg_weight(0.1)
         # make some parameters for biases on the reconstructions. these
         # parameters get updated during training, as they affect the objective
-        zero_row = np.zeros((self.x_dim,)).astype(theano.config.floatX)
+        zero_row = np.zeros((self.obs_dim,)).astype(theano.config.floatX)
         # self.output_bias/self.output_logvar modify the output distribution
         self.output_bias = theano.shared(value=zero_row, name='tsm_output_bias')
         self.output_logvar = theano.shared(value=zero_ary, name='tsm_output_logvar')
@@ -118,68 +117,31 @@ class TwoStageModel(object):
         self.z = self.q_z_given_x.output
         # generator model for prototypes given latent prototypes
         self.p_xt_given_z = p_xt_given_z.shared_param_clone(rng=rng, Xd=self.z)
-        self.xt = self.p_xt_given_z.output_mean # use deterministic output
+        self.s_0 = self.p_xt_given_z.output_mean
+        self.so_0 = self.s_0[:,:self.obs_dim] + self.output_bias
+        self.sr_0 = T.nnet.sigmoid(self.s_0[:,self.obs_dim:])
+        self.sj_0 = T.horizontal_stack( \
+                self.obs_transform(self.so_0), self.sr_0)
         # generator model for variations given prototypes
-        if self.xt_type == 'latent':
-            self.p_zt_given_xt = p_zt_given_xt.shared_param_clone(rng=rng, \
-                    Xd=self.xt)
-        else:
-            if self.x_type == 'bernoulli':
-                self.p_zt_given_xt = p_zt_given_xt.shared_param_clone(rng=rng, \
-                     Xd=T.nnet.sigmoid(self.xt + self.output_bias))
-            else:
-                self.p_zt_given_xt = p_zt_given_xt.shared_param_clone(rng=rng, \
-                     Xd=T.nnet.sigmoid(self.xt + self.output_bias))
+        self.p_zt_given_xt = p_zt_given_xt.shared_param_clone(rng=rng, \
+                Xd=self.sj_0)
         self.zt_p = self.p_zt_given_xt.output
         # inferencer model for variations given instances and latent prototypes
-        if self.xt_type == 'latent':
-            # xt is treated as totally "latent"
-            self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
-                Xd=T.horizontal_stack(self.x, self.xt))
-        else:
-            if self.x_type == 'bernoulli':
-                # we'll model x using independent bernoullis
-                xc = T.nnet.sigmoid(self.xt + self.output_bias)
-                grad_ll = self.x - xc
-                
-            else:
-                # we'll model x using independent gaussians
-                xc = T.nnet.sigmoid(self.xt + self.output_bias)
-                grad_ll = self.x - xc
-                
-            #self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
-            #        Xd=T.horizontal_stack(self.x, 2.0*grad_ll))
-            self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
-                    Xd=(2.0*grad_ll))
+        grad_ll = self.x - self.obs_transform(self.so_0)
+        self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
+                Xd=T.horizontal_stack(self.sj_0, self.x))
         self.zt_q = self.q_zt_given_x_xt.output
         # make a zt that switches between self.zt_p and self.zt_q
         self.zt = (self.train_switch[0] * self.zt_q) + \
                 ((1.0 - self.train_switch[0]) * self.zt_p)
         # generator model for instances given prototypes and variations
-        if self.xt_type == 'latent':
-            # xt and zt both go into p_x_given_xt_zt, and p_x_given_xt_zt
-            # directly produces the output conditional's mean
-            self.p_x_given_xt_zt = p_x_given_xt_zt.shared_param_clone(rng=rng, \
-                    Xd=T.horizontal_stack(self.xt, self.zt))
-            _xg = self.p_x_given_xt_zt.output_mean
-            if self.x_type == 'bernoulli':
-                self.xg = T.nnet.sigmoid(_xg + self.output_bias)
-                self.xg_xt = self.xg
-            else:
-                self.xg = _xg + self.output_bias
-                self.xg_xt = self.xg
-        else:
-            # only zt goes into p_x_given_xt_zt. then xt is combined with the
-            # output of p_x_given_xt_zt to get the output conditional's mean
-            self.p_x_given_xt_zt = p_x_given_xt_zt.shared_param_clone(rng=rng, \
-                    Xd=self.zt)
-            _xg = self.step_switch[0] * self.p_x_given_xt_zt.output_mean
-            if self.x_type == 'bernoulli':
-                self.xg = T.nnet.sigmoid(_xg + self.xt + self.output_bias)
-                self.xg_xt = T.nnet.sigmoid(self.xt + self.output_bias)
-            else:
-                self.xg = T.nnet.sigmoid(_xg + self.xt + self.output_bias)
-                self.xg_xt = T.nnet.sigmoid(self.xt + self.output_bias)
+        # only zt goes into p_x_given_xt_zt. then xt is combined with the
+        # output of p_x_given_xt_zt to get the output conditional's mean
+        self.p_x_given_xt_zt = p_x_given_xt_zt.shared_param_clone(rng=rng, \
+                Xd=T.horizontal_stack(self.zt, self.sr_0))
+        self.xg = self.obs_transform( \
+                self.p_x_given_xt_zt.output_mean + self.so_0)
+        self.xg_xt = self.obs_transform(self.so_0)
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -266,6 +228,7 @@ class TwoStageModel(object):
         self.gen_1_weights = self.p_xt_given_z.mu_layers[-1].W
         self.inf_2_weights = self.q_zt_given_x_xt.shared_layers[0].W
         self.gen_2_weights = self.p_x_given_xt_zt.mu_layers[-1].W
+        self.gen_inf_weights = self.p_zt_given_xt.shared_layers[0].W
         return
 
     def set_sgd_params(self, lr_1=0.01, lr_2=0.01, \
@@ -329,17 +292,6 @@ class TwoStageModel(object):
         self.train_switch.set_value(new_val)
         return
 
-    def set_step_switch(self, switch_val=0.0):
-        """
-        Set the switch for controlling the contribution of the second stage.
-        """
-        assert(switch_val >= 0.0)
-        zero_ary = np.zeros((1,))
-        new_val = zero_ary + switch_val
-        new_val = new_val.astype(theano.config.floatX)
-        self.step_switch.set_value(new_val)
-        return
-
     def set_zt_reg_weight(self, zt_reg_weight=0.2):
         """
         Set the weight for shaping penalty on conditional priors over zt.
@@ -393,7 +345,7 @@ class TwoStageModel(object):
         # construct KLd cost for the distributions over z
         kld_z = gaussian_kld(self.q_z_given_x.output_mean, \
                 self.q_z_given_x.output_logvar, \
-                self.z_prior_mean, self.z_prior_logvar)
+                self.prior_mean, self.prior_logvar)
         # construct KLd cost for the distributions over zt. the prior over
         # zt is given by a mixture between a distribution conditioned on xt,
         # which is estimated by self.p_zt_given_xt, and a "global" prior which
@@ -468,7 +420,7 @@ class TwoStageModel(object):
         # construct symbolic expressions for the desired KLds
         kld_z = gaussian_kld(self.q_z_given_x.output_mean, \
                 self.q_z_given_x.output_logvar, \
-                self.z_prior_mean, self.z_prior_logvar)
+                self.prior_mean, self.prior_logvar)
         kld_zt_cond = gaussian_kld(self.q_zt_given_x_xt.output_mean, \
                 self.q_zt_given_x_xt.output_logvar, \
                 self.p_zt_given_xt.output_mean, \
@@ -496,10 +448,10 @@ class TwoStageModel(object):
                         self.Xm: T.zeros_like(x_sym) })
         def prior_sampler(samp_count):
             z_samps = npr.randn(samp_count, self.z_dim)
-            z_samps = (np.exp(0.5 * self.z_prior_logvar) * z_samps) + \
-                    self.z_prior_mean
+            z_samps = (np.exp(0.5 * self.prior_logvar) * z_samps) + \
+                    self.prior_mean
             z_samps = z_samps.astype(theano.config.floatX)
-            x_samps = np.zeros((samp_count, self.x_dim))
+            x_samps = np.zeros((samp_count, self.obs_dim))
             x_samps = x_samps.astype(theano.config.floatX)
             old_switch = self.train_switch.get_value(borrow=False)
             self.set_train_switch(switch_val=0.0)
@@ -524,19 +476,20 @@ if __name__=="__main__":
     Xtr = Xtr_shared.get_value(borrow=False).astype(theano.config.floatX)
     Xva = Xva_shared.get_value(borrow=False).astype(theano.config.floatX)
     tr_samples = Xtr.shape[0]
-    batch_size = 300
-    batch_reps = 5
+    batch_size = 250
+    batch_reps = 6
 
     ###############################################
     # Setup some parameters for the TwoStageModel #
     ###############################################
     prior_sigma = 1.0
-    x_dim = Xtr.shape[1]
-    z_dim = 20
-    xt_dim = x_dim
+    obs_dim = Xtr.shape[1]
+    z_dim = 25
+    rnn_dim = 25
     zt_dim = 50
     x_type = 'bernoulli'
     xt_type = 'observed'
+    rnn_dim = 25
 
     # some InfNet instances to build the TwoStageModel from
     Xd = T.matrix('Xd_base')
@@ -546,8 +499,8 @@ if __name__=="__main__":
     # p_xt_given_z #
     ################
     params = {}
-    shared_config = [z_dim, 500, 500]
-    top_config = [shared_config[-1], xt_dim]
+    shared_config = [z_dim, 250, 250]
+    top_config = [shared_config[-1], (obs_dim + rnn_dim)]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
@@ -561,12 +514,12 @@ if __name__=="__main__":
     params['build_theano_funcs'] = False
     p_xt_given_z = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_xt_given_z.init_biases(0.1)
+    p_xt_given_z.init_biases(0.2)
     #################
     # p_zt_given_xt #
     #################
     params = {}
-    shared_config = [xt_dim, 500, 500]
+    shared_config = [(obs_dim + rnn_dim), 500, 500]
     top_config = [shared_config[-1], zt_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -581,13 +534,13 @@ if __name__=="__main__":
     params['build_theano_funcs'] = False
     p_zt_given_xt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_zt_given_xt.init_biases(0.1)
+    p_zt_given_xt.init_biases(0.2)
     ###################
     # p_x_given_xt_zt #
     ###################
     params = {}
-    shared_config = [zt_dim, 500, 500]
-    top_config = [shared_config[-1], x_dim]
+    shared_config = [(zt_dim + rnn_dim), 500, 500]
+    top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
@@ -601,12 +554,12 @@ if __name__=="__main__":
     params['build_theano_funcs'] = False
     p_x_given_xt_zt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_x_given_xt_zt.init_biases(0.1)
+    p_x_given_xt_zt.init_biases(0.2)
     ###############
     # q_z_given_x #
     ###############
     params = {}
-    shared_config = [x_dim, 500, 500]
+    shared_config = [obs_dim, 250, 250]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -621,12 +574,12 @@ if __name__=="__main__":
     params['build_theano_funcs'] = False
     q_z_given_x = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    q_z_given_x.init_biases(0.1)
+    q_z_given_x.init_biases(0.2)
     ###################
     # q_zt_given_x_xt #
     ###################
     params = {}
-    shared_config = [x_dim, 500, 500]
+    shared_config = [(obs_dim + rnn_dim + obs_dim), 500, 500]
     top_config = [shared_config[-1], zt_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -641,7 +594,7 @@ if __name__=="__main__":
     params['build_theano_funcs'] = False
     q_zt_given_x_xt = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    q_zt_given_x_xt.init_biases(0.1)
+    q_zt_given_x_xt.init_biases(0.2)
 
     ##############################################################
     # Define parameters for the TwoStageModel, and initialize it #
@@ -654,7 +607,7 @@ if __name__=="__main__":
             p_xt_given_z=p_xt_given_z, p_zt_given_xt=p_zt_given_xt, \
             p_x_given_xt_zt=p_x_given_xt_zt, \
             q_z_given_x=q_z_given_x, q_zt_given_x_xt=q_zt_given_x_xt, \
-            x_dim=x_dim, z_dim=z_dim, xt_dim=xt_dim, zt_dim=zt_dim, \
+            obs_dim=obs_dim, z_dim=z_dim, rnn_dim=rnn_dim, zt_dim=zt_dim, \
             params=tsm_params)
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
@@ -665,20 +618,19 @@ if __name__=="__main__":
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     costs = [0. for i in range(10)]
-    learn_rate = 0.005
-    for i in range(150000):
-        scale = min(1.0, ((i+1) / 2500.0))
+    learn_rate = 0.003
+    for i in range(300000):
+        scale = min(1.0, ((i+1) / 5000.0))
         if (((i + 1) % 10000) == 0):
-            learn_rate = learn_rate * 0.9
+            learn_rate = learn_rate * 0.95
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
         # train the coarse approximation and corrector model jointly
         TSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
-                mom_1=0.9, mom_2=0.99)
+                mom_1=scale*0.5, mom_2=0.99)
         TSM.set_train_switch(1.0) # set to training mode
-        TSM.set_step_switch(1.0) # scale the corrector's contribution
         TSM.set_lam_nll(lam_nll=1.0)
         TSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=0.0)
         TSM.set_lam_l2w(1e-5)
@@ -686,8 +638,8 @@ if __name__=="__main__":
         # perform a minibatch update and record the cost for this batch
         result = TSM.train_joint(Xb, 0.0*Xb, 0.0*Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
-        if ((i % 250) == 0):
-            costs = [(v / 250.0) for v in costs]
+        if ((i % 500) == 0):
+            costs = [(v / 500.0) for v in costs]
             print("-- batch {0:d} --".format(i))
             print("    joint_cost: {0:.4f}".format(costs[0]))
             print("    nll_cost  : {0:.4f}".format(costs[1]))
@@ -696,28 +648,31 @@ if __name__=="__main__":
             print("    kld_cost  : {0:.4f}".format(costs[4]))
             print("    reg_cost  : {0:.4f}".format(costs[5]))
             costs = [0.0 for v in costs]
-        if ((i % 1000) == 0):
+        if ((i % 2000) == 0):
             Xva = row_shuffle(Xva)
-            samp_count = 512
+            samp_count = 200
             model_samps = TSM.sample_from_prior(samp_count)
-            joint_samps = np.zeros((2*samp_count, x_dim))
+            joint_samps = np.zeros((2*samp_count, obs_dim))
             for s in range(samp_count):
                 joint_samps[2*s] = model_samps['xt'][s]
                 joint_samps[2*s + 1] = model_samps['xg'][s]
             file_name = "TSM_SAMPLES_b{0:d}_XTXG.png".format(i)
-            utils.visualize_samples(joint_samps, file_name, num_rows=32)
+            utils.visualize_samples(joint_samps, file_name, num_rows=20)
             file_name = "TSM_INF_1_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(TSM.inf_1_weights.get_value(borrow=False).T, \
-                    file_name, num_rows=20)
-            #file_name = "TSM_INF_2_WEIGHTS_b{0:d}.png".format(i)
-            #utils.visualize_samples(TSM.inf_2_weights.get_value(borrow=False).T, \
-            #        file_name, num_rows=20)
+            W = TSM.inf_1_weights.get_value(borrow=False).T
+            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
+            file_name = "TSM_INF_2_WEIGHTS_b{0:d}.png".format(i)
+            W = TSM.inf_2_weights.get_value(borrow=False).T
+            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             file_name = "TSM_GEN_1_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(TSM.gen_1_weights.get_value(borrow=False), \
-                    file_name, num_rows=20)
+            W = TSM.gen_1_weights.get_value(borrow=False)
+            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             file_name = "TSM_GEN_2_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(TSM.gen_2_weights.get_value(borrow=False), \
-                    file_name, num_rows=20)
+            W = TSM.gen_2_weights.get_value(borrow=False)
+            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
+            file_name = "TSM_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
+            W = TSM.gen_inf_weights.get_value(borrow=False).T
+            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             post_klds = TSM.compute_post_klds(Xva[0:5000])
             file_name = "TSM_Z_POST_KLDS_b{0:d}.png".format(i)

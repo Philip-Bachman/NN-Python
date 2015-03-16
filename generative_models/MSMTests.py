@@ -1,6 +1,6 @@
-################################################################
-# Code for testing the variational Iterative Refinement Model. #
-################################################################
+##################################################################
+# Code for testing the variational Multi-Stage Generative Model. #
+##################################################################
 
 # basic python
 import numpy as np
@@ -16,7 +16,7 @@ from NetLayers import relu_actfun, softplus_actfun, \
                       apply_mask, binarize_data, row_shuffle
 from GenNet import GenNet
 from InfNet import InfNet
-from IRModel import IRModel
+from MultiStageModel import MultiStageModel
 from load_data import load_udm, load_udm_ss, load_mnist
 import utils
 
@@ -42,7 +42,7 @@ def test_with_constant_init():
     batch_reps = 10
 
     #########################################
-    # Setup some parameters for the IRModel #
+    # Setup some parameters for the MultiStageModel #
     #########################################
     prior_sigma = 1.0
     x_dim = Xtr.shape[1]
@@ -52,7 +52,7 @@ def test_with_constant_init():
     x_type = 'bernoulli'
     xt_type = 'observed'
 
-    # some InfNet instances to build the IRModel from
+    # some InfNet instances to build the MultiStageModel from
     X_sym = T.matrix('X_sym')
 
     ###################
@@ -117,14 +117,14 @@ def test_with_constant_init():
     q_zti_given_x_xti.init_biases(0.1)
 
     ########################################################
-    # Define parameters for the IRModel, and initialize it #
+    # Define parameters for the MultiStageModel, and initialize it #
     ########################################################
-    print("Building the IRModel...")
+    print("Building the MultiStageModel...")
     irm_params = {}
     irm_params['x_type'] = x_type
     irm_params['xt_type'] = xt_type
     irm_params['xt_transform'] = 'sigmoid'
-    IRM = IRModel(rng=rng, x_in=X_sym, \
+    MSM = MultiStageModel(rng=rng, x_in=X_sym, \
             p_xt0_given_z=None, p_zti_given_xti=p_zti_given_xti, \
             p_xti_given_xti_zti=p_xti_given_xti_zti, \
             q_z_given_x=None, q_zti_given_x_xti=q_zti_given_x_xti, \
@@ -132,7 +132,7 @@ def test_with_constant_init():
             ir_steps=3, params=irm_params)
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
-    IRM.set_output_bias(0.5*obs_mean_logit)
+    MSM.set_output_bias(0.5*obs_mean_logit)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -149,15 +149,15 @@ def test_with_constant_init():
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
         # train the coarse approximation and corrector model jointly
-        IRM.set_sgd_params(lr_1=scale_1*learn_rate, lr_2=scale_1*learn_rate, \
+        MSM.set_sgd_params(lr_1=scale_1*learn_rate, lr_2=scale_1*learn_rate, \
                 mom_1=0.8, mom_2=0.99)
-        IRM.set_train_switch(1.0)
-        IRM.set_lam_nll(lam_nll=1.0)
-        IRM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
-        IRM.set_lam_l2w(1e-5)
-        IRM.set_kzg_weight(0.01)
+        MSM.set_train_switch(1.0)
+        MSM.set_lam_nll(lam_nll=1.0)
+        MSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
+        MSM.set_lam_l2w(1e-5)
+        MSM.set_kzg_weight(0.01)
         # perform a minibatch update and record the cost for this batch
-        result = IRM.train_joint(Xb, batch_reps)
+        result = MSM.train_joint(Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
         if ((i % 500) == 0):
             costs = [(v / 500.0) for v in costs]
@@ -171,7 +171,7 @@ def test_with_constant_init():
             Xva = row_shuffle(Xva)
             # draw some independent random samples from the model
             samp_count = 200
-            model_samps = IRM.sample_from_prior(samp_count)
+            model_samps = MSM.sample_from_prior(samp_count)
             seq_len = len(model_samps)
             seq_samps = np.zeros((seq_len*samp_count, model_samps[0].shape[1]))
             idx = 0
@@ -183,13 +183,13 @@ def test_with_constant_init():
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # visualize some important weights in the model
             file_name = "CI_INF_WEIGHTS_X_b{0:d}.png".format(i)
-            utils.visualize_samples(IRM.inf_2_weights.get_value(borrow=False).T, \
+            utils.visualize_samples(MSM.inf_2_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
             file_name = "CI_GEN_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(IRM.gen_2_weights.get_value(borrow=False), \
+            utils.visualize_samples(MSM.gen_2_weights.get_value(borrow=False), \
                     file_name, num_rows=20)
             # compute information about posterior KLds on validation set
-            post_klds = IRM.compute_post_klds(Xva[0:5000])
+            post_klds = MSM.compute_post_klds(Xva[0:5000])
             # file_name = "CI_Z_KLDS_b{0:d}.png".format(i)
             # utils.plot_stem(np.arange(post_klds[0].shape[1]), \
             #         np.mean(post_klds[0], axis=0), file_name)
@@ -200,7 +200,7 @@ def test_with_constant_init():
             utils.plot_stem(np.arange(post_klds[2].shape[1]), \
                     np.mean(post_klds[2], axis=0), file_name)
             # compute information about free-energy on validation set
-            fe_terms = IRM.compute_fe_terms(binarize_data(Xva[0:5000]), 20)
+            fe_terms = MSM.compute_fe_terms(binarize_data(Xva[0:5000]), 20)
             fe_mean = np.mean(fe_terms[0]) + np.mean(fe_terms[1])
             print("    nll_bound : {0:.4f}".format(fe_mean))
             file_name = "CI_FREE_ENERGY_b{0:d}.png".format(i)
@@ -347,14 +347,14 @@ def test_with_model_init():
 
  
     ########################################################
-    # Define parameters for the IRModel, and initialize it #
+    # Define parameters for the MultiStageModel, and initialize it #
     ########################################################
-    print("Building the IRModel...")
+    print("Building the MultiStageModel...")
     irm_params = {}
     irm_params['x_type'] = x_type
     irm_params['xt_type'] = xt_type
     irm_params['xt_transform'] = 'sigmoid'
-    IRM = IRModel(rng=rng, x_in=X_sym, \
+    MSM = MultiStageModel(rng=rng, x_in=X_sym, \
             p_xt0_given_z=p_xt0_given_z, \
             p_zti_given_xti=p_zti_given_xti, \
             p_xti_given_xti_zti=p_xti_given_xti_zti, \
@@ -364,8 +364,8 @@ def test_with_model_init():
             ir_steps=3, params=irm_params)
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
-    IRM.set_input_bias(-obs_mean)
-    IRM.set_output_bias(0.5*obs_mean_logit)
+    MSM.set_input_bias(-obs_mean)
+    MSM.set_output_bias(0.5*obs_mean_logit)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -388,16 +388,16 @@ def test_with_model_init():
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
-        IRM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
+        MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
                 mom_1=(scale*momentum), mom_2=0.99)
-        IRM.set_train_switch(1.0)
-        IRM.set_l1l2_weight(l1l2_weight)
-        IRM.set_lam_nll(lam_nll=1.0)
-        IRM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
-        IRM.set_lam_l2w(1e-5)
-        IRM.set_kzg_weight(0.01)
+        MSM.set_train_switch(1.0)
+        MSM.set_l1l2_weight(l1l2_weight)
+        MSM.set_lam_nll(lam_nll=1.0)
+        MSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
+        MSM.set_lam_l2w(1e-5)
+        MSM.set_kzg_weight(0.01)
         # perform a minibatch update and record the cost for this batch
-        result = IRM.train_joint(Xb, batch_reps)
+        result = MSM.train_joint(Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
         if ((i % 500) == 0):
             costs = [(v / 500.0) for v in costs]
@@ -411,7 +411,7 @@ def test_with_model_init():
             Xva = row_shuffle(Xva)
             # draw some independent random samples from the model
             samp_count = 200
-            model_samps = IRM.sample_from_prior(samp_count)
+            model_samps = MSM.sample_from_prior(samp_count)
             seq_len = len(model_samps)
             seq_samps = np.zeros((seq_len*samp_count, model_samps[0].shape[1]))
             idx = 0
@@ -423,22 +423,22 @@ def test_with_model_init():
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # visualize some important weights in the model
             file_name = "MZ_INF_1_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(IRM.inf_1_weights.get_value(borrow=False).T, \
+            utils.visualize_samples(MSM.inf_1_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
             file_name = "MZ_GEN_1_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(IRM.gen_1_weights.get_value(borrow=False), \
+            utils.visualize_samples(MSM.gen_1_weights.get_value(borrow=False), \
                     file_name, num_rows=20)
             file_name = "MZ_INF_2_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(IRM.inf_2_weights.get_value(borrow=False).T, \
+            utils.visualize_samples(MSM.inf_2_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
             file_name = "MZ_GEN_2_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(IRM.gen_2_weights.get_value(borrow=False), \
+            utils.visualize_samples(MSM.gen_2_weights.get_value(borrow=False), \
                     file_name, num_rows=20)
             file_name = "MZ_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
-            utils.visualize_samples(IRM.gen_inf_weights.get_value(borrow=False).T, \
+            utils.visualize_samples(MSM.gen_inf_weights.get_value(borrow=False).T, \
                     file_name, num_rows=20)
             # compute information about posterior KLds on validation set
-            post_klds = IRM.compute_post_klds(Xva[0:5000])
+            post_klds = MSM.compute_post_klds(Xva[0:5000])
             file_name = "MZ_Z_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_klds[0].shape[1]), \
                     np.mean(post_klds[0], axis=0), file_name)
@@ -450,7 +450,7 @@ def test_with_model_init():
                     np.mean(post_klds[2], axis=0), file_name)
             # compute information about free-energy on validation set
             file_name = "MZ_FREE_ENERGY_b{0:d}.png".format(i)
-            fe_terms = IRM.compute_fe_terms(binarize_data(Xva[0:5000]), 20)
+            fe_terms = MSM.compute_fe_terms(binarize_data(Xva[0:5000]), 20)
             fe_mean = np.mean(fe_terms[0]) + np.mean(fe_terms[1])
             print("    nll_bound : {0:.4f}".format(fe_mean))
             utils.plot_scatter(fe_terms[1], fe_terms[0], file_name, \

@@ -44,7 +44,7 @@ def relu_actfun(x):
     x_relu = T.maximum(0., x)
     return x_relu
 
-def softplus_actfun(x, scale=1.0):
+def softplus_actfun(x, scale=2.0):
     """Compute rescaled softplus activation for x."""
     #x_softplus = T.log(1.0 + T.exp(x))
     x_softplus = (1.0 / scale) * T.nnet.softplus(scale*x)

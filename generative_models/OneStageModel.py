@@ -107,14 +107,6 @@ class OneStageModel(object):
         self.batch_reps = T.lscalar()
         self.x = apply_mask(self.Xd, self.Xc, self.Xm)
 
-        # self.output_bias/self.output_logvar modify the output distribution
-        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-        zero_row = np.zeros((self.x_dim,)).astype(theano.config.floatX)
-        self.output_bias = theano.shared(value=zero_row, name='osm_output_bias')
-        self.output_logvar = theano.shared(value=zero_ary, name='osm_output_logvar')
-        self.bounded_logvar = self.logvar_bound * \
-                    T.tanh(self.output_logvar[0] / self.logvar_bound)
-
         #####################################################################
         # Setup the computation graph that provides values in our objective #
         #####################################################################
@@ -128,9 +120,14 @@ class OneStageModel(object):
         self.xt = self.p_x_given_z.output_mean # use deterministic output
         # construct the final output of generator, conditioned on z
         if self.x_type == 'bernoulli':
-            self.xg = T.nnet.sigmoid(self.xt + self.output_bias)
+            self.xg = T.nnet.sigmoid(self.xt)
         else:
-            self.xg = self.xt_transform(self.xt + self.output_bias)
+            self.xg = self.xt_transform(self.xt)
+
+        # self.output_logvar modifies the output distribution
+        self.output_logvar = self.p_x_given_z.sigma_layers[-1].b
+        self.bounded_logvar = self.logvar_bound * \
+                    T.tanh(self.output_logvar[0] / self.logvar_bound)
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -161,10 +158,8 @@ class OneStageModel(object):
         self.group_1_params = []
         self.group_1_params.extend(self.q_z_given_x.mlp_params)
         self.group_1_params.extend(self.p_x_given_z.mlp_params)
-        # deal with some additional helper parameters (add them to group 1)
-        other_params = [self.output_bias, self.output_logvar]
-        # Make a joint list of parameters group 1/2
-        self.joint_params = self.group_1_params + other_params
+        # Make a joint list of parameters
+        self.joint_params = self.group_1_params
 
         ###################################
         # CONSTRUCT THE COSTS TO OPTIMIZE #
@@ -254,12 +249,12 @@ class OneStageModel(object):
         Set the output layer bias.
         """
         new_bias = new_bias.astype(theano.config.floatX)
-        self.output_bias.set_value(new_bias)
+        self.p_x_given_z.mu_layers[-1].b.set_value(new_bias)
         return
 
     def set_input_bias(self, new_bias=None):
         """
-        Set the output layer bias.
+        Set the input layer bias.
         """
         new_bias = new_bias.astype(theano.config.floatX)
         self.q_z_given_x.shared_layers[0].b_in.set_value(new_bias)
@@ -552,7 +547,7 @@ if __name__=="__main__":
             params=osm_params)
     obs_mean = np.mean(Xtr, axis=0)
     OSM.set_output_bias(obs_mean)
-    OSM.set_input_bias(0.0 * obs_mean)
+    OSM.set_input_bias(-obs_mean)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #

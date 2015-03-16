@@ -566,8 +566,8 @@ def test_gip_sigma_scale_tfd():
     Xp = T.matrix(name='Xp')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "TFD_WALKOUT_TEST_MAX_KLD/pt_osm_params_b25000_GN.pkl"
-    in_fname = "TFD_WALKOUT_TEST_MAX_KLD/pt_osm_params_b25000_IN.pkl"
+    gn_fname = "TFD_WALKOUT_TEST_MAX_KLD/pt_osm_params_b100000_GN.pkl"
+    in_fname = "TFD_WALKOUT_TEST_MAX_KLD/pt_osm_params_b100000_IN.pkl"
     IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = INet.load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
     x_dim = IN.shared_layers[0].in_dim
@@ -580,8 +580,7 @@ def test_gip_sigma_scale_tfd():
     OSM = OneStageModel(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
             p_x_given_z=GN, q_z_given_x=IN, \
             x_dim=x_dim, z_dim=z_dim, params=osm_params)
-    logvar_ary = np.zeros((1,)).astype(theano.config.floatX) - 6.0
-    OSM.output_logvar.set_value(logvar_ary)
+
     # compute variational likelihood bound and its sub-components
     Xva = row_shuffle(Xva)
     Xb = Xva[0:5000]

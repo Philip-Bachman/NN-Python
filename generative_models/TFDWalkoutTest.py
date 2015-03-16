@@ -195,7 +195,13 @@ def pretrain_osm(lam_kld=0.0):
     for i in range(500000):
         scale = min(1.0, float(i) / 5000.0)
         if ((i > 1) and ((i % 20000) == 0)):
-            learn_rate = learn_rate * 0.8
+            learn_rate = learn_rate * 0.9
+        if (i < 50000):
+            momentum = 0.5
+        elif (i < 10000):
+            momentum = 0.7
+        else:
+            momentum = 0.9
         if ((i == 0) or (npr.rand() < reset_prob)):
             # sample a fully random batch
             batch_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
@@ -211,9 +217,9 @@ def pretrain_osm(lam_kld=0.0):
         Xm_batch = 0.0 * Xd_batch
         # do a minibatch update of the model, and compute some costs
         OSM.set_sgd_params(lr_1=(scale*learn_rate), \
-                mom_1=(scale*0.5), mom_2=0.95)
+                mom_1=(scale*momentum), mom_2=0.98)
         OSM.set_lam_nll(1.0)
-        OSM.set_lam_kld(lam_kld_1=50.0, lam_kld_2=25.0, lam_kld_c=10.0)
+        OSM.set_lam_kld(lam_kld_1=60.0, lam_kld_2=0.0, lam_kld_c=20.0)
         result = OSM.train_joint(Xd_batch, Xc_batch, Xm_batch, batch_reps)
         batch_costs = result[4] + result[5]
         obs_costs = collect_obs_costs(batch_costs, batch_reps)
