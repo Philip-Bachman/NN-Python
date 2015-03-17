@@ -44,7 +44,7 @@ class MultiStageModel(object):
         obs_dim: dimension of the observations to generate
         rnn_dim: dimension of the "RNN state"
         z_dim: dimension of the "initial" latent space
-        zt_dim: dimension of the "primary" latent space
+        h_dim: dimension of the "primary" latent space
         ir_steps: number of "iterative refinement" steps to perform
         params: REQUIRED PARAMS SHOWN BELOW
                 x_type: can be "bernoulli" or "gaussian"
@@ -53,8 +53,8 @@ class MultiStageModel(object):
     def __init__(self, rng=None, x_in=None, \
             p_s0_given_z=None, p_hi_given_si=None, p_sip1_given_si_hi=None, \
             p_x_given_si_hi=None, q_z_given_x=None, q_hi_given_x_si=None, \
-            obs_dim=None, z_dim=None, zt_dim=None, rnn_dim=None, \
-            ir_steps=2, params=None):
+            obs_dim=None, z_dim=None, h_dim=None, rnn_dim=None, \
+            model_init=True, ir_steps=2, params=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
 
@@ -84,7 +84,7 @@ class MultiStageModel(object):
         self.obs_dim = obs_dim
         self.rnn_dim = rnn_dim
         self.z_dim = z_dim
-        self.zt_dim = zt_dim
+        self.h_dim = h_dim
         self.ir_steps = ir_steps
 
         # record the symbolic variables that will provide inputs to the
@@ -108,20 +108,22 @@ class MultiStageModel(object):
         # Setup self.z and self.s0. #
         #############################
         print("Building MSM step 0...")
-        self.p_s0_given_z = p_s0_given_z.shared_param_clone(rng=rng, Xd=self.z)
-        self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
         if self.model_init: # initialize from a generative model
+            self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
             self.z = self.q_z_given_x.output
+            self.p_s0_given_z = p_s0_given_z.shared_param_clone(rng=rng, Xd=self.z)
             self.s0 = self.p_s0_given_z.output_mean
         else: # initialize from a learned constant
+            self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
             self.z = 0.0 * self.q_z_given_x.output
+            self.p_s0_given_z = p_s0_given_z.shared_param_clone(rng=rng, Xd=self.z)
             self.s0 = (0.0 * self.p_s0_given_z.output_mean) + \
                     self.p_s0_given_z.mu_layers[-1].b
         self.s0_obs = self.s0[:,:self.obs_dim]
-        self.s0_rnn = T.nnet.tanh(self.s0[:,self.obs_dim:])
+        self.s0_rnn = T.tanh(self.s0[:,self.obs_dim:])
         self.s0_jnt = T.horizontal_stack(self.s0_obs, self.s0_rnn)
         self.output_logvar = self.p_s0_given_z.sigma_layers[-1].b
-        self.bounded_logvar = (1.0 / 8.0) * T.tanh(8.0 * self.output_logvar)
+        self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.output_logvar)
 
         ###############################################################
         # Setup the iterative refinement loop, starting from self.s0. #
@@ -133,20 +135,21 @@ class MultiStageModel(object):
         self.hi = []                  # holds hi for each i
         for i in range(self.ir_steps):
             print("Building MSM step {0:d}...".format(i+1))
-            sim1 = self.si[i]
-            sim1_obs = sim1[:,:self.obs_dim]
-            sim1_rnn = sim1[:,self.obs_dim:]
+            _si = self.si[i]
+            si_obs = _si[:,:self.obs_dim]
+            si_rnn = _si[:,self.obs_dim:]
             # get samples of next hi, conditioned on current si
             self.p_hi_given_si.append( \
                     p_hi_given_si.shared_param_clone(rng=rng, \
                     Xd=T.horizontal_stack( \
-                    self.obs_transform(sim1_obs), sim1_rnn)))
+                    self.obs_transform(si_obs), si_rnn)))
             hi_p = self.p_hi_given_si[i].output
             # now we build the model for variational hi given si
+            grad_ll = self.x - self.obs_transform(si_obs)
             self.q_hi_given_x_si.append(\
                     q_hi_given_x_si.shared_param_clone(rng=rng, \
                     Xd=T.horizontal_stack( \
-                    self.obs_transform(sim1_obs), sim1_rnn, self.x)))
+                    grad_ll, self.obs_transform(si_obs), si_rnn)))
             hi_q = self.q_hi_given_x_si[i].output
             # make hi samples that can be switched between hi_p and hi_q
             self.hi.append( ((self.train_switch[0] * hi_q) + \
@@ -154,13 +157,15 @@ class MultiStageModel(object):
             # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
             self.p_sip1_given_si_hi.append( \
                     p_sip1_given_si_hi.shared_param_clone(rng=rng, \
-                    Xd=T.horizontal_stack(self.hi[i], sim1_rnn)))
-            # construct the updated si_obs and si_rnn
-            si_obs = sim1_obs + self.p_sip1_given_si_hi[i].output_mean
-            si_rnn = si_rnn
-            si_jnt = T.horizontal_stack(si_obs, si_rnn)
+                    Xd=T.horizontal_stack(self.hi[i], si_rnn)))
+            # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
+            sip1_obs = si_obs + self.p_sip1_given_si_hi[i].output_mean
+            sip1_rnn = si_rnn
+            sip1_jnt = T.horizontal_stack(sip1_obs, sip1_rnn)
             # record the updated state of the generative process
-            self.si.append(si_jnt)
+            self.si.append(sip1_jnt)
+        # check that input/output dimensions of our models agree
+        self._check_model_shapes()
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -248,12 +253,8 @@ class MultiStageModel(object):
         self.compute_fe_terms = self._construct_compute_fe_terms()
         self.sample_from_prior = self._construct_sample_from_prior()
         # make easy access points for some interesting parameters
-        if self.model_init:
-            self.inf_1_weights = self.q_z_given_x.shared_layers[0].W
-            self.gen_1_weights = self.p_s0_given_z.mu_layers[-1].W
-        else:
-            self.inf_1_weights = None
-            self.gen_1_weights = None
+        self.inf_1_weights = self.q_z_given_x.shared_layers[0].W
+        self.gen_1_weights = self.p_s0_given_z.mu_layers[-1].W
         self.inf_2_weights = self.q_hi_given_x_si[0].shared_layers[0].W
         self.gen_2_weights = self.p_sip1_given_si_hi[0].mu_layers[-1].W
         self.gen_inf_weights = self.p_hi_given_si[0].shared_layers[0].W
@@ -350,12 +351,44 @@ class MultiStageModel(object):
         self.q_z_given_x.shared_layers[0].b_in.set_value(new_bias)
         return
 
-    def set_output_bias(self, new_bias=None):
+    def set_output_bias(self, new_obs_bias=None):
         """
-        Set the output layer bias.
+        Set initial bias on the obs part of state, but not the rnn part.
         """
+        assert(new_obs_bias.shape[0] == self.obs_dim)
+        new_bias = np.zeros((self.obs_dim+self.rnn_dim,))
+        old_bias = self.p_s0_given_z.mu_layers[-1].b.get_value(borrow=False)
+        new_bias[:self.obs_dim] = new_obs_bias.ravel()
+        new_bias[self.obs_dim:] = old_bias[self.obs_dim:]
         new_bias = new_bias.astype(theano.config.floatX)
         self.p_s0_given_z.mu_layers[-1].b.set_value(new_bias)
+        return
+
+    def _check_model_shapes(self):
+        """
+        Check that inputs/outputs of the various models will pipe together.
+        """
+        obs_dim = self.obs_dim
+        rnn_dim = self.rnn_dim
+        jnt_dim = obs_dim + rnn_dim
+        z_dim = self.z_dim
+        h_dim = self.h_dim
+        # check shape of initialization model
+        assert(self.p_s0_given_z.mu_layers[-1].out_dim == jnt_dim)
+        assert(self.p_s0_given_z.shared_layers[0].in_dim == z_dim)
+        assert(self.q_z_given_x.mu_layers[-1].out_dim == z_dim)
+        assert(self.q_z_given_x.shared_layers[0].in_dim == obs_dim)
+        # check shape of the forward conditionals over h_i
+        assert(self.p_hi_given_si[0].mu_layers[-1].out_dim == h_dim)
+        assert(self.p_hi_given_si[0].shared_layers[0].in_dim == jnt_dim)
+        assert(self.q_hi_given_x_si[0].mu_layers[-1].out_dim == h_dim)
+        assert(self.q_hi_given_x_si[0].shared_layers[0].in_dim == (obs_dim + jnt_dim))
+        # check shape of the forward conditionals over s_{i+1}
+        assert(self.p_sip1_given_si_hi[0].mu_layers[-1].out_dim == obs_dim)
+        assert(self.p_sip1_given_si_hi[0].shared_layers[0].in_dim == (h_dim + rnn_dim))
+        #
+        # p_x_given_si_hi: InfNet for x given si and hi (NOT IN USE YET)
+        #
         return
 
     def _construct_nll_costs(self):

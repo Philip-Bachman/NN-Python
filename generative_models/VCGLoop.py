@@ -164,6 +164,7 @@ class VCGLoop(object):
         self.Xt = Xt
         # integer number of times to cycle the VAE loop
         self.chain_len = chain_len
+
         # symbolic matrix of indices for data inputs
         self.It = T.arange(self.Xt.shape[0])
         # symbolic matrix of indices for noise/generated inputs
@@ -500,7 +501,7 @@ class VCGLoop(object):
         if self.x_type == 'bernoulli':
             ll_cost = log_prob_bernoulli(x_true, x_apprx)
         else:
-            ll_cost = log_prob_gaussian2(self.x, self.xg, \
+            ll_cost = log_prob_gaussian2(x_true, x_apprx, \
                     log_vars=self.bounded_logvar)
         nll_cost = -ll_cost
         return nll_cost
@@ -618,11 +619,22 @@ class VCGLoop(object):
         """
         Construct theano function to train generator and discriminator jointly.
         """
+        # symbolic vars for passing input to training function
+        xd = T.matrix()
+        xc = T.matrix()
+        xm = T.matrix()
+        xt = T.matrix()
+        batch_reps = T.lscalar()
+        # collect outputs to return to caller
         outputs = [self.joint_cost, self.chain_nll_cost, self.chain_kld_cost, \
                 self.mask_nll_cost, self.mask_kld_cost, self.disc_cost_gn, \
                 self.disc_cost_dn, self.other_reg_cost]
-        func = theano.function(inputs=[ self.Xd, self.Xc, self.Xm, self.Xt ], \
-                outputs=outputs, updates=self.joint_updates)
+        func = theano.function(inputs=[ xd, xc, xm, xt, batch_reps ], \
+                outputs=outputs, updates=self.joint_updates, \
+                givens={ self.Xd: xd.repeat(batch_reps, axis=0), \
+                         self.Xc: xc.repeat(batch_reps, axis=0), \
+                         self.Xm: xm.repeat(batch_reps, axis=0), \
+                         self.Xt: xt })
         return func
 
     def sample_from_chain(self, X_d, X_c=None, X_m=None, loop_iters=5, \

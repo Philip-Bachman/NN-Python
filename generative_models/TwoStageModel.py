@@ -119,7 +119,7 @@ class TwoStageModel(object):
         self.p_xt_given_z = p_xt_given_z.shared_param_clone(rng=rng, Xd=self.z)
         self.s_0 = self.p_xt_given_z.output_mean
         self.so_0 = self.s_0[:,:self.obs_dim] + self.output_bias
-        self.sr_0 = T.nnet.sigmoid(self.s_0[:,self.obs_dim:])
+        self.sr_0 = T.tanh(self.s_0[:,self.obs_dim:])
         self.sj_0 = T.horizontal_stack( \
                 self.obs_transform(self.so_0), self.sr_0)
         # generator model for variations given prototypes
@@ -129,7 +129,7 @@ class TwoStageModel(object):
         # inferencer model for variations given instances and latent prototypes
         grad_ll = self.x - self.obs_transform(self.so_0)
         self.q_zt_given_x_xt = q_zt_given_x_xt.shared_param_clone(rng=rng, \
-                Xd=T.horizontal_stack(self.sj_0, self.x))
+                Xd=T.horizontal_stack(grad_ll, self.sj_0))
         self.zt_q = self.q_zt_given_x_xt.output
         # make a zt that switches between self.zt_p and self.zt_q
         self.zt = (self.train_switch[0] * self.zt_q) + \
