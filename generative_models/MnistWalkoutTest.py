@@ -332,8 +332,8 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
     #######################################################
     # Load inferencer and generator from saved parameters #
     #######################################################
-    gn_fname = RESULT_PATH+"pt_osm_params_b0_GN.pkl"
-    in_fname = RESULT_PATH+"pt_osm_params_b0_IN.pkl"
+    gn_fname = RESULT_PATH+"pt_osm_params_b100000_GN.pkl"
+    in_fname = RESULT_PATH+"pt_osm_params_b100000_IN.pkl"
     IN = load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
     GN = load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
 
@@ -349,7 +349,7 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
     vcgl_params['chain_type'] = 'walkout'
     vcgl_params['lam_l2d'] = 5e-2
     VCGL = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, \
-                 i_net=IN, g_net=GN, d_net=DN, chain_len=3, \
+                 i_net=IN, g_net=GN, d_net=DN, chain_len=5, \
                  data_dim=data_dim, prior_dim=PRIOR_DIM, params=vcgl_params)
 
     out_file = open(RESULT_PATH+"pt_walk_results.txt", 'wb')
