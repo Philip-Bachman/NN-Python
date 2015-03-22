@@ -40,7 +40,8 @@ class MultiStageModel(object):
         p_x_given_si_hi: InfNet for x given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
-        model_init: whether to use the model-based initial stage
+        model_init_obs: whether to use a model-based initial obs
+        model_init_rnn: whether to use a model-based initial rnn
         obs_dim: dimension of the observations to generate
         rnn_dim: dimension of the "RNN state"
         z_dim: dimension of the "initial" latent space
@@ -54,7 +55,8 @@ class MultiStageModel(object):
             p_s0_given_z=None, p_hi_given_si=None, p_sip1_given_si_hi=None, \
             p_x_given_si_hi=None, q_z_given_x=None, q_hi_given_x_si=None, \
             obs_dim=None, z_dim=None, h_dim=None, rnn_dim=None, \
-            model_init=True, ir_steps=2, params=None):
+            model_init_obs=True, model_init_rnn=True, ir_steps=2, \
+            params=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
 
@@ -62,7 +64,8 @@ class MultiStageModel(object):
         assert(p_x_given_si_hi is None)
 
         # decide whether to initialize from a model or from a "constant"
-        self.model_init = model_init
+        self.model_init_obs = model_init_obs
+        self.model_init_rnn = model_init_rnn
 
         # grab the user-provided parameters
         self.params = params
@@ -108,19 +111,22 @@ class MultiStageModel(object):
         # Setup self.z and self.s0. #
         #############################
         print("Building MSM step 0...")
-        if self.model_init: # initialize from a generative model
-            self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
-            self.z = self.q_z_given_x.output
-            self.p_s0_given_z = p_s0_given_z.shared_param_clone(rng=rng, Xd=self.z)
-            self.s0 = self.p_s0_given_z.output_mean
-        else: # initialize from a learned constant
-            self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
-            self.z = 0.0 * self.q_z_given_x.output
-            self.p_s0_given_z = p_s0_given_z.shared_param_clone(rng=rng, Xd=self.z)
-            self.s0 = (0.0 * self.p_s0_given_z.output_mean) + \
-                    self.p_s0_given_z.mu_layers[-1].b
-        self.s0_obs = self.s0[:,:self.obs_dim]
-        self.s0_rnn = T.tanh(self.s0[:,self.obs_dim:])
+        obs_scale = 0.0
+        rnn_scale = 0.0
+        if self.model_init_obs: # initialize obs state from generative model
+            obs_scale = 1.0
+        if self.model_init_rnn: # initialize rnn state from generative model
+            rnn_scale = 1.0
+        self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
+        self.z = self.q_z_given_x.output
+        self.p_s0_given_z = p_s0_given_z.shared_param_clone(rng=rng, Xd=self.z)
+        _s0_model = self.p_s0_given_z.output_mean
+        _s0_const = self.p_s0_given_z.mu_layers[-1].b
+        self.s0_obs = (obs_scale * _s0_model[:,:self.obs_dim]) + \
+                ((1.0 - obs_scale) * _s0_const[:self.obs_dim])
+        self.s0_rnn = (rnn_scale * _s0_model[:,self.obs_dim:]) + \
+                ((1.0 - rnn_scale) * _s0_const[self.obs_dim:])
+        #self.s0_rnn = self.z
         self.s0_jnt = T.horizontal_stack(self.s0_obs, self.s0_rnn)
         self.output_logvar = self.p_s0_given_z.sigma_layers[-1].b
         self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.output_logvar)
@@ -194,9 +200,8 @@ class MultiStageModel(object):
 
         # Grab all of the "optimizable" parameters in "group 1"
         self.group_1_params = []
-        if self.model_init:
-            self.group_1_params.extend(self.q_z_given_x.mlp_params)
-            self.group_1_params.extend(self.p_s0_given_z.mlp_params)
+        self.group_1_params.extend(self.q_z_given_x.mlp_params)
+        self.group_1_params.extend(self.p_s0_given_z.mlp_params)
         # Grab all of the "optimizable" parameters in "group 2"
         self.group_2_params = []
         for i in range(self.ir_steps):
@@ -441,16 +446,13 @@ class MultiStageModel(object):
         kld_hi_cond = sum(kld_hi_conds)
         kld_hi_glob = sum(kld_hi_globs)
         # construct KLd cost for the distributions over z
-        if self.model_init:
-            kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
-                    self.q_z_given_x.output_logvar, \
-                    0.0, 0.0)
-            kld_z_l1l2 = (self.l1l2_weight[0] * kld_z_all) + \
-                    ((1.0 - self.l1l2_weight[0]) * kld_z_all**2.0)
-            kld_z = T.sum(kld_z_l1l2, \
-                    axis=1, keepdims=True)
-        else:
-            kld_z = T.zeros_like(kld_hi_conds[0])
+        kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
+                self.q_z_given_x.output_logvar, \
+                0.0, 0.0)
+        kld_z_l1l2 = (self.l1l2_weight[0] * kld_z_all) + \
+                ((1.0 - self.l1l2_weight[0]) * kld_z_all**2.0)
+        kld_z = T.sum(kld_z_l1l2, \
+                axis=1, keepdims=True)
         return [kld_z, kld_hi_cond, kld_hi_glob]
 
     def _construct_reg_costs(self):
@@ -523,21 +525,17 @@ class MultiStageModel(object):
             glob_klds.append(kld_hi_glob)
         # gather conditional and global klds for all IR steps
         all_klds = cond_klds + glob_klds
-        # gather kld for initialization step, if we're doing one
-        if self.model_init:
-            kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
-                    self.q_z_given_x.output_logvar, \
-                    0.0, 0.0)
-            all_klds.append(kld_z_all)
+        # gather kld for the initialization step
+        kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
+                self.q_z_given_x.output_logvar, \
+                0.0, 0.0)
+        all_klds.append(kld_z_all)
         # compile theano function for a one-sample free-energy estimate
         kld_func = theano.function(inputs=[x], outputs=all_klds, \
                 givens={ self.x: x })
         def post_kld_computer(X):
             f_all_klds = kld_func(X)
-            if self.model_init:
-                f_kld_z = f_all_klds[-1]
-            else:
-                f_kld_z = 0.0
+            f_kld_z = f_all_klds[-1]
             f_kld_hi_cond = np.zeros(f_all_klds[0].shape)
             f_kld_hi_glob = np.zeros(f_all_klds[0].shape)
             for j in range(self.ir_steps):
@@ -555,25 +553,18 @@ class MultiStageModel(object):
         z_sym = T.matrix()
         x_sym = T.matrix()
         oputs = [self.obs_transform(s[:,:self.obs_dim]) for s in self.si]
-        if self.model_init:
-            sample_func = theano.function(inputs=[z_sym, x_sym], outputs=oputs, \
-                    givens={ self.z: z_sym, \
-                            self.x: T.zeros_like(x_sym) })
-        else:
-            sample_func = theano.function(inputs=[x_sym], outputs=oputs, \
-                    givens={ self.x: T.zeros_like(x_sym) })
+        sample_func = theano.function(inputs=[z_sym, x_sym], outputs=oputs, \
+                givens={ self.z: z_sym, \
+                        self.x: T.zeros_like(x_sym) })
         def prior_sampler(samp_count):
             x_samps = np.zeros((samp_count, self.obs_dim))
             x_samps = x_samps.astype(theano.config.floatX)
             old_switch = self.train_switch.get_value(borrow=False)
             # set model to generation mode
             self.set_train_switch(switch_val=0.0)
-            if self.model_init:
-                z_samps = npr.randn(samp_count, self.z_dim)
-                z_samps = z_samps.astype(theano.config.floatX)
-                model_samps = sample_func(z_samps, x_samps)
-            else:
-                model_samps = sample_func(x_samps)
+            z_samps = npr.randn(samp_count, self.z_dim)
+            z_samps = z_samps.astype(theano.config.floatX)
+            model_samps = sample_func(z_samps, x_samps)
             # set model back to either training or generation mode
             self.set_train_switch(switch_val=old_switch)
             return model_samps

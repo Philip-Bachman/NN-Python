@@ -72,7 +72,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = relu_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = 1.2
     params['lam_l2a'] = 1e-3
     params['vis_drop'] = 0.0
@@ -92,7 +92,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = relu_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -112,7 +112,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = relu_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -132,7 +132,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = relu_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -152,7 +152,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = relu_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = 1.2
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -179,33 +179,35 @@ def test_with_model_init():
             q_z_given_x=q_z_given_x, \
             q_hi_given_x_si=q_hi_given_x_si, \
             obs_dim=obs_dim, rnn_dim=rnn_dim, z_dim=z_dim, h_dim=h_dim, \
-            model_init=True, ir_steps=3, params=msm_params)
+            model_init_obs=True, model_init_rnn=True, ir_steps=3, \
+            params=msm_params)
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
     MSM.set_input_bias(-obs_mean)
-    MSM.set_output_bias(0.5*obs_mean_logit)
+    MSM.set_output_bias(0.1*obs_mean_logit)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     costs = [0. for i in range(10)]
-    learn_rate = 0.0015
+    learn_rate = 0.003
     momentum = 0.5
     for i in range(300000):
         scale = min(1.0, ((i+1) / 5000.0))
         l1l2_weight = 1.0 #min(1.0, ((i+1) / 2500.0))
         if (((i + 1) % 10000) == 0):
-            learn_rate = learn_rate * 0.95
+            learn_rate = learn_rate * 0.92
         if (i > 100000):
-            momentum = 0.9
+            momentum = 0.80
         if (i > 50000):
-            momentum = 0.7
+            momentum = 0.65
         else:
-            momentum = 0.5
+            momentum = 0.50
         # randomly sample a minibatch
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xb = binarize_data(Xtr.take(tr_idx, axis=0))
         Xb = Xb.astype(theano.config.floatX)
+        # set sgd and objective function hyperparams for this update
         MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
                 mom_1=(scale*momentum), mom_2=0.99)
         MSM.set_train_switch(1.0)
@@ -217,8 +219,8 @@ def test_with_model_init():
         # perform a minibatch update and record the cost for this batch
         result = MSM.train_joint(Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
-        if ((i % 250) == 0):
-            costs = [(v / 250.0) for v in costs]
+        if ((i % 500) == 0):
+            costs = [(v / 500.0) for v in costs]
             print("-- batch {0:d} --".format(i))
             print("    joint_cost: {0:.4f}".format(costs[0]))
             print("    nll_cost  : {0:.4f}".format(costs[1]))
@@ -237,37 +239,37 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MX_SAMPLES_b{0:d}.png".format(i)
+            file_name = "MZ_SAMPLES_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # visualize some important weights in the model
-            file_name = "MX_INF_1_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_INF_1_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.inf_1_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            file_name = "MX_INF_2_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_INF_2_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.inf_2_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            file_name = "MX_GEN_1_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_GEN_1_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.gen_1_weights.get_value(borrow=False)
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            file_name = "MX_GEN_2_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_GEN_2_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.gen_2_weights.get_value(borrow=False)
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            file_name = "MX_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MZ_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.gen_inf_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             post_klds = MSM.compute_post_klds(Xva[0:5000])
-            file_name = "MX_H0_KLDS_b{0:d}.png".format(i)
+            file_name = "MZ_H0_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_klds[0].shape[1]), \
                     np.mean(post_klds[0], axis=0), file_name)
-            file_name = "MX_HI_COND_KLDS_b{0:d}.png".format(i)
+            file_name = "MZ_HI_COND_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_klds[1].shape[1]), \
                     np.mean(post_klds[1], axis=0), file_name)
-            file_name = "MX_HI_GLOB_KLDS_b{0:d}.png".format(i)
+            file_name = "MZ_HI_GLOB_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(post_klds[2].shape[1]), \
                     np.mean(post_klds[2], axis=0), file_name)
             # compute information about free-energy on validation set
-            file_name = "MX_FREE_ENERGY_b{0:d}.png".format(i)
+            file_name = "MZ_FREE_ENERGY_b{0:d}.png".format(i)
             fe_terms = MSM.compute_fe_terms(binarize_data(Xva[0:5000]), 20)
             fe_mean = np.mean(fe_terms[0]) + np.mean(fe_terms[1])
             print("    nll_bound : {0:.4f}".format(fe_mean))

@@ -19,8 +19,8 @@ sys.setrecursionlimit(10**6)
 
 # DERP
 #RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
-#RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
-RESULT_PATH = "MNIST_WALKOUT_TEST_MAX_KLD/"
+RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
+#RESULT_PATH = "MNIST_WALKOUT_TEST_MAX_KLD/"
 PRIOR_DIM = 50
 LOGVAR_BOUND = 6.0
 
@@ -427,9 +427,9 @@ if __name__=="__main__":
     train_walk_from_pretrained_osm(lam_kld=24.0)
 
     # FOR KLD MODEL
-    # pretrain_osm(lam_kld=5.0)
-    # train_walk_from_pretrained_osm(lam_kld=5.0)
+    #pretrain_osm(lam_kld=5.0)
+    #train_walk_from_pretrained_osm(lam_kld=5.0)
 
     # FOR VAE MODEL
-    # pretrain_osm(lam_kld=1.0)
-    # train_walk_from_pretrained_osm(lam_kld=1.0)
+    #pretrain_osm(lam_kld=1.0)
+    #train_walk_from_pretrained_osm(lam_kld=1.0)

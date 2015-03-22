@@ -19,8 +19,8 @@ sys.setrecursionlimit(10**6)
 
 # DERP
 #RESULT_PATH = "TFD_WALKOUT_TEST_KLD/"
-#RESULT_PATH = "TFD_WALKOUT_TEST_VAE/"
-RESULT_PATH = "TFD_WALKOUT_TEST_MAX_KLD/"
+RESULT_PATH = "TFD_WALKOUT_TEST_VAE/"
+#RESULT_PATH = "TFD_WALKOUT_TEST_MAX_KLD/"
 PRIOR_DIM = 50
 LOGVAR_BOUND = 6.0
 
@@ -169,7 +169,7 @@ def pretrain_osm(lam_kld=0.0):
     # INITIALIZE THE GIPAIR #
     #########################
     osm_params = {}
-    osm_params['x_type'] = 'gaussian'
+    osm_params['x_type'] = 'bernoulli'
     osm_params['xt_transform'] = 'sigmoid'
     osm_params['logvar_bound'] = LOGVAR_BOUND
     OSM = OneStageModel(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
@@ -188,9 +188,9 @@ def pretrain_osm(lam_kld=0.0):
     # Set initial learning rate and basic SGD hyper parameters
     obs_costs = np.zeros((batch_size,))
     costs = [0. for i in range(10)]
-    learn_rate = 0.001
+    learn_rate = 0.002
     for i in range(200000):
-        scale = min(1.0, float(i) / 10000.0)
+        scale = min(1.0, float(i) / 5000.0)
         if ((i > 1) and ((i % 20000) == 0)):
             learn_rate = learn_rate * 0.8
         if (i < 50000):
@@ -322,7 +322,7 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
     dn_params['spawn_configs'] = [sc0]
     dn_params['spawn_weights'] = [1.0]
     # Set remaining params
-    dn_params['init_scale'] = 0.4
+    dn_params['init_scale'] = 1.0
     dn_params['lam_l2a'] = 1e-2
     dn_params['vis_drop'] = 0.2
     dn_params['hid_drop'] = 0.5
@@ -416,7 +416,7 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
             Xs = VCGL.sample_from_prior(20*20)
             utils.visualize_samples(Xs, file_name, num_rows=20)
         # DUMP PARAMETERS FROM TIME-TO-TIME
-        if (i % 10000 == 0):
+        if (i % 5000 == 0):
             DN.save_to_file(f_name=RESULT_PATH+"pt_walk_params_b{0:d}_DN.pkl".format(i))
             IN.save_to_file(f_name=RESULT_PATH+"pt_walk_params_b{0:d}_IN.pkl".format(i))
             GN.save_to_file(f_name=RESULT_PATH+"pt_walk_params_b{0:d}_GN.pkl".format(i))
@@ -424,13 +424,13 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
 
 if __name__=="__main__":
     # FOR EXTREME KLD REGULARIZATION
-	pretrain_osm(lam_kld=60.0)
-	train_walk_from_pretrained_osm(lam_kld=60.0)
+	#pretrain_osm(lam_kld=60.0)
+	#train_walk_from_pretrained_osm(lam_kld=60.0)
 
     # FOR KLD MODEL
     # pretrain_osm(lam_kld=15.0)
     # train_walk_from_pretrained_osm(lam_kld=15.0)
 
     # FOR VAE MODEL
-    # pretrain_osm(lam_kld=1.0)
-    # train_walk_from_pretrained_osm(lam_kld=1.0)
+    pretrain_osm(lam_kld=1.0)
+    #train_walk_from_pretrained_osm(lam_kld=1.0)

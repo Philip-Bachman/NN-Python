@@ -111,6 +111,30 @@ def group_chains(chain_list):
             idx = idx + 1
     return Xs
 
+def block_video(seq_matrix, im_dim, block_dim):
+    b_rows = block_dim[0]
+    b_cols = block_dim[1]
+    i_rows = im_dim[0]
+    i_cols = im_dim[1]
+    seq_len = seq_matrix[0][0].shape[0]
+    gap_px = 4
+    block_im_dim = (b_rows*(i_rows+gap_px), b_cols*(i_cols+gap_px))
+    # make the square-form multi-block video
+    full_vid_sq = np.zeros((seq_len, block_im_dim[0], block_im_dim[1]))
+    for i in range(seq_len):
+        for br in range(b_rows):
+            for bc in range(b_cols):
+                r_start = br * (i_rows + gap_px)
+                r_end = r_start + i_rows
+                c_start = bc * (i_cols + gap_px)
+                c_end = c_start + i_cols
+                full_vid_sq[i, r_start:r_end, c_start:c_end] = \
+                        seq_matrix[br][bc][i,:].reshape((i_rows, i_cols))
+    full_vid_flat = np.zeros((seq_len, block_im_dim[0]*block_im_dim[1]))
+    for i in range(seq_len):
+        full_vid_flat[i,:] = full_vid_sq[i,:,:].ravel()
+    return [full_vid_flat, block_im_dim]
+
 
 #############################################
 # TESTING FOR PARZEN LOG_DENSITY ESTIMATION #
@@ -147,10 +171,10 @@ def test_gip_sigma_scale_mnist():
     Xt = T.matrix(name='Xt')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "MNIST_WALKOUT_TEST_VAE/pt_walk_params_b100000_GN.pkl"
-    in_fname = "MNIST_WALKOUT_TEST_VAE/pt_walk_params_b100000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
-    GN = INet.load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
+    gn_fname = "MNIST_WALKOUT_TEST_MAX_KLD/pt_walk_params_b70000_GN.pkl"
+    in_fname = "MNIST_WALKOUT_TEST_MAX_KLD/pt_walk_params_b70000_IN.pkl"
+    IN = load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
+    GN = load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
     x_dim = IN.shared_layers[0].in_dim
     z_dim = IN.mu_layers[-1].out_dim
     # construct a GIPair with the loaded InfNet and GenNet
@@ -164,13 +188,13 @@ def test_gip_sigma_scale_mnist():
     # compute variational likelihood bound and its sub-components
     Xva = row_shuffle(Xva)
     Xb = Xva[0:5000]
-    file_name = "A_POST_KLDS.png"
+    file_name = "A_MNIST_POST_KLDS.png"
     post_klds = OSM.compute_post_klds(Xb)
     post_dim_klds = np.mean(post_klds, axis=0)
     utils.plot_stem(np.arange(post_dim_klds.shape[0]), post_dim_klds, \
             file_name)
     # compute information about free-energy on validation set
-    file_name = "A_FREE_ENERGY.png"
+    file_name = "A_MNIST_FREE_ENERGY.png"
     fe_terms = OSM.compute_fe_terms(Xb, 20)
     utils.plot_scatter(fe_terms[1], fe_terms[0], file_name, \
             x_label='Posterior KLd', y_label='Negative Log-likelihood')
@@ -200,41 +224,46 @@ def test_gip_sigma_scale_mnist():
     # utils.plot_stem(np.arange(post_dim_vars.shape[0]), post_dim_vars, "AAA_POST_DIM_VARS.png")
 
     # draw many samples from the GIP
-    for i in range(10):
+    for i in range(5):
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        sample_lists = OSM.sample_from_chain(Xd_batch[0:20,:], loop_iters=50, \
-                sigma_scale=1.0)
-        Xs = group_chains(sample_lists['data samples'])
-        to_video(Xs, (48,48), "A_MNIST_CHAIN_VIDEO_{0:d}.avi".format(i), frame_rate=10)
+        Xs = []
+        for row in range(3):
+            Xs.append([])
+            for col in range(3):
+                sample_lists = OSM.sample_from_chain(Xd_batch[0:10,:], loop_iters=100, \
+                        sigma_scale=1.0)
+                Xs[row].append(group_chains(sample_lists['data samples']))
+        Xs, block_im_dim = block_video(Xs, (28,28), (3,3))
+        to_video(Xs, block_im_dim, "A_MNIST_KLD_CHAIN_VIDEO_{0:d}.avi".format(i), frame_rate=10)
         #sample_lists = GIP.sample_from_chain(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=300, \
         #        sigma_scale=1.0)
         #Xs = np.vstack(sample_lists["data samples"])
         #file_name = "TFD_TEST_{0:d}.png".format(i)
         #utils.visualize_samples(Xs, file_name, num_rows=15)
-    file_name = "A_MNIST_PRIOR_SAMPLE.png"
+    file_name = "A_MNIST_KLD_PRIOR_SAMPLE.png"
     Xs = OSM.sample_from_prior(20*20)
     utils.visualize_samples(Xs, file_name, num_rows=20)
-    # test Parzen density estimator built from prior samples
-    Xs = OSM.sample_from_prior(10000)
-    [best_sigma, best_ll, best_lls] = \
-            cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
-    sort_idx = np.argsort(best_lls)
-    sort_idx = sort_idx[0:400]
-    utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "A_MNIST_BEST_LLS_1.png")
-    utils.visualize_samples(Xva[sort_idx], "A_MNIST_BAD_FACES_1.png", num_rows=20)
-    ##########
-    # AGAIN! #
-    ##########
-    Xs = OSM.sample_from_prior(10000)
-    tr_idx = npr.randint(low=0,high=tr_samples,size=(5000,))
-    Xva = Xtr.take(tr_idx, axis=0)
-    [best_sigma, best_ll, best_lls] = \
-            cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
-    sort_idx = np.argsort(best_lls)
-    sort_idx = sort_idx[0:400]
-    utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "A_MNIST_BEST_LLS_2.png")
-    utils.visualize_samples(Xva[sort_idx], "A_MNIST_BAD_FACES_2.png", num_rows=20)
+    # # test Parzen density estimator built from prior samples
+    # Xs = OSM.sample_from_prior(10000)
+    # [best_sigma, best_ll, best_lls] = \
+    #         cross_validate_sigma(Xs, Xva, [0.12, 0.14, 0.15, 0.16, 0.18], 20)
+    # sort_idx = np.argsort(best_lls)
+    # sort_idx = sort_idx[0:400]
+    # utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "A_MNIST_BEST_LLS_1.png")
+    # utils.visualize_samples(Xva[sort_idx], "A_MNIST_BAD_DIGITS_1.png", num_rows=20)
+    # ##########
+    # # AGAIN! #
+    # ##########
+    # Xs = OSM.sample_from_prior(10000)
+    # tr_idx = npr.randint(low=0,high=tr_samples,size=(5000,))
+    # Xva = Xtr.take(tr_idx, axis=0)
+    # [best_sigma, best_ll, best_lls] = \
+    #         cross_validate_sigma(Xs, Xva, [0.12, 0.14, 0.15, 0.16, 0.18], 20)
+    # sort_idx = np.argsort(best_lls)
+    # sort_idx = sort_idx[0:400]
+    # utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "A_MNIST_BEST_LLS_2.png")
+    # utils.visualize_samples(Xva[sort_idx], "A_MNIST_BAD_DIGITS_2.png", num_rows=20)
     return
 
 def test_gip_sigma_scale_tfd():
@@ -270,10 +299,10 @@ def test_gip_sigma_scale_tfd():
     Xt = T.matrix(name='Xt')
 
     # Load inferencer and generator from saved parameters
-    gn_fname = "TFD_WALKOUT_TEST_MAX_KLD/pt_osm_params_b30000_GN.pkl"
-    in_fname = "TFD_WALKOUT_TEST_MAX_KLD/pt_osm_params_b30000_IN.pkl"
-    IN = INet.load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
-    GN = INet.load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
+    gn_fname = "TFD_WALKOUT_TEST_KLD/pt_walk_params_b25000_GN.pkl"
+    in_fname = "TFD_WALKOUT_TEST_KLD/pt_walk_params_b25000_IN.pkl"
+    IN = load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
+    GN = load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
     x_dim = IN.shared_layers[0].in_dim
     z_dim = IN.mu_layers[-1].out_dim
     # construct a GIPair with the loaded InfNet and GenNet
@@ -285,16 +314,16 @@ def test_gip_sigma_scale_tfd():
             p_x_given_z=GN, q_z_given_x=IN, \
             x_dim=x_dim, z_dim=z_dim, params=osm_params)
 
-    # compute variational likelihood bound and its sub-components
+    # # compute variational likelihood bound and its sub-components
     Xva = row_shuffle(Xva)
     Xb = Xva[0:5000]
-    file_name = "A_TFD_POST_KLDS.png"
-    post_klds = OSM.compute_post_klds(Xb)
-    post_dim_klds = np.mean(post_klds, axis=0)
-    utils.plot_stem(np.arange(post_dim_klds.shape[0]), post_dim_klds, \
-            file_name)
+    # file_name = "A_TFD_POST_KLDS.png"
+    # post_klds = OSM.compute_post_klds(Xb)
+    # post_dim_klds = np.mean(post_klds, axis=0)
+    # utils.plot_stem(np.arange(post_dim_klds.shape[0]), post_dim_klds, \
+    #         file_name)
     # compute information about free-energy on validation set
-    file_name = "A_TFD_FREE_ENERGY.png"
+    file_name = "A_TFD_KLD_FREE_ENERGY.png"
     fe_terms = OSM.compute_fe_terms(Xb, 20)
     utils.plot_scatter(fe_terms[1], fe_terms[0], file_name, \
             x_label='Posterior KLd', y_label='Negative Log-likelihood')
@@ -324,41 +353,47 @@ def test_gip_sigma_scale_tfd():
     # utils.plot_stem(np.arange(post_dim_vars.shape[0]), post_dim_vars, "AAA_POST_DIM_VARS.png")
 
     # draw many samples from the GIP
-    for i in range(10):
+    for i in range(5):
         tr_idx = npr.randint(low=0,high=tr_samples,size=(100,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        sample_lists = OSM.sample_from_chain(Xd_batch[0:20,:], loop_iters=50, \
-                sigma_scale=1.0)
-        Xs = group_chains(sample_lists['data samples'])
-        to_video(Xs, (48,48), "A_TFD_CHAIN_VIDEO_{0:d}.avi".format(i), frame_rate=10)
+        Xs = []
+        for row in range(3):
+            Xs.append([])
+            for col in range(3):
+                sample_lists = OSM.sample_from_chain(Xd_batch[0:10,:], loop_iters=100, \
+                        sigma_scale=1.0)
+                Xs[row].append(group_chains(sample_lists['data samples']))
+        Xs, block_im_dim = block_video(Xs, (48,48), (3,3))
+        to_video(Xs, block_im_dim, "A_TFD_KLD_CHAIN_VIDEO_{0:d}.avi".format(i), frame_rate=10)
         #sample_lists = GIP.sample_from_chain(Xd_batch[0,:].reshape((1,data_dim)), loop_iters=300, \
         #        sigma_scale=1.0)
         #Xs = np.vstack(sample_lists["data samples"])
         #file_name = "TFD_TEST_{0:d}.png".format(i)
         #utils.visualize_samples(Xs, file_name, num_rows=15)
-    file_name = "A_TFD_PRIOR_SAMPLE.png"
+    file_name = "A_TFD_KLD_PRIOR_SAMPLE.png"
     Xs = OSM.sample_from_prior(20*20)
     utils.visualize_samples(Xs, file_name, num_rows=20)
+
     # test Parzen density estimator built from prior samples
-    Xs = OSM.sample_from_prior(10000)
-    [best_sigma, best_ll, best_lls] = \
-            cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
-    sort_idx = np.argsort(best_lls)
-    sort_idx = sort_idx[0:400]
-    utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "A_TFD_BEST_LLS_1.png")
-    utils.visualize_samples(Xva[sort_idx], "A_TFD_BAD_FACES_1.png", num_rows=20)
-    ##########
-    # AGAIN! #
-    ##########
-    Xs = OSM.sample_from_prior(10000)
-    tr_idx = npr.randint(low=0,high=tr_samples,size=(5000,))
-    Xva = Xtr.take(tr_idx, axis=0)
-    [best_sigma, best_ll, best_lls] = \
-            cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
-    sort_idx = np.argsort(best_lls)
-    sort_idx = sort_idx[0:400]
-    utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "A_TFD_BEST_LLS_2.png")
-    utils.visualize_samples(Xva[sort_idx], "A_TFD_BAD_FACES_2.png", num_rows=20)
+    # Xs = OSM.sample_from_prior(10000)
+    # [best_sigma, best_ll, best_lls] = \
+    #         cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
+    # sort_idx = np.argsort(best_lls)
+    # sort_idx = sort_idx[0:400]
+    # utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "A_TFD_BEST_LLS_1.png")
+    # utils.visualize_samples(Xva[sort_idx], "A_TFD_BAD_FACES_1.png", num_rows=20)
+    # ##########
+    # # AGAIN! #
+    # ##########
+    # Xs = OSM.sample_from_prior(10000)
+    # tr_idx = npr.randint(low=0,high=tr_samples,size=(5000,))
+    # Xva = Xtr.take(tr_idx, axis=0)
+    # [best_sigma, best_ll, best_lls] = \
+    #         cross_validate_sigma(Xs, Xva, [0.09, 0.095, 0.1, 0.105, 0.11], 10)
+    # sort_idx = np.argsort(best_lls)
+    # sort_idx = sort_idx[0:400]
+    # utils.plot_line(np.arange(sort_idx.shape[0]), best_lls[sort_idx], "A_TFD_BEST_LLS_2.png")
+    # utils.visualize_samples(Xva[sort_idx], "A_TFD_BAD_FACES_2.png", num_rows=20)
     return
 
 ###################
@@ -366,8 +401,6 @@ def test_gip_sigma_scale_tfd():
 ###################
 
 if __name__=="__main__":
-    #test_gip2_mnist_60k()
-    #pretrain_gip(extra_lam_kld=9.0, kld2_scale=0.1)
     #test_gip_sigma_scale_mnist()
     test_gip_sigma_scale_tfd()
     
