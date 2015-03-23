@@ -53,9 +53,9 @@ def test_with_model_init():
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
     obs_dim = Xtr.shape[1]
-    rnn_dim = 25
-    jnt_dim = obs_dim + rnn_dim
-    z_dim = 25
+    z_rnn_dim = 25
+    z_obs_dim = 5
+    jnt_dim = obs_dim + z_rnn_dim
     h_dim = 100
     x_type = 'bernoulli'
     prior_sigma = 1.0
@@ -63,12 +63,12 @@ def test_with_model_init():
     # some InfNet instances to build the TwoStageModel from
     X_sym = T.matrix('X_sym')
 
-    ################
-    # p_s0_given_z #
-    ################
+    ####################
+    # p_s0_obs_given_z_obs #
+    ####################
     params = {}
-    shared_config = [z_dim, 250, 250]
-    top_config = [shared_config[-1], jnt_dim]
+    shared_config = [z_obs_dim, 250, 250]
+    top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
@@ -80,9 +80,9 @@ def test_with_model_init():
     params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
-    p_s0_given_z = InfNet(rng=rng, Xd=X_sym, prior_sigma=prior_sigma, \
+    p_s0_obs_given_z_obs = InfNet(rng=rng, Xd=X_sym, prior_sigma=prior_sigma, \
             params=params, shared_param_dicts=None)
-    p_s0_given_z.init_biases(0.2)
+    p_s0_obs_given_z_obs.init_biases(0.2)
     #################
     # p_hi_given_si #
     #################
@@ -107,7 +107,7 @@ def test_with_model_init():
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [(h_dim + rnn_dim), 500, 500]
+    shared_config = [(h_dim + z_rnn_dim), 500, 500]
     top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -128,7 +128,7 @@ def test_with_model_init():
     ###############
     params = {}
     shared_config = [obs_dim, 250, 250]
-    top_config = [shared_config[-1], z_dim]
+    top_config = [shared_config[-1], (z_rnn_dim + z_obs_dim)]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
@@ -164,27 +164,27 @@ def test_with_model_init():
             params=params, shared_param_dicts=None)
     q_hi_given_x_si.init_biases(0.2)
 
- 
-    ########################################################
+
+    ################################################################
     # Define parameters for the MultiStageModel, and initialize it #
-    ########################################################
+    ################################################################
     print("Building the MultiStageModel...")
     msm_params = {}
     msm_params['x_type'] = x_type
     msm_params['obs_transform'] = 'sigmoid'
     MSM = MultiStageModel(rng=rng, x_in=X_sym, \
-            p_s0_given_z=p_s0_given_z, \
+            p_s0_obs_given_z_obs=p_s0_obs_given_z_obs, \
             p_hi_given_si=p_hi_given_si, \
             p_sip1_given_si_hi=p_sip1_given_si_hi, \
             q_z_given_x=q_z_given_x, \
             q_hi_given_x_si=q_hi_given_x_si, \
-            obs_dim=obs_dim, rnn_dim=rnn_dim, z_dim=z_dim, h_dim=h_dim, \
-            model_init_obs=True, model_init_rnn=True, ir_steps=3, \
-            params=msm_params)
+            obs_dim=obs_dim, z_rnn_dim=z_rnn_dim, z_obs_dim=z_obs_dim, \
+            h_dim=h_dim, model_init_obs=False, model_init_rnn=True, \
+            ir_steps=3, params=msm_params)
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
     MSM.set_input_bias(-obs_mean)
-    MSM.set_output_bias(0.1*obs_mean_logit)
+    MSM.set_obs_bias(0.1*obs_mean_logit)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -227,7 +227,7 @@ def test_with_model_init():
             print("    kld_cost  : {0:.4f}".format(costs[2]))
             print("    reg_cost  : {0:.4f}".format(costs[3]))
             costs = [0.0 for v in costs]
-        if ((i % 1000) == 0):
+        if (((i % 2000) == 0) or ((i < 10000) and ((i % 1000) == 0))):
             Xva = row_shuffle(Xva)
             # draw some independent random samples from the model
             samp_count = 200

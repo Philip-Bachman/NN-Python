@@ -34,17 +34,17 @@ class MultiStageModel(object):
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
         x_in: symbolic "data" input to this MultiStageModel
-        p_s0_given_z: InfNet for s0 given z
+        p_s0_obs_given_z_obs: InfNet for s0 given z_obs
         p_hi_given_si: InfNet for hi given si
         p_sip1_given_si_hi: InfNet for sip1 given si and hi
         p_x_given_si_hi: InfNet for x given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
-        model_init_obs: whether to use a model-based initial obs
-        model_init_rnn: whether to use a model-based initial rnn
+        model_init_obs: whether to use a model-based initial obs state
+        model_init_rnn: whether to use a model-based initial rnn state
         obs_dim: dimension of the observations to generate
-        rnn_dim: dimension of the "RNN state"
-        z_dim: dimension of the "initial" latent space
+        z_rnn_dim: dimension of the latent "RNN state"
+        z_obs_dim: dimension of the "initial" latent space for observations
         h_dim: dimension of the "primary" latent space
         ir_steps: number of "iterative refinement" steps to perform
         params: REQUIRED PARAMS SHOWN BELOW
@@ -52,9 +52,9 @@ class MultiStageModel(object):
                 obs_transform: can be 'none' or 'sigmoid'
     """
     def __init__(self, rng=None, x_in=None, \
-            p_s0_given_z=None, p_hi_given_si=None, p_sip1_given_si_hi=None, \
+            p_s0_obs_given_z_obs=None, p_hi_given_si=None, p_sip1_given_si_hi=None, \
             p_x_given_si_hi=None, q_z_given_x=None, q_hi_given_x_si=None, \
-            obs_dim=None, z_dim=None, h_dim=None, rnn_dim=None, \
+            obs_dim=None, z_rnn_dim=None, z_obs_dim=None, h_dim=None, \
             model_init_obs=True, model_init_rnn=True, ir_steps=2, \
             params=None):
         # setup a rng for this GIPair
@@ -85,8 +85,10 @@ class MultiStageModel(object):
 
         # record the dimensions of various spaces relevant to this model
         self.obs_dim = obs_dim
-        self.rnn_dim = rnn_dim
-        self.z_dim = z_dim
+        self.rnn_dim = z_rnn_dim
+        self.z_dim = z_rnn_dim + z_obs_dim
+        self.z_rnn_dim = z_rnn_dim
+        self.z_obs_dim = z_obs_dim
         self.h_dim = h_dim
         self.ir_steps = ir_steps
 
@@ -119,16 +121,20 @@ class MultiStageModel(object):
             rnn_scale = 1.0
         self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
         self.z = self.q_z_given_x.output
-        self.p_s0_given_z = p_s0_given_z.shared_param_clone(rng=rng, Xd=self.z)
-        _s0_model = self.p_s0_given_z.output_mean
-        _s0_const = self.p_s0_given_z.mu_layers[-1].b
-        self.s0_obs = (obs_scale * _s0_model[:,:self.obs_dim]) + \
-                ((1.0 - obs_scale) * _s0_const[:self.obs_dim])
-        self.s0_rnn = (rnn_scale * _s0_model[:,self.obs_dim:]) + \
-                ((1.0 - rnn_scale) * _s0_const[self.obs_dim:])
-        #self.s0_rnn = self.z
+        self.z_rnn = self.z[:,:self.z_rnn_dim]
+        self.z_obs = self.z[:,self.z_rnn_dim:]
+        self.p_s0_obs_given_z_obs = p_s0_obs_given_z_obs.shared_param_clone( \
+                rng=rng, Xd=self.z_obs)
+        _s0_obs_model = self.p_s0_obs_given_z_obs.output_mean
+        _s0_obs_const = self.p_s0_obs_given_z_obs.mu_layers[-1].b
+        self.s0_obs = (obs_scale * _s0_obs_model) + \
+                ((1.0 - obs_scale) * _s0_obs_const)
+        _s0_rnn_model = self.z_rnn
+        _s0_rnn_const = self.q_z_given_x.mu_layers[-1].b[:self.z_rnn_dim]
+        self.s0_rnn = (rnn_scale * _s0_rnn_model) + \
+                ((1.0 - rnn_scale) * _s0_rnn_const)
         self.s0_jnt = T.horizontal_stack(self.s0_obs, self.s0_rnn)
-        self.output_logvar = self.p_s0_given_z.sigma_layers[-1].b
+        self.output_logvar = self.p_s0_obs_given_z_obs.sigma_layers[-1].b
         self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.output_logvar)
 
         ###############################################################
@@ -201,7 +207,7 @@ class MultiStageModel(object):
         # Grab all of the "optimizable" parameters in "group 1"
         self.group_1_params = []
         self.group_1_params.extend(self.q_z_given_x.mlp_params)
-        self.group_1_params.extend(self.p_s0_given_z.mlp_params)
+        self.group_1_params.extend(self.p_s0_obs_given_z_obs.mlp_params)
         # Grab all of the "optimizable" parameters in "group 2"
         self.group_2_params = []
         for i in range(self.ir_steps):
@@ -259,7 +265,7 @@ class MultiStageModel(object):
         self.sample_from_prior = self._construct_sample_from_prior()
         # make easy access points for some interesting parameters
         self.inf_1_weights = self.q_z_given_x.shared_layers[0].W
-        self.gen_1_weights = self.p_s0_given_z.mu_layers[-1].W
+        self.gen_1_weights = self.p_s0_obs_given_z_obs.mu_layers[-1].W
         self.inf_2_weights = self.q_hi_given_x_si[0].shared_layers[0].W
         self.gen_2_weights = self.p_sip1_given_si_hi[0].mu_layers[-1].W
         self.gen_inf_weights = self.p_hi_given_si[0].shared_layers[0].W
@@ -356,17 +362,14 @@ class MultiStageModel(object):
         self.q_z_given_x.shared_layers[0].b_in.set_value(new_bias)
         return
 
-    def set_output_bias(self, new_obs_bias=None):
+    def set_obs_bias(self, new_obs_bias=None):
         """
         Set initial bias on the obs part of state, but not the rnn part.
         """
         assert(new_obs_bias.shape[0] == self.obs_dim)
-        new_bias = np.zeros((self.obs_dim+self.rnn_dim,))
-        old_bias = self.p_s0_given_z.mu_layers[-1].b.get_value(borrow=False)
-        new_bias[:self.obs_dim] = new_obs_bias.ravel()
-        new_bias[self.obs_dim:] = old_bias[self.obs_dim:]
+        new_bias = np.zeros((self.obs_dim,)) + new_obs_bias
         new_bias = new_bias.astype(theano.config.floatX)
-        self.p_s0_given_z.mu_layers[-1].b.set_value(new_bias)
+        self.p_s0_obs_given_z_obs.mu_layers[-1].b.set_value(new_bias)
         return
 
     def _check_model_shapes(self):
@@ -374,14 +377,15 @@ class MultiStageModel(object):
         Check that inputs/outputs of the various models will pipe together.
         """
         obs_dim = self.obs_dim
-        rnn_dim = self.rnn_dim
+        rnn_dim = self.z_rnn_dim
         jnt_dim = obs_dim + rnn_dim
-        z_dim = self.z_dim
+        z_obs_dim = self.z_obs_dim
+        z_rnn_dim = self.z_rnn_dim
         h_dim = self.h_dim
         # check shape of initialization model
-        assert(self.p_s0_given_z.mu_layers[-1].out_dim == jnt_dim)
-        assert(self.p_s0_given_z.shared_layers[0].in_dim == z_dim)
-        assert(self.q_z_given_x.mu_layers[-1].out_dim == z_dim)
+        assert(self.p_s0_obs_given_z_obs.mu_layers[-1].out_dim == obs_dim)
+        assert(self.p_s0_obs_given_z_obs.shared_layers[0].in_dim == z_obs_dim)
+        assert(self.q_z_given_x.mu_layers[-1].out_dim == (z_rnn_dim + z_obs_dim))
         assert(self.q_z_given_x.shared_layers[0].in_dim == obs_dim)
         # check shape of the forward conditionals over h_i
         assert(self.p_hi_given_si[0].mu_layers[-1].out_dim == h_dim)
