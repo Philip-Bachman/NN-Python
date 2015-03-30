@@ -33,7 +33,8 @@ class MultiStageModel(object):
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
-        x_in: symbolic "data" input to this MultiStageModel
+        x_in: the input data to encode
+        x_out: the target output to decode
         p_s0_obs_given_z_obs: InfNet for s0 given z_obs
         p_hi_given_si: InfNet for hi given si
         p_sip1_given_si_hi: InfNet for sip1 given si and hi
@@ -51,7 +52,7 @@ class MultiStageModel(object):
                 x_type: can be "bernoulli" or "gaussian"
                 obs_transform: can be 'none' or 'sigmoid'
     """
-    def __init__(self, rng=None, x_in=None, \
+    def __init__(self, rng=None, x_in=None, x_out=None, \
             p_s0_obs_given_z_obs=None, p_hi_given_si=None, p_sip1_given_si_hi=None, \
             p_x_given_si_hi=None, q_z_given_x=None, q_hi_given_x_si=None, \
             obs_dim=None, z_rnn_dim=None, z_obs_dim=None, h_dim=None, \
@@ -94,7 +95,8 @@ class MultiStageModel(object):
 
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this MultiStageModel
-        self.x = x_in
+        self.x_in = x_in
+        self.x_out = x_out
         self.batch_reps = T.lscalar()
 
         # setup switching variable for changing between sampling/training
@@ -119,7 +121,7 @@ class MultiStageModel(object):
             obs_scale = 1.0
         if self.model_init_rnn: # initialize rnn state from generative model
             rnn_scale = 1.0
-        self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x)
+        self.q_z_given_x = q_z_given_x.shared_param_clone(rng=rng, Xd=self.x_in)
         self.z = self.q_z_given_x.output
         self.z_rnn = self.z[:,:self.z_rnn_dim]
         self.z_obs = self.z[:,self.z_rnn_dim:]
@@ -157,7 +159,7 @@ class MultiStageModel(object):
                     self.obs_transform(si_obs), si_rnn)))
             hi_p = self.p_hi_given_si[i].output
             # now we build the model for variational hi given si
-            grad_ll = self.x - self.obs_transform(si_obs)
+            grad_ll = self.x_out - self.obs_transform(si_obs)
             self.q_hi_given_x_si.append(\
                     q_hi_given_x_si.shared_param_clone(rng=rng, \
                     Xd=T.horizontal_stack( \
@@ -166,10 +168,16 @@ class MultiStageModel(object):
             # make hi samples that can be switched between hi_p and hi_q
             self.hi.append( ((self.train_switch[0] * hi_q) + \
                     ((1.0 - self.train_switch[0]) * hi_p)) )
+
+
+            # MOD TAG 1
             # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
             self.p_sip1_given_si_hi.append( \
                     p_sip1_given_si_hi.shared_param_clone(rng=rng, \
-                    Xd=T.horizontal_stack(self.hi[i], si_rnn)))
+                    Xd=self.hi[i]))
+                    #Xd=T.horizontal_stack(self.hi[i], si_rnn)))
+                    
+
             # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
             sip1_obs = si_obs + self.p_sip1_given_si_hi[i].output_mean
             sip1_rnn = si_rnn
@@ -263,6 +271,7 @@ class MultiStageModel(object):
         self.compute_post_klds = self._construct_compute_post_klds()
         self.compute_fe_terms = self._construct_compute_fe_terms()
         self.sample_from_prior = self._construct_sample_from_prior()
+        self.sample_from_input = self._construct_sample_from_input()
         # make easy access points for some interesting parameters
         self.inf_1_weights = self.q_z_given_x.shared_layers[0].W
         self.gen_1_weights = self.p_s0_obs_given_z_obs.mu_layers[-1].W
@@ -394,7 +403,11 @@ class MultiStageModel(object):
         assert(self.q_hi_given_x_si[0].shared_layers[0].in_dim == (obs_dim + jnt_dim))
         # check shape of the forward conditionals over s_{i+1}
         assert(self.p_sip1_given_si_hi[0].mu_layers[-1].out_dim == obs_dim)
-        assert(self.p_sip1_given_si_hi[0].shared_layers[0].in_dim == (h_dim + rnn_dim))
+
+        # MOD TAG 2
+        #assert(self.p_sip1_given_si_hi[0].shared_layers[0].in_dim == (h_dim + rnn_dim))
+        assert(self.p_sip1_given_si_hi[0].shared_layers[0].in_dim == h_dim)
+
         #
         # p_x_given_si_hi: InfNet for x given si and hi (NOT IN USE YET)
         #
@@ -408,9 +421,9 @@ class MultiStageModel(object):
         sn = self.si[-1]
         xh = self.obs_transform(sn[:,:self.obs_dim])
         if self.x_type == 'bernoulli':
-            ll_costs = log_prob_bernoulli(self.x, xh)
+            ll_costs = log_prob_bernoulli(self.x_out, xh)
         else:
-            ll_costs = log_prob_gaussian2(self.x, xh, \
+            ll_costs = log_prob_gaussian2(self.x_out, xh, \
                     log_vars=self.bounded_logvar)
         nll_costs = -ll_costs
         return nll_costs
@@ -472,14 +485,16 @@ class MultiStageModel(object):
         Construct theano function to train all networks jointly.
         """
         # setup some symbolic variables for theano to deal with
-        x = T.matrix()
+        xi = T.matrix()
+        xo = T.matrix()
         # collect the outputs to return from this function
         outputs = [self.joint_cost, self.nll_cost, self.kld_cost, \
                 self.reg_cost]
         # compile the theano function
-        func = theano.function(inputs=[ x, self.batch_reps ], \
+        func = theano.function(inputs=[ xi, xo, self.batch_reps ], \
                 outputs=outputs, \
-                givens={ self.x: x.repeat(self.batch_reps, axis=0) }, \
+                givens={ self.x_in: xi.repeat(self.batch_reps, axis=0), \
+                         self.x_out: xo.repeat(self.batch_reps, axis=0) }, \
                 updates=self.joint_updates)
         return func
 
@@ -488,23 +503,44 @@ class MultiStageModel(object):
         Construct a function for computing terms in variational free energy.
         """
         # setup some symbolic variables for theano to deal with
-        x_in = T.matrix()
+        xi = T.matrix()
+        xo = T.matrix()
         # construct values to output
         nll = self._construct_nll_costs()
         kld = self.kld_z + self.kld_hi_cond
         # compile theano function for a one-sample free-energy estimate
-        fe_term_sample = theano.function(inputs=[x_in], \
-                outputs=[nll, kld], givens={self.x: x_in})
+        fe_term_sample = theano.function(inputs=[ xi, xo ], \
+                outputs=[nll, kld], givens={self.x_in: xi, self.x_out: xo})
         # construct a wrapper function for multi-sample free-energy estimate
-        def fe_term_estimator(X, sample_count):
-            nll_sum = np.zeros((X.shape[0],))
-            kld_sum = np.zeros((X.shape[0],))
+        def fe_term_estimator(XI, XO, sample_count):
+            # set values of some regularization parameters to the values that
+            # produce the variational free energy bound.
+            old_lam_nll = self.lam_nll.get_value(borrow=False)
+            old_lam_kld_1 = self.lam_kld_1.get_value(borrow=False)
+            old_lam_kld_2 = self.lam_kld_2.get_value(borrow=False)
+            old_l1l2_weight = self.l1l2_weight.get_value(borrow=False)
+            vfe_lam_nll = (0.0 * old_lam_nll) + 1.0
+            vfe_lam_kld_1 = (0.0 * old_lam_kld_1) + 1.0
+            vfe_lam_kld_2 = (0.0 * old_lam_kld_2) + 1.0
+            vfe_l1l2_weight = (0.0 * old_l1l2_weight) + 1.0
+            self.lam_nll.set_value(vfe_lam_nll)
+            self.lam_kld_1.set_value(vfe_lam_kld_1)
+            self.lam_kld_2.set_value(vfe_lam_kld_2)
+            self.l1l2_weight.set_value(vfe_l1l2_weight)
+            # compute a multi-sample estimate of variational free-energy
+            nll_sum = np.zeros((XI.shape[0],))
+            kld_sum = np.zeros((XI.shape[0],))
             for i in range(sample_count):
-                result = fe_term_sample(X)
+                result = fe_term_sample(XI, XO)
                 nll_sum += result[0].ravel()
                 kld_sum += result[1].ravel()
             mean_nll = nll_sum / float(sample_count)
             mean_kld = kld_sum / float(sample_count)
+            # reset regularization parameters to their previous values
+            self.lam_nll.set_value(old_lam_nll)
+            self.lam_kld_1.set_value(old_lam_kld_1)
+            self.lam_kld_2.set_value(old_lam_kld_2)
+            self.l1l2_weight.set_value(old_l1l2_weight)
             return [mean_nll, mean_kld]
         return fe_term_estimator
 
@@ -514,7 +550,8 @@ class MultiStageModel(object):
         approximate posteriors for some inputs.
         """
         # setup some symbolic variables for theano to deal with
-        x = T.matrix()
+        xi = T.matrix()
+        xo = T.matrix()
         # construct symbolic expressions for the desired KLds
         cond_klds = []
         glob_klds = []
@@ -535,10 +572,10 @@ class MultiStageModel(object):
                 0.0, 0.0)
         all_klds.append(kld_z_all)
         # compile theano function for a one-sample free-energy estimate
-        kld_func = theano.function(inputs=[x], outputs=all_klds, \
-                givens={ self.x: x })
-        def post_kld_computer(X):
-            f_all_klds = kld_func(X)
+        kld_func = theano.function(inputs=[xi, xo], outputs=all_klds, \
+                givens={ self.x_in: xi, self.x_out: xo })
+        def post_kld_computer(XI, XO):
+            f_all_klds = kld_func(XI,XO)
             f_kld_z = f_all_klds[-1]
             f_kld_hi_cond = np.zeros(f_all_klds[0].shape)
             f_kld_hi_glob = np.zeros(f_all_klds[0].shape)
@@ -559,7 +596,8 @@ class MultiStageModel(object):
         oputs = [self.obs_transform(s[:,:self.obs_dim]) for s in self.si]
         sample_func = theano.function(inputs=[z_sym, x_sym], outputs=oputs, \
                 givens={ self.z: z_sym, \
-                        self.x: T.zeros_like(x_sym) })
+                         self.x_in: T.zeros_like(x_sym), \
+                         self.x_out: T.zeros_like(x_sym) })
         def prior_sampler(samp_count):
             x_samps = np.zeros((samp_count, self.obs_dim))
             x_samps = x_samps.astype(theano.config.floatX)
@@ -573,6 +611,40 @@ class MultiStageModel(object):
             self.set_train_switch(switch_val=old_switch)
             return model_samps
         return prior_sampler
+
+    def _construct_sample_from_input(self):
+        """
+        Construct a function for drawing samples from the distribution
+        generated by this MultiStageModel, conditioned on some inputs to the
+        initial encoder stage (i.e. self.q_z_given_x). This returns the full 
+        sequence of "partially completed" examples.
+
+        The 
+        """
+        xi = T.matrix()
+        xo = T.matrix()
+        oputs = [self.obs_transform(s[:,:self.obs_dim]) for s in self.si]
+        sample_func = theano.function(inputs=[xi, xo], outputs=oputs, \
+                givens={ self.x_in: xi, \
+                         self.x_out: xo })
+        def conditional_sampler(XI, XO=None, guided_decoding=False):
+            XI = XI.astype(theano.config.floatX)
+            if XO is None:
+                XO = XI
+            # set model to desired generation mode                
+            old_switch = self.train_switch.get_value(borrow=False)
+            if guided_decoding:
+                # take samples from guide policies (i.e. variational q)
+                self.set_train_switch(switch_val=1.0)
+            else:
+                # take samples from model's generative policy
+                self.set_train_switch(switch_val=0.0)
+            # draw guided/unguided conditional samples
+            model_samps = sample_func(XI, XO)
+            # set model back to either training or generation mode
+            self.set_train_switch(switch_val=old_switch)
+            return model_samps
+        return conditional_sampler
 
 if __name__=="__main__":
     print("Hello world!")

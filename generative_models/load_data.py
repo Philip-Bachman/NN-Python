@@ -8,6 +8,15 @@ import sys
 import theano
 import theano.tensor as T
 
+def row_shuffle(X):
+    """
+    Return a copy of X with shuffled rows.
+    """
+    shuf_idx = np.arange(X.shape[0])
+    npr.shuffle(shuf_idx)
+    X_shuf = X[shuf_idx]
+    return X_shuf
+
 def _shared_dataset(data_xy):
     """
     Function that loads the dataset into shared variables
@@ -27,6 +36,18 @@ def _shared_dataset(data_xy):
     # therefore we will store the labels as ``floatX`` as well
     # (``shared_y`` does exactly that).
     return shared_x, shared_y
+
+def load_binarized_mnist(data_path='./'):
+    #binarized_mnist_test.amat  binarized_mnist_train.amat  binarized_mnist_valid.amat
+    print 'loading binary MNIST, sampled version'
+    train_x = np.loadtxt(data_path + 'binarized_mnist_train.amat').astype('float32')
+    valid_x = np.loadtxt(data_path + 'binarized_mnist_valid.amat').astype('float32')
+    test_x = np.loadtxt(data_path + 'binarized_mnist_test.amat').astype('float32')
+    # shuffle dataset
+    train_x = row_shuffle(train_x)
+    valid_x = row_shuffle(valid_x)
+    test_x = row_shuffle(test_x)
+    return train_x, valid_x, test_x
 
 def load_mnist(path, zero_mean=True):
     mnist = np.load(path)
