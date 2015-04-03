@@ -133,8 +133,8 @@ class MultiStageModel(object):
                 ((1.0 - obs_scale) * _s0_obs_const)
         _s0_rnn_model = self.z_rnn
         _s0_rnn_const = self.q_z_given_x.mu_layers[-1].b[:self.z_rnn_dim]
-        self.s0_rnn = (rnn_scale * _s0_rnn_model) + \
-                ((1.0 - rnn_scale) * _s0_rnn_const)
+        self.s0_rnn = 2.0 * T.tanh((1.0/2.0) * ((rnn_scale * _s0_rnn_model) + \
+                ((1.0 - rnn_scale) * _s0_rnn_const)))
         self.s0_jnt = T.horizontal_stack(self.s0_obs, self.s0_rnn)
         self.output_logvar = self.p_s0_obs_given_z_obs.sigma_layers[-1].b
         self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.output_logvar)
@@ -175,6 +175,7 @@ class MultiStageModel(object):
             self.p_sip1_given_si_hi.append( \
                     p_sip1_given_si_hi.shared_param_clone(rng=rng, \
                     Xd=self.hi[i]))
+                    #Xd=self.hi[i]))
                     #Xd=T.horizontal_stack(self.hi[i], si_rnn)))
                     
 
@@ -215,11 +216,11 @@ class MultiStageModel(object):
         # Grab all of the "optimizable" parameters in "group 1"
         self.group_1_params = []
         self.group_1_params.extend(self.q_z_given_x.mlp_params)
-        self.group_1_params.extend(self.p_s0_obs_given_z_obs.mlp_params)
+        self.group_1_params.extend(self.q_hi_given_x_si[i].mlp_params)
         # Grab all of the "optimizable" parameters in "group 2"
         self.group_2_params = []
         for i in range(self.ir_steps):
-            self.group_2_params.extend(self.q_hi_given_x_si[i].mlp_params)
+            self.group_2_params.extend(self.p_s0_obs_given_z_obs.mlp_params)
             self.group_2_params.extend(self.p_hi_given_si[i].mlp_params)
             self.group_2_params.extend(self.p_sip1_given_si_hi[i].mlp_params)
         # Make a joint list of parameters group 1/2
