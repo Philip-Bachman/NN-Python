@@ -13,14 +13,19 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # ACTIVATIONS AND OTHER STUFF #
 ###############################
 
+def constFX(x):
+    """Cast x as constant TensorVariable with dtype floatX."""
+    x_CFX = T.constant(x, dtype=theano.config.floatX)
+    return x_CFX
+
 def row_normalize(x):
     """Normalize rows of matrix x to unit (L2) norm."""
-    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1)+1e-8)
+    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1) +  constFX(1e-8))
     return x_normed
 
 def col_normalize(x):
     """Normalize cols of matrix x to unit (L2) norm."""
-    x_normed = x / T.sqrt(T.sum(x**2.,axis=0,keepdims=1)+1e-8)
+    x_normed = x / T.sqrt(T.sum(x**2.,axis=0,keepdims=1) + constFX(1e-8))
     return x_normed
 
 def max_normalize(x, axis=1):
@@ -47,12 +52,12 @@ def relu_actfun(x):
 def softplus_actfun(x, scale=2.0):
     """Compute rescaled softplus activation for x."""
     #x_softplus = T.log(1.0 + T.exp(x))
-    x_softplus = (1.0 / scale) * T.nnet.softplus(scale*x)
+    x_softplus = constFX(1.0 / scale) * T.nnet.softplus(scale*x)
     return x_softplus
 
 def tanh_actfun(x, scale=1.0):
     """Compute  rescaled tanh activation for x."""
-    x_tanh = scale * T.tanh((1/scale) * x)
+    x_tanh = scale * T.tanh(constFX(1/scale) * x)
     return x_tanh
 
 def maxout_actfun(input, pool_size, filt_count):
@@ -90,7 +95,7 @@ def smooth_softmax(x):
     """Softmax that shouldn't overflow, with Laplacish smoothing."""
     eps = 0.0001
     e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
-    p = (e_x / T.sum(e_x, axis=1, keepdims=True)) + eps
+    p = (e_x / T.sum(e_x, axis=1, keepdims=True)) + constFX(eps)
     p_sm = p / T.sum(p, axis=1, keepdims=True)
     return p_sm
 
@@ -160,6 +165,10 @@ def ortho_matrix(shape=None, gain=1.0):
     W = gain * q[:shape[0], :shape[1]]
     return W
 
+def DCG(x):
+    x_dcg = theano.gradient.disconnected_grad(x)
+    return x_rcg
+
 ######################################
 # BASIC FULLY-CONNECTED HIDDEN LAYER #
 ######################################
@@ -174,7 +183,7 @@ class HiddenLayer(object):
         # Setup a shared random generator for this layer
         self.rng = RandStream(rng.randint(1000000))
 
-        # setup scale and bias params for the input
+        # setup input scale and bias params
         if b_in is None:
             # input biases are always initialized to zero
             ary = np.zeros((in_dim,), dtype=theano.config.floatX)
@@ -186,25 +195,14 @@ class HiddenLayer(object):
         self.b_in = b_in
         self.s_in = s_in
 
-        # make a symbolic var for the shifted and scaled input
-        self.clean_input = T.nnet.softplus(self.s_in) * (input + self.b_in)
-
+        # setup parameters for controlling 
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
         self.input_noise = theano.shared(value=(zero_ary+input_noise), \
                 name="{0:s}_input_noise".format(name))
         self.bias_noise = theano.shared(value=(zero_ary+bias_noise), \
                 name="{0:s}_bias_noise".format(name))
         self.drop_rate = theano.shared(value=(zero_ary+drop_rate), \
-                name="{0:s}_bias_noise".format(name))
-
-        # Add gaussian noise to the input (if desired)
-        self.fuzzy_input = self.clean_input + (self.input_noise[0] * \
-                self.rng.normal(size=self.clean_input.shape, avg=0.0, std=1.0, \
-                dtype=theano.config.floatX))
-
-        # Apply masking noise to the input (if desired)
-        self.noisy_input = self._drop_from_input(self.fuzzy_input, \
-                self.drop_rate[0])
+                name="{0:s}_drop_rate".format(name))
 
         # Set some basic layer properties
         self.pool_size = pool_size
@@ -241,28 +239,56 @@ class HiddenLayer(object):
         self.W = W
         self.b = b
 
-        # Compute linear "pre-activation" for this layer
-        self.linear_output = T.dot(self.noisy_input, self.W) + self.b
-
-        # Add noise to the pre-activation features (if desired)
-        self.noisy_linear = self.linear_output + (self.bias_noise[0] * \
-                self.rng.normal(size=self.linear_output.shape, avg=0.0, \
-                std=1.0, dtype=theano.config.floatX))
-
-        # Apply activation function
-        self.output = self.activation(self.noisy_linear)
+        # Feedforward through the layer
+        use_in = input_noise > 0.001
+        use_bn = bias_noise > 0.001
+        use_drop = drop_rate > 0.001
+        self.linear_output, self.noisy_linear, self.output = \
+                self.apply(input, use_in=use_in, use_bn=use_bn, \
+                use_drop=use_drop)
 
         # Compute some properties of the activations, probably to regularize
         self.act_l2_sum = T.sum(self.noisy_linear**2.) / self.output.size
-        self.row_l1_sum = T.sum(abs(row_normalize(self.output))) / \
-                self.output.shape[0]
-        self.col_l1_sum = T.sum(abs(col_normalize(self.output))) / \
-                self.output.shape[1]
 
         # Conveniently package layer parameters
         self.params = [self.W, self.b, self.b_in, self.s_in]
         # Layer construction complete...
         return
+
+    def apply(self, input, use_in=False, use_bn=False, use_drop=False):
+        """
+        Apply feedforward to this input, returning several partial results.
+        """
+        # make a symbolic var for the shifted and scaled input
+        clean_input = T.nnet.softplus(self.s_in) * (input + self.b_in)
+        # Add gaussian noise to the input (if desired)
+        if use_in:
+            fuzzy_input = clean_input + DCG(self.input_noise[0] * \
+                    self.rng.normal(size=clean_input.shape, avg=0.0, std=1.0, \
+                    dtype=theano.config.floatX))
+        else:
+            fuzzy_input = clean_input
+        # Apply masking noise to the input (if desired)
+        if use_drop:
+            noisy_input = self._drop_from_input(fuzzy_input, \
+                    self.drop_rate[0])
+        else:
+            noisy_input = fuzzy_input
+        # Compute linear "pre-activation" for this layer
+        linear_output = T.dot(noisy_input, self.W) + self.b
+        # Add noise to the pre-activation features (if desired)
+        if use_bn:
+            noisy_linear = linear_output + DCG(self.bias_noise[0] * \
+                    self.rng.normal(size=linear_output.shape, avg=0.0, \
+                    std=1.0, dtype=theano.config.floatX))
+        else:
+            noisy_linear = linear_output
+        # Apply activation function
+        final_output = self.activation(noisy_linear)
+        # package partial results for easy return
+        results = [linear_output, noisy_linear, final_output]
+        return results
+
 
     def _drop_from_input(self, input, p):
         """p is the probability of dropping elements of input."""
@@ -273,13 +299,13 @@ class HiddenLayer(object):
         # get a scaling factor to keep expectations fixed after droppage
         drop_scale = 1. / (1. - p)
         # apply dropout mask and rescaling factor to the input
-        droppy_input = drop_scale * input * drop_mask
+        droppy_input = drop_scale * input * DCG(drop_mask)
         return droppy_input
 
     def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
-        P_nz = P + self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
-                dtype=theano.config.floatX)
+        P_nz = P + DCG(self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+                dtype=theano.config.floatX))
         return P_nz
 
 ##############################################
@@ -479,8 +505,8 @@ class DiscLayer(object):
 
     def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
-        P_nz = P + self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
-                dtype=theano.config.floatX)
+        P_nz = P + DCG(self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+                dtype=theano.config.floatX))
         return P_nz
 
 ##################################
@@ -507,8 +533,8 @@ class DAELayer(object):
 
         # Get some random initial weights and biases, if not given
         if W is None:
-            W_init = np.asarray(1.0 * rng.standard_normal( \
-                      size=(in_dim, out_dim)), dtype=theano.config.floatX)
+            W_init = np.asarray(1.0 * DCG(rng.standard_normal( \
+                      size=(in_dim, out_dim)), dtype=theano.config.floatX))
             W = theano.shared(value=(W_scale*W_init), name='W')
         if b_h is None:
             b_init = np.zeros((out_dim,), dtype=theano.config.floatX)
@@ -558,8 +584,8 @@ class DAELayer(object):
     def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
         if noise_lvl > 1e-3:
-            P_nz = P + self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
-                    dtype=theano.config.floatX)
+            P_nz = P + DCG(self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+                    dtype=theano.config.floatX))
         else:
             P_nz = P
         return P_nz
@@ -570,5 +596,5 @@ class DAELayer(object):
             dtype=theano.config.floatX)
         drop_mask = drop_rnd > p
         # Cast mask from int to float32, to keep things on GPU
-        noisy_input = input * drop_mask
+        noisy_input = input * DCG(drop_mask)
         return noisy_input

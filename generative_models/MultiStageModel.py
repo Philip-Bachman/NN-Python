@@ -15,7 +15,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      apply_mask
+                      apply_mask, constFX
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
@@ -129,15 +129,16 @@ class MultiStageModel(object):
                 rng=rng, Xd=self.z_obs)
         _s0_obs_model = self.p_s0_obs_given_z_obs.output_mean
         _s0_obs_const = self.p_s0_obs_given_z_obs.mu_layers[-1].b
-        self.s0_obs = (obs_scale * _s0_obs_model) + \
-                ((1.0 - obs_scale) * _s0_obs_const)
+        self.s0_obs = (constFX(obs_scale) * _s0_obs_model) + \
+                (constFX(1.0 - obs_scale) * _s0_obs_const)
         _s0_rnn_model = self.z_rnn
         _s0_rnn_const = self.q_z_given_x.mu_layers[-1].b[:self.z_rnn_dim]
-        self.s0_rnn = 2.0 * T.tanh((1.0/2.0) * ((rnn_scale * _s0_rnn_model) + \
-                ((1.0 - rnn_scale) * _s0_rnn_const)))
-        self.s0_jnt = T.horizontal_stack(self.s0_obs, self.s0_rnn)
+        self.s0_rnn = constFX(2.0) * T.tanh(constFX(1.0/2.0) * \
+                ((constFX(rnn_scale) * _s0_rnn_model) + \
+                (constFX(1.0 - rnn_scale) * _s0_rnn_const)))
         self.output_logvar = self.p_s0_obs_given_z_obs.sigma_layers[-1].b
-        self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.output_logvar)
+        self.bounded_logvar = constFX(8.0) * \
+                T.tanh(constFX(1.0/8.0) * self.output_logvar)
 
         ###############################################################
         # Setup the iterative refinement loop, starting from self.s0. #
@@ -145,13 +146,13 @@ class MultiStageModel(object):
         self.p_hi_given_si = []       # holds p_hi_given_si for each i
         self.p_sip1_given_si_hi = []  # holds p_sip1_given_si_hi for each i
         self.q_hi_given_x_si = []     # holds q_hi_given_x_si for each i
-        self.si = [self.s0_jnt]       # holds si for each i
+        self.si_obs = [self.s0_obs]   # holds si for each i
+        self.si_rnn = [self.s0_rnn]
         self.hi = []                  # holds hi for each i
         for i in range(self.ir_steps):
             print("Building MSM step {0:d}...".format(i+1))
-            _si = self.si[i]
-            si_obs = _si[:,:self.obs_dim]
-            si_rnn = _si[:,self.obs_dim:]
+            si_obs = self.si_obs[i]
+            si_rnn = self.si_rnn[i]
             # get samples of next hi, conditioned on current si
             self.p_hi_given_si.append( \
                     p_hi_given_si.shared_param_clone(rng=rng, \
@@ -167,7 +168,7 @@ class MultiStageModel(object):
             hi_q = self.q_hi_given_x_si[i].output
             # make hi samples that can be switched between hi_p and hi_q
             self.hi.append( ((self.train_switch[0] * hi_q) + \
-                    ((1.0 - self.train_switch[0]) * hi_p)) )
+                    ((constFX(1.0) - self.train_switch[0]) * hi_p)) )
 
 
             # MOD TAG 1
@@ -182,9 +183,9 @@ class MultiStageModel(object):
             # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
             sip1_obs = si_obs + self.p_sip1_given_si_hi[i].output_mean
             sip1_rnn = si_rnn
-            sip1_jnt = T.horizontal_stack(sip1_obs, sip1_rnn)
             # record the updated state of the generative process
-            self.si.append(sip1_jnt)
+            self.si_obs.append(sip1_obs)
+            self.si_rnn.append(sip1_rnn)
         # check that input/output dimensions of our models agree
         self._check_model_shapes()
 
@@ -216,15 +217,19 @@ class MultiStageModel(object):
         # Grab all of the "optimizable" parameters in "group 1"
         self.group_1_params = []
         self.group_1_params.extend(self.q_z_given_x.mlp_params)
-        self.group_1_params.extend(self.q_hi_given_x_si[i].mlp_params)
+        self.group_1_params.extend(self.q_hi_given_x_si[0].mlp_params)
         # Grab all of the "optimizable" parameters in "group 2"
         self.group_2_params = []
-        for i in range(self.ir_steps):
-            self.group_2_params.extend(self.p_s0_obs_given_z_obs.mlp_params)
-            self.group_2_params.extend(self.p_hi_given_si[i].mlp_params)
-            self.group_2_params.extend(self.p_sip1_given_si_hi[i].mlp_params)
+        self.group_2_params.extend(self.p_s0_obs_given_z_obs.mlp_params)
+        self.group_2_params.extend(self.p_hi_given_si[0].mlp_params)
+        self.group_2_params.extend(self.p_sip1_given_si_hi[0].mlp_params)
         # Make a joint list of parameters group 1/2
         self.joint_params = self.group_1_params + self.group_2_params
+
+        ##########################################
+        # CONSTRUCT ALL SYMBOLIC STEP-WISE COSTS #
+        ##########################################
+        self.compute_raw_costs = self._construct_raw_costs()
 
         #################################
         # CONSTRUCT THE KLD-BASED COSTS #
@@ -248,8 +253,9 @@ class MultiStageModel(object):
 
         # Get the gradient of the joint cost for all optimizable parameters
         self.joint_grads = OrderedDict()
-        for p in self.joint_params:
-            self.joint_grads[p] = T.grad(self.joint_cost, p)
+        grad_list = T.grad(self.joint_cost, self.joint_params)
+        for p, i in enumerate(self.joint_params):
+            self.joint_grads[p] = grad_list[i]
 
         # Construct the updates for the generator and inferencer networks
         self.group_1_updates = get_adam_updates(params=self.group_1_params, \
@@ -269,7 +275,6 @@ class MultiStageModel(object):
         # Construct a function for jointly training the generator/inferencer
         print("Compiling training function...")
         self.train_joint = self._construct_train_joint()
-        self.compute_post_klds = self._construct_compute_post_klds()
         self.compute_fe_terms = self._construct_compute_fe_terms()
         self.sample_from_prior = self._construct_sample_from_prior()
         self.sample_from_input = self._construct_sample_from_input()
@@ -414,48 +419,90 @@ class MultiStageModel(object):
         #
         return
 
+    def _construct_raw_costs(self):
+        """
+        Construct all the raw, i.e. not weighted by any lambdas, costs.
+        """
+        # gather KLd for the initialization step
+        self.init_klds = gaussian_kld(self.q_z_given_x.output_mean, \
+                self.q_z_given_x.output_logvar, \
+                0.0, 0.0)
+        # gather NLL for the initialization step
+        xh = self.obs_transform(self.si_obs[0])
+        if self.x_type == 'bernoulli':
+            nll_costs = constFX(-1.0) * log_prob_bernoulli(self.x_out, xh)
+        else:
+            nll_costs = constFX(-1.0) * log_prob_gaussian2(self.x_out, xh, \
+                    log_vars=self.bounded_logvar)
+        self.init_nlls = nll_costs
+        # gather the step-wise NLLs and KLds
+        self.cond_klds = []
+        self.glob_klds = []
+        self.step_nlls = []
+        for i in range(self.ir_steps):
+            kld_hi_cond = gaussian_kld(self.q_hi_given_x_si[i].output_mean, \
+                    self.q_hi_given_x_si[i].output_logvar, \
+                    self.p_hi_given_si[i].output_mean, \
+                    self.p_hi_given_si[i].output_logvar)
+            kld_hi_glob = gaussian_kld(self.p_hi_given_si[i].output_mean, \
+                    self.p_hi_given_si[i].output_logvar, 0.0, 0.0)
+            self.cond_klds.append(kld_hi_cond)
+            self.glob_klds.append(kld_hi_glob)
+            xh = self.obs_transform(self.si_obs[i+1])
+            if self.x_type == 'bernoulli':
+                nll_costs = constFX(-1.0) * log_prob_bernoulli(self.x_out, xh)
+            else:
+                nll_costs = constFX(-1.0) * log_prob_gaussian2(self.x_out, xh, \
+                        log_vars=self.bounded_logvar)
+            self.step_nlls.append(nll_costs)
+        # gather step-wise costs into a single list (init costs at the end)
+        all_step_costs = self.step_nlls + self.cond_klds + self.glob_klds
+        all_step_costs.append(self.init_nlls)
+        all_step_costs.append(self.init_klds)
+        # compile theano function for computing all relevant costs
+        xi = T.matrix()
+        xo = T.matrix()
+        cost_func = theano.function(inputs=[xi, xo], outputs=all_step_costs, \
+                givens={ self.x_in: xi, self.x_out: xo })
+        def raw_cost_computer(XI, XO):
+            _all_costs = cost_func(XI,XO)
+            _init_nlls = _all_costs[-2]
+            _init_klds = _all_costs[-1]
+            _kld_cond = np.zeros(_all_costs[self.ir_steps].shape)
+            _kld_glob = np.zeros(_all_costs[self.ir_steps].shape)
+            _step_klds = np.zeros((self.ir_steps+1,))
+            _step_klds[0] = np.sum(np.mean(_init_klds, axis=0))
+            _step_nlls = np.zeros((self.ir_steps+1,))
+            _step_nlls[0] = np.mean(_init_nlls, axis=0)
+            for j in range(self.ir_steps):
+                _kld_cond += _all_costs[j + self.ir_steps]
+                _kld_glob += _all_costs[j + 2*self.ir_steps]
+                _step_nlls[j + 1] = np.mean(_all_costs[j])
+                _step_klds[j + 1] = np.sum(np.mean( \
+                        _all_costs[j + self.ir_steps], axis=0))
+            results = [_init_nlls, _init_klds, _kld_cond, _kld_glob, \
+                       _step_nlls, _step_klds]
+            return results
+        return raw_cost_computer
+
     def _construct_nll_costs(self):
         """
         Construct the negative log-likelihood part of free energy.
         """
-        # average log-likelihood over the refinement sequence
-        sn = self.si[-1]
-        xh = self.obs_transform(sn[:,:self.obs_dim])
-        if self.x_type == 'bernoulli':
-            ll_costs = log_prob_bernoulli(self.x_out, xh)
-        else:
-            ll_costs = log_prob_gaussian2(self.x_out, xh, \
-                    log_vars=self.bounded_logvar)
-        nll_costs = -ll_costs
+        nll_costs = self.step_nlls[-1]
         return nll_costs
 
     def _construct_kld_costs(self):
         """
         Construct the posterior KL-divergence part of cost to minimize.
         """
-        # construct a penalty that is L2-like near 0 and L1-like away from 0.
-        huber_pen = lambda x, d: \
-                ((1.0 / (2.0 * d)) * ((T.abs_(x) < d) * (x**2.0))) + \
-                ((T.abs_(x) >= d) * (T.abs_(x) - (d / 2.0)))
-        # construct KLd cost for the distributions over hi. the prior over
-        # hi is given by a distribution conditioned on si, which we estimate
-        # using self.p_hi_given_si[i]. the conditionals produced by each
-        # self.p_hi_given_si[i] will also be regularized towards a shared
-        # prior, e.g. a Gaussian with zero mean and unit variance.
         kld_hi_conds = []
         kld_hi_globs = []
         for i in range(self.ir_steps):
-            kld_hi_cond = gaussian_kld( \
-                    self.q_hi_given_x_si[i].output_mean, \
-                    self.q_hi_given_x_si[i].output_logvar, \
-                    self.p_hi_given_si[i].output_mean, \
-                    self.p_hi_given_si[i].output_logvar)
-            kld_hi_glob = gaussian_kld( \
-                    self.p_hi_given_si[i].output_mean, \
-                    self.p_hi_given_si[i].output_logvar, \
-                    0.0, 0.0)
+            kld_hi_cond = self.cond_klds[i]
+            kld_hi_glob = self.glob_klds[i]
             kld_hi_cond_l1l2 = (self.l1l2_weight[0] * kld_hi_cond) + \
-                    ((1.0 - self.l1l2_weight[0]) * kld_hi_cond**2.0)
+                    ((constFX(1.0) - self.l1l2_weight[0]) * kld_hi_cond**2.0)
             kld_hi_conds.append(T.sum(kld_hi_cond_l1l2, \
                     axis=1, keepdims=True))
             kld_hi_globs.append(T.sum(kld_hi_glob**2.0, \
@@ -464,11 +511,9 @@ class MultiStageModel(object):
         kld_hi_cond = sum(kld_hi_conds)
         kld_hi_glob = sum(kld_hi_globs)
         # construct KLd cost for the distributions over z
-        kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
-                self.q_z_given_x.output_logvar, \
-                0.0, 0.0)
+        kld_z_all = self.init_klds
         kld_z_l1l2 = (self.l1l2_weight[0] * kld_z_all) + \
-                ((1.0 - self.l1l2_weight[0]) * kld_z_all**2.0)
+                ((constFX(1.0) - self.l1l2_weight[0]) * kld_z_all**2.0)
         kld_z = T.sum(kld_z_l1l2, \
                 axis=1, keepdims=True)
         return [kld_z, kld_hi_cond, kld_hi_glob]
@@ -545,47 +590,6 @@ class MultiStageModel(object):
             return [mean_nll, mean_kld]
         return fe_term_estimator
 
-    def _construct_compute_post_klds(self):
-        """
-        Construct theano function to compute the info about the variational
-        approximate posteriors for some inputs.
-        """
-        # setup some symbolic variables for theano to deal with
-        xi = T.matrix()
-        xo = T.matrix()
-        # construct symbolic expressions for the desired KLds
-        cond_klds = []
-        glob_klds = []
-        for i in range(self.ir_steps):
-            kld_hi_cond = gaussian_kld(self.q_hi_given_x_si[i].output_mean, \
-                    self.q_hi_given_x_si[i].output_logvar, \
-                    self.p_hi_given_si[i].output_mean, \
-                    self.p_hi_given_si[i].output_logvar)
-            kld_hi_glob = gaussian_kld(self.p_hi_given_si[i].output_mean, \
-                    self.p_hi_given_si[i].output_logvar, 0.0, 0.0)
-            cond_klds.append(kld_hi_cond)
-            glob_klds.append(kld_hi_glob)
-        # gather conditional and global klds for all IR steps
-        all_klds = cond_klds + glob_klds
-        # gather kld for the initialization step
-        kld_z_all = gaussian_kld(self.q_z_given_x.output_mean, \
-                self.q_z_given_x.output_logvar, \
-                0.0, 0.0)
-        all_klds.append(kld_z_all)
-        # compile theano function for a one-sample free-energy estimate
-        kld_func = theano.function(inputs=[xi, xo], outputs=all_klds, \
-                givens={ self.x_in: xi, self.x_out: xo })
-        def post_kld_computer(XI, XO):
-            f_all_klds = kld_func(XI,XO)
-            f_kld_z = f_all_klds[-1]
-            f_kld_hi_cond = np.zeros(f_all_klds[0].shape)
-            f_kld_hi_glob = np.zeros(f_all_klds[0].shape)
-            for j in range(self.ir_steps):
-                f_kld_hi_cond += f_all_klds[j]
-                f_kld_hi_glob += f_all_klds[j + self.ir_steps]
-            return [f_kld_z, f_kld_hi_cond, f_kld_hi_glob]
-        return post_kld_computer
-
     def _construct_sample_from_prior(self):
         """
         Construct a function for drawing independent samples from the
@@ -594,7 +598,7 @@ class MultiStageModel(object):
         """
         z_sym = T.matrix()
         x_sym = T.matrix()
-        oputs = [self.obs_transform(s[:,:self.obs_dim]) for s in self.si]
+        oputs = [self.obs_transform(s) for s in self.si_obs]
         sample_func = theano.function(inputs=[z_sym, x_sym], outputs=oputs, \
                 givens={ self.z: z_sym, \
                          self.x_in: T.zeros_like(x_sym), \
@@ -624,7 +628,7 @@ class MultiStageModel(object):
         """
         xi = T.matrix()
         xo = T.matrix()
-        oputs = [self.obs_transform(s[:,:self.obs_dim]) for s in self.si]
+        oputs = [self.obs_transform(s) for s in self.si_obs]
         sample_func = theano.function(inputs=[xi, xo], outputs=oputs, \
                 givens={ self.x_in: xi, \
                          self.x_out: xo })

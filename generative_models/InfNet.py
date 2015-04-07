@@ -16,8 +16,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
-                      softplus_actfun
-from LogPDFs import gaussian_kld
+                      softplus_actfun, constFX
 
 ####################################
 # INFREENCE NETWORK IMPLEMENTATION #
@@ -27,16 +26,15 @@ def row_normalize(x):
     """
     Normalize rows of matrix x to unit (L2) norm.
     """
-    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1)+1e-8)
+    x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1) + constFX(1e-8))
     return x_normed
 
 def soft_abs(x, smoothing=1e-5):
     """
     Soft absolute value function applied to x.
     """
-    sa_x = T.sqrt(x**2. + smoothing)
+    sa_x = T.sqrt(x**2. + constFX(smoothing))
     return sa_x
-
 
 class InfNet(object):
     """
@@ -117,10 +115,6 @@ class InfNet(object):
             self.decoder = lambda x: x
             self.use_encoder = False
             self.Xd_encoded = self.encoder(self.Xd)
-        if 'kld2_scale' in params:
-            self.kld2_scale = params['kld2_scale']
-        else:
-            self.kld2_scale = 0.0
         if 'sigma_init_scale' in params:
             self.sigma_init_scale = params['sigma_init_scale']
         else:
@@ -209,9 +203,6 @@ class InfNet(object):
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.shared_param_dicts['shared'][layer_num]
-                if not (('b_in' in init_params) and ('s_in' in init_params)):
-                    init_params['b_in'] = None
-                    init_params['s_in'] = None
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
@@ -220,9 +211,6 @@ class InfNet(object):
                         b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
-                if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
-                    init_params['b_in'] = new_layer.b_in
-                    init_params['s_in'] = new_layer.s_in
             next_input = self.shared_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1
@@ -276,9 +264,6 @@ class InfNet(object):
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.shared_param_dicts['mu'][layer_num]
-                if not (('b_in' in init_params) and ('s_in' in init_params)):
-                    init_params['b_in'] = None
-                    init_params['s_in'] = None
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
@@ -287,9 +272,6 @@ class InfNet(object):
                         b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
-                if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
-                    init_params['b_in'] = new_layer.b_in
-                    init_params['s_in'] = new_layer.s_in
             next_input = self.mu_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1
@@ -346,9 +328,6 @@ class InfNet(object):
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.shared_param_dicts['sigma'][layer_num]
-                if not (('b_in' in init_params) and ('s_in' in init_params)):
-                    init_params['b_in'] = None
-                    init_params['s_in'] = None
                 new_layer = HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
@@ -357,9 +336,6 @@ class InfNet(object):
                         b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
-                if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
-                    init_params['b_in'] = new_layer.b_in
-                    init_params['s_in'] = new_layer.s_in
             next_input = self.sigma_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1
@@ -381,17 +357,6 @@ class InfNet(object):
             self.sigma_scale = \
                     self.shared_param_dicts['sigma'][-1]['sigma_scale']
 
-        # Create a shared parameter for maintaining an exponentially decaying
-        # estimate of the population mean of posterior KL divergence.
-        if not ('kld_mean' in self.shared_param_dicts['sigma'][-1]):
-            # add a kld_mean if none was already present
-            zero_ary = np.zeros((1,)).astype(theano.config.floatX) + 100.0
-            self.kld_mean = theano.shared(value=zero_ary)
-            self.shared_param_dicts['sigma'][-1]['kld_mean'] = self.kld_mean
-        else:
-            # use a kld_mean that's already present
-            self.kld_mean = self.shared_param_dicts['sigma'][-1]['kld_mean']
-
         # Mash all the parameters together, into a list.
         self.mlp_params = []
         for layer in self.shared_layers:
@@ -403,25 +368,12 @@ class InfNet(object):
 
         # The output of this inference network is given by the noisy output
         # of the final layers of its mu and sigma networks.
-        self.output_mean = self.mu_layers[-1].linear_output
-        self.output_logvar = self.sigma_layers[-1].linear_output
-        self.output_sigma = self.sigma_init_scale * self.sigma_scale[0] * \
-                T.exp(0.5 * self.output_logvar)
-
-        # We'll also construct an output containing a single samples from each
-        # of the distributions represented by the rows of self.output_mean and
-        # self.output_sigma.
-        self.output = self._construct_post_samples()
+        self.output_mean, self.output_logvar, self.output_samples = \
+                self.apply(Xd)
+        self.output = self.output_samples
         self.out_dim = self.sigma_layers[-1].out_dim
         # Get simple regularization penalty to moderate activation dynamics
         self.act_reg_cost = self.lam_l2a * self._act_reg_cost()
-        # Construct a function for penalizing KL divergence between the
-        # approximate posteriors produced by this model and some isotropic
-        # Gaussian distribution.
-        self.kld_cost = self._construct_kld_cost()
-        self.kld_mean_update = T.cast((0.98 * self.kld_mean) + \
-                (0.02 * T.mean(self.kld_cost)), 'floatX')
-        self.kld_func = self._construct_kld_func() # function computing KLds
         # Construct a theano function for sampling from the approximate
         # posteriors inferred by this model for some collection of points
         # in the "data space".
@@ -439,6 +391,44 @@ class InfNet(object):
         self.rica_func = None
         self.W_rica = self.shared_layers[0].W
         return
+
+    def apply(self, X, do_samples=True):
+        """
+        Pass input X through this InfNet and get the resulting Gaussian
+        conditional distribution.
+        """
+        # pass activations through the shared layers
+        shared_acts = [X]
+        for layer in self.shared_layers:
+            r0, r1, layer_acts = layer.apply(shared_acts[-1])
+            shared_acts.append(layer_acts)
+        # pass activations through the mean estimating layers
+        mu_acts = [shared_acts[-1]]
+        for layer in self.mu_layers:
+            r0, r1, layer_acts = layer.apply(mu_acts[-1])
+            mu_acts.append(layer_acts)
+        layer_acts, r0, r1 = self.mu_layers[-1].apply(mu_acts[-2])
+        mu_acts[-1] = layer_acts # use linear output at last layer
+        # pass activations through the logvar estimating layers
+        sigma_acts = [shared_acts[-1]]
+        for layer in self.sigma_layers:
+            r0, r1, layer_acts = layer.apply(sigma_acts[-1])
+            sigma_acts.append(layer_acts)
+        layer_acts, r0, r1 = self.sigma_layers[-1].apply(sigma_acts[-2])
+        sigma_acts[-1] = layer_acts # use linear output at last layer
+
+        # construct the outputs we will want to access
+        output_mean = mu_acts[-1]
+        output_logvar = sigma_acts[-1]
+        output_samples = output_mean + \
+                ((self.sigma_scale[0] * T.exp(0.5*output_logvar)) * \
+                self.rng.normal(size=output_mean.shape, avg=0.0, std=1.0, \
+                dtype=theano.config.floatX))
+        # wrap them up for easy returnage
+        result = [output_mean, output_logvar]
+        if do_samples:
+            result.append(output_samples)
+        return result
 
     def train_rica(self, X, lr, lam):
         """
@@ -488,33 +478,6 @@ class InfNet(object):
         full_act_sq_sum = T.sum(act_sq_sums)
         return full_act_sq_sum
 
-    def _construct_post_samples(self):
-        """
-        Draw a single sample from each of the approximate posteriors encoded
-        in self.output_mean and self.output_sigma.
-        """
-        post_samples = self.output_mean + (self.output_sigma * \
-                self.rng.normal(size=self.output_sigma.shape, avg=0.0, std=1.0, \
-                dtype=theano.config.floatX))
-        return post_samples
-
-    def _construct_kld_cost(self):
-        """
-        Compute (analytically) the KL divergence between each approximate
-        posterior encoded by self.mu/self.sigma and the isotropic Gaussian
-        distribution with mean 0 and standard deviation self.prior_sigma.
-        """
-        # construct a penalty that is L2-like near 0 and L1-like away from 0.
-        huber_pen = lambda x, d: \
-                ((1.0 / (2.0 * d)) * ((T.abs_(x) < d) * (x**2.0))) + \
-                ((T.abs_(x) >= d) * (T.abs_(x) - (d / 2.0)))
-        prior_mu = 0.0
-        prior_logvar = np.log(self.prior_sigma**2.0)
-        post_klds = gaussian_kld(self.output_mean, self.output_logvar, \
-                prior_mu, prior_logvar)
-        kld_cost = T.sum(huber_pen(post_klds, 0.2), axis=1, keepdims=True)
-        return kld_cost
-
     def _construct_sample_posterior(self):
         """
         Construct a sampler that draws a single sample from the inferred
@@ -523,14 +486,6 @@ class InfNet(object):
         psample = theano.function([self.Xd], \
                 outputs=self.output)
         return psample
-
-    def _construct_kld_func(self):
-        """
-        Construct a function for computing posterior KLds for some inputs.
-        """
-        kd_func = theano.function([self.Xd], \
-                outputs=self.kld_cost)
-        return kd_func
 
     def init_biases(self, b_init=0.0, b_std=1e-2):
         """
@@ -561,6 +516,29 @@ class InfNet(object):
         clone_net = InfNet(rng=rng, Xd=Xd, \
                 prior_sigma=self.prior_sigma, params=self.params, \
                 shared_param_dicts=self.shared_param_dicts)
+        return clone_net
+
+    def forked_param_clone(self, rng=None, Xd=None):
+        """
+        Return a clone of this network, with forked copies of the current
+        shared parameters of this InfNet, with different symbolic inputs too.
+        """
+        new_spds = {}
+        old_spds = self.shared_param_dicts
+        # shared param dicts is nested like: dict of list of dicts
+        # i.e., spd[k] is a list and spd[k][i] is a dict
+        for k1 in old_spds:
+            new_spds[k1] = []
+            for i in range(len(old_spds[k1])):
+                new_spds[k1].append({})
+                for k2 in old_spds[k1][i]:
+                    old_sp = old_spds[k1][i][k2]
+                    old_sp_forked = old_sp.get_value(borrow=False)
+                    new_sp = theano.shared(value=old_sp_forked)
+                    new_spds[k1][i][k2] = new_sp
+        clone_net = InfNet(rng=rng, Xd=Xd, \
+                prior_sigma=self.prior_sigma, params=self.params, \
+                shared_param_dicts=new_spds)
         return clone_net
 
     def save_to_file(self, f_name=None):
