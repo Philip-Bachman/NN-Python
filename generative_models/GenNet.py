@@ -231,8 +231,7 @@ class GenNet(object):
                         name=l_name, W_scale=i_scale)
                 self.mlp_layers.append(new_layer)
                 self.shared_param_dicts.append( \
-                        {'W': new_layer.W, 'b': new_layer.b, \
-                         'b_in': new_layer.b_in, 's_in': new_layer.s_in})
+                        {'W': new_layer.W, 'b': new_layer.b})
                 if (last_layer and (self.out_type != 'bernoulli')):
                     # add an extra layer/transform for encoding log-variance
                     lv_layer = HiddenLayer(rng=rng, input=next_input, \
@@ -243,44 +242,29 @@ class GenNet(object):
                     self.logvar_layer = lv_layer
                     self.mlp_layers.append(lv_layer)
                     self.shared_param_dicts.append( \
-                            {'W': lv_layer.W, 'b': lv_layer.b, \
-                             'b_in': lv_layer.b_in, 's_in': lv_layer.s_in})
+                            {'W': lv_layer.W, 'b': lv_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
                 ##################################################
                 init_params = self.shared_param_dicts[layer_num]
-                if not (('b_in' in init_params) and ('s_in' in init_params)):
-                    init_params['b_in'] = None
-                    init_params['s_in'] = None
                 self.mlp_layers.append(HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale))
-                if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
-                    init_params['b_in'] = self.mlp_layers[-1].b_in
-                    init_params['s_in'] = self.mlp_layers[-1].s_in
                 if (last_layer and (self.out_type != 'bernoulli')):
                     # add an extra layer for predicting log-variance.
                     # we'll shrink the init scale for this layer, to avoid
                     # unreasonably small initial predicted logvars.
                     init_params = self.shared_param_dicts[layer_num+1]
-                    if not (('b_in' in init_params) and ('s_in' in init_params)):
-                        init_params['b_in'] = None
-                        init_params['s_in'] = None
                     self.mlp_layers.append(HiddenLayer(rng=rng, input=next_input, \
                         activation=self.activation, pool_size=pool_size, \
                         drop_rate=d_rate, input_noise=0., bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name+'_logvar', W_scale=0.1*i_scale))
-                    if ((init_params['b_in'] is None) or (init_params['s_in'] is None)):
-                        init_params['b_in'] = self.mlp_layers[-1].b_in
-                        init_params['s_in'] = self.mlp_layers[-1].s_in
             next_input = self.mlp_layers[-1].output
             # Acknowledge layer completion
             layer_num = layer_num + 1

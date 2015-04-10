@@ -257,7 +257,6 @@ class OneStageModel(object):
         Set the input layer bias.
         """
         new_bias = new_bias.astype(theano.config.floatX)
-        self.q_z_given_x.shared_layers[0].b_in.set_value(new_bias)
         return
 
     def _construct_nll_costs(self):
@@ -487,7 +486,6 @@ if __name__=="__main__":
     ###############################################
     # Setup some parameters for the OneStageModel #
     ###############################################
-    prior_sigma = 1.0
     x_dim = Xtr.shape[1]
     z_dim = 100
     x_type = 'bernoulli'
@@ -512,7 +510,7 @@ if __name__=="__main__":
     params['hid_drop'] = 0.0
     params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
-    p_x_given_z = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
+    p_x_given_z = InfNet(rng=rng, Xd=Xd, \
             params=params, shared_param_dicts=None)
     p_x_given_z.init_biases(0.1)
     ###############
@@ -531,7 +529,7 @@ if __name__=="__main__":
     params['hid_drop'] = 0.0
     params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
-    q_z_given_x = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
+    q_z_given_x = InfNet(rng=rng, Xd=Xd, \
             params=params, shared_param_dicts=None)
     q_z_given_x.init_biases(0.1)
 

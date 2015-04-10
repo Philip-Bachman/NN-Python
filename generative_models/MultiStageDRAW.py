@@ -15,12 +15,13 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      apply_mask, constFX, to_fX
+                      apply_mask, constFX, to_fX, DCG
 from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
+from MSDUtils import SimpleLSTM, SimpleMLP, SimpleReader, SimpleWriter
 
 #
 # Important symbolic variables:
@@ -31,7 +32,11 @@ def sample_transform(new_means, new_logvars, randn_zmuv):
     new_samples = new_means + (T.exp(0.5*new_logvars) * randn_zmuv)
     return new_samples
 
-class MultiStageModel(object):
+###############################################
+# MultiStageModel with DRAW-like architecture #
+###############################################
+
+class MultiStageDRAW(object):
     """
     Controller for training a multi-step iterative refinement model.
 
@@ -39,36 +44,50 @@ class MultiStageModel(object):
         rng: numpy.random.RandomState (for reproducibility)
         x_in: the input data to encode
         x_out: the target output to decode
-        p_hi_given_si: InfNet for hi given si
-        p_sip1_given_si_hi: InfNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
-        q_hi_given_x_si: InfNet for hi given x and si
-        model_init_rnn: whether to use a model-based initial rnn state
+        init_from_z: whether to use z to initialize mix/enc/dec state
+        p_hi_given_sim1_dec: InfNet for hi given current decoder state
+        q_hi_given_si_enc: InfNet for hi given current encoder state
+        p_writer: writer object for modifying canvas
+        q_reader: reader object for reading canvas, etc.
         obs_dim: dimension of the "observation" component of state
         rnn_dim: dimension of the "RNN" component of state
-        z_dim: dimension of the "initial" latent space
+        mix_dim: dimension of the "mixture" component of state
+        read_dim: dimension of the reader output
         h_dim: dimension of the "primary" latent space
+        z_dim: dimension of the "initial" latent space
         ir_steps: number of "iterative refinement" steps to perform
         params: REQUIRED PARAMS SHOWN BELOW
                 x_type: can be "bernoulli" or "gaussian"
-                obs_transform: can be 'none' or 'sigmoid'
-        shared_param_dicts: holds shared params for model cloning
+                obs_transform: can be "none" or "sigmoid"
     """
     def __init__(self, rng=None, x_in=None, x_out=None, \
-            p_hi_given_si=None, p_sip1_given_si_hi=None, \
-            q_z_given_x=None, q_hi_given_x_si=None, \
-            obs_dim=None, rnn_dim=None, z_dim=None, h_dim=None, \
-            model_init_rnn=True, ir_steps=2, \
-            params=None, shared_param_dicts=None):
+            q_z_given_x=None, init_from_z=True, \
+            p_hi_given_sim1_dec=None, q_hi_given_si_enc=None, \
+            p_writer=None, q_reader=None, \
+            z_dim=None, h_dim=None, \
+            obs_dim=None, rnn_dim=None, mix_dim=None, read_dim=None, \
+            ir_steps=2, params=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
 
-        # decide whether to initialize from a model or from a "constant"
-        self.model_init_rnn = model_init_rnn
+        # record the symbolic variables that will provide inputs to the
+        # computation graph created to describe this MultiStageDRAW
+        self.x_in = x_in
+        self.x_out = x_out
+        self.z_zmuv = T.matrix('z_zmuv')
+        self.hi_zmuv = T.tensor3('hi_zmuv')
+
+        self.p_hi_given_sim1_dec = p_hi_given_sim1_dec
+        self.q_hi_given_si_enc = q_hi_given_si_enc
+        self.p_writer = p_writer
+        self.q_reader = q_reader
+
+        # decide whether to initialize state from "z" or from a "constant"
+        self.init_from_z = init_from_z
 
         # grab the user-provided parameters
         self.params = params
-        self.shared_param_dicts = shared_param_dicts
         self.x_type = self.params['x_type']
         assert((self.x_type == 'bernoulli') or (self.x_type == 'gaussian'))
         if 'obs_transform' in self.params:
@@ -86,18 +105,13 @@ class MultiStageModel(object):
             self.obs_transform = lambda x: T.nnet.sigmoid(x)
 
         # record the dimensions of various spaces relevant to this model
-        self.obs_dim = obs_dim
-        self.rnn_dim = rnn_dim
         self.z_dim = z_dim
         self.h_dim = h_dim
+        self.obs_dim = obs_dim
+        self.rnn_dim = rnn_dim
+        self.mix_dim = mix_dim
+        self.read_dim = read_dim
         self.ir_steps = ir_steps
-
-        # record the symbolic variables that will provide inputs to the
-        # computation graph created to describe this MultiStageModel
-        self.x_in = x_in
-        self.x_out = x_out
-        self.z_zmuv = T.matrix('z_zmuv')
-        self.hi_zmuv = T.tensor3('hi_zmuv')
 
         # setup switching variable for changing between sampling/training
         zero_ary = to_fX( np.zeros((1,)) )
@@ -111,31 +125,25 @@ class MultiStageModel(object):
         self.l1l2_weight = theano.shared(value=zero_ary, name='msm_l1l2_weight')
         self.set_l1l2_weight(1.0)
 
-        if self.shared_param_dicts is None:
-            # initialize weights and biases for the z -> s0_rnn transform
-            w_mix = to_fX( npr.normal(0.0, 0.1, (self.z_dim, self.rnn_dim)) )
-            b_mix = to_fX( np.zeros((self.rnn_dim,)) )
-            b_input = to_fX( np.zeros((self.obs_dim,)) )
-            b_obs = to_fX( np.zeros((self.obs_dim,)) )
-            self.W_mix = theano.shared(value=w_mix, name='msm_W_mix')
-            self.b_mix = theano.shared(value=b_mix, name='msm_b_mix')
-            self.b_input = theano.shared(value=b_input, name='msm_b_input')
-            self.b_obs = theano.shared(value=b_obs, name='msm_b_obs')
-            self.obs_logvar = theano.shared(value=zero_ary, name='msm_obs_logvar')
-            self.bounded_logvar = constFX(8.0) * \
-                    T.tanh(constFX(1.0/8.0) * self.obs_logvar)
-            self.shared_param_dicts = {}
-            self.shared_param_dicts['W_mix'] = self.W_mix
-            self.shared_param_dicts['b_mix'] = self.b_mix
-            self.shared_param_dicts['b_input'] = self.b_input
-            self.shared_param_dicts['b_obs'] = self.b_obs
-            self.shared_param_dicts['obs_logvar'] = self.obs_logvar
-        else:
-            self.W_mix = self.shared_param_dicts['W_mix']
-            self.b_mix = self.shared_param_dicts['b_mix']
-            self.b_input = self.shared_param_dicts['b_input']
-            self.b_obs = self.shared_param_dicts['b_obs']
-            self.obs_logvar = self.shared_param_dicts['obs_logvar']
+        # setup trainable input/output bias parameters
+        b_input = to_fX( np.zeros((self.obs_dim,)) )
+        b_obs = to_fX( np.zeros((self.obs_dim,)) )
+        self.b_input = theano.shared(value=b_input, name='msm_b_input')
+        self.b_obs = theano.shared(value=b_obs, name='msm_b_obs')
+
+        # initialize MLP for: z -> s_mix, s0_enc, c0_enc, s0_dec, c0_dec
+        d = [self.z_dim, (self.mix_dim + 4*self.rnn_dim)]
+        self.mlp_mix = SimpleMLP(d[0], d[1], name='msm_mlp_mix')
+        # initialize MLP for: s_mix, read, sim1_dec -> xi_enc
+        d = [(self.mix_dim + self.read_dim + self.rnn_dim), 4*self.rnn_dim]
+        self.q_mlp_xi = SimpleMLP(d[0], d[1], name='msm_q_mlp_xi')
+        # initialize MLP for: s_mix, hi -> xi_dec
+        d = [(self.mix_dim + self.h_dim), 4*self.rnn_dim]
+        self.p_mlp_xi = SimpleMLP(d[0], d[1], name='msm_p_mlp_xi')
+        # initialize LSTM for encoder and decoder (assume same size)
+        d = [4*self.rnn_dim, self.rnn_dim]
+        self.q_lstm = SimpleLSTM(d[0], d[1], name='msm_q_lstm')
+        self.p_lstm = SimpleLSTM(d[0], d[1], name='msm_p_lstm')
 
         # setup a function for computing reconstruction log likelihood
         if self.x_type == 'bernoulli':
@@ -146,25 +154,33 @@ class MultiStageModel(object):
                     (constFX(-1.0) * log_prob_gaussian2(xo, xh, \
                      log_vars=self.bounded_logvar))
 
-        #############################
-        # Setup self.z and self.s0. #
-        #############################
+        ###################################################
+        # Setup z and initialize s_mix, s0/c0 for enc/dec #
+        ###################################################
         print("Building computation graph...")
-        rnn_scale = 0.0
-        if self.model_init_rnn: # initialize rnn state from generative model
-            rnn_scale = 1.0
+        i_scale = 0.0
+        if self.init_from_z: # initialize state from generative model
+            i_scale = 1.0
         # sample the initial latent variables
         self.q_z_given_x = q_z_given_x
         x_input = self.x_in + self.b_input
-        self.z_mean, self.z_logvar = self.q_z_given_x.apply(self.x_in, \
+        self.z_mean, self.z_logvar = self.q_z_given_x.apply(x_input, \
                 do_samples=False)
         self.z = sample_transform(self.z_mean, self.z_logvar, self.z_zmuv)
-        # initialize the "RNN" part of state
-        _s0_rnn_model = T.dot(self.z, self.W_mix) + self.b_mix
-        _s0_rnn_const = (constFX(0.0) * T.dot(self.z, self.W_mix)) + self.b_mix
-        self.s0_rnn = T.tanh( ((constFX(rnn_scale) * _s0_rnn_model) + \
-                (constFX(1.0 - rnn_scale) * _s0_rnn_const)) )
-        # initialize the "observation" part of state
+        # initialize the encoder/decoder state
+        _init_model = self.mlp_mix.apply(self.z)
+        _init_const = (constFX(0.0) * _init_model) + self.mlp_mix.get_bias()
+        _init_state = T.tanh( ((constFX(i_scale) * _init_model) + \
+                (constFX(1.0 - i_scale) * _init_const)) )
+        # get initial mixture, encoder, and decoder states
+        md, rd = self.mix_dim, self.rnn_dim
+        self.s_mix = _init_state[:,0:md]
+        self.s0_enc = _init_state[:,md:(md + (1*rd))]
+        self.c0_enc = _init_state[:,(md + (1*rd)):(md + (2*rd))]
+        self.s0_dec = _init_state[:,(md + (2*rd)):(md + (3*rd))]
+        self.c0_dec = _init_state[:,(md + (3*rd)):(md + (4*rd))]
+
+        # initialize the "constructed observation" state
         self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
 
         # gather KLd and NLL for the initialization step
@@ -173,59 +189,79 @@ class MultiStageModel(object):
         self.init_nlls =  constFX(-1.0) * self.log_prob_func( \
                 self.x_out, self.obs_transform(self.s0_obs))
 
-        ###############################################################
-        # Setup the iterative refinement loop, starting from self.s0. #
-        ###############################################################
-        self.p_hi_given_si = p_hi_given_si
-        self.p_sip1_given_si_hi = p_sip1_given_si_hi
-        self.q_hi_given_x_si = q_hi_given_x_si
-
-        # function to iterate over in scan
-        def ir_step_func(hi_zmuv, sim1_obs, sim1_rnn):
-            # get transformed version of observation state
+        ##################################################
+        # Setup the iterative generation loop using scan #
+        ##################################################
+        def ir_step_func(hi_zmuv, sim1_obs, sim1_dec, cim1_dec, sim1_enc, cim1_enc):
+            ###############
+            # basic stuff #
+            ###############
             sim1_obs_trans = self.obs_transform(sim1_obs)
-            # get conditional latent step distribution from generator policy
-            hi_p_mean, hi_p_logvar = self.p_hi_given_si.apply( \
-                    T.horizontal_stack(sim1_obs_trans, sim1_rnn), \
-                    do_samples=False)
-            hi_p = sample_transform(hi_p_mean, hi_p_logvar, hi_zmuv)
+            x_hat = self.x_out - sim1_obs_trans
+            ########################
+            # encoder computations #
+            ########################
+            read_i = self.q_reader.apply(self.x_out, x_hat, sim1_dec)
+            q_mlp_xi_input = T.concatenate([self.s_mix, read_i, sim1_dec], axis=1)
+            xi_enc = self.q_mlp_xi.apply(q_mlp_xi_input)
+            # update the encoder LSTM
+            si_enc, ci_enc = self.q_lstm.apply(xi_enc, sim1_enc, cim1_enc)
+
+            ##########################################
+            # latent variable sampling and kld stuff #
+            ##########################################
             # get conditional latent step distribution from guide policy
-            grad_ll = self.x_out - sim1_obs_trans
-            hi_q_mean, hi_q_logvar = self.q_hi_given_x_si.apply( \
-                    T.horizontal_stack(grad_ll, sim1_obs_trans, sim1_rnn), \
-                    do_samples=False)
+            hi_q_mean, hi_q_logvar = self.q_hi_given_si_enc.apply( \
+                    si_enc, do_samples=False)
             hi_q = sample_transform(hi_q_mean, hi_q_logvar, hi_zmuv)
+            # get conditional latent step distribution from generator policy
+            hi_p_mean, hi_p_logvar = self.p_hi_given_sim1_dec.apply( \
+                    sim1_dec, do_samples=False)
+            hi_p = sample_transform(hi_p_mean, hi_p_logvar, hi_zmuv)
             # get latent step switchable between generator/guide
             hi = ((self.train_switch[0] * hi_q) + \
                     ((constFX(1.0) - self.train_switch[0]) * hi_p))
 
-            # convert the latent step into a step in observation space
-            si_step, r0 = p_sip1_given_si_hi.apply(hi, do_samples=False)
-            # si_step, r0 = p_sip1_given_si_hi.apply( \
-            #         T.horizontal_stack(hi, si_rnn), do_samples=False)
-
-            # update observation and rnn state based on the sampled step
+            ########################
+            # decoder computations #
+            ########################
+            p_mlp_xi_input = T.concatenate([hi, self.s_mix], axis=1)
+            xi_dec = self.p_mlp_xi.apply(p_mlp_xi_input)
+            # update the decoder LSTM
+            si_dec, ci_dec = self.p_lstm.apply(xi_dec, sim1_dec, cim1_dec)
+            # compute writer output for canvas update, and then apply it
+            si_step = self.p_writer.apply(si_dec)
             si_obs = sim1_obs + si_step
-            si_rnn = constFX(1.0) * sim1_rnn
-            # compute cost components for this step
+
+            #####################
+            # cost computations #
+            #####################
             nlli = self.log_prob_func(self.x_out, self.obs_transform(si_obs))
             kldi_cond = gaussian_kld(hi_q_mean, hi_q_logvar, \
                     hi_p_mean, hi_p_logvar)
             kldi_glob = gaussian_kld(hi_p_mean, hi_p_logvar, 0.0, 0.0)
-            return si_obs, si_rnn, nlli, kldi_cond, kldi_glob
 
-        init_values = [self.s0_obs, self.s0_rnn, None, None, None]
+            ###################
+            # collect results #
+            ###################
+            results = [si_obs, si_dec, ci_dec, si_enc, ci_dec, \
+                       nlli, kldi_cond, kldi_glob]
+            return results
+
+        init_values = [self.s0_obs, self.s0_dec, self.c0_dec, \
+                       self.s0_enc, self.c0_dec, None, None, None]
 
         self.scan_results, self.scan_updates = theano.scan(ir_step_func, \
                 outputs_info=init_values, sequences=self.hi_zmuv)
 
         self.si_obs = self.scan_results[0]
-        self.si_rnn = self.scan_results[1]
-        self.nlli = self.scan_results[2]
-        self.kldi_cond = self.scan_results[3]
-        self.kldi_glob = self.scan_results[4]
-        # check that input/output dimensions of our models agree
-        self._check_model_shapes()
+        self.si_dec = self.scan_results[1]
+        self.ci_dec = self.scan_results[2]
+        self.si_enc = self.scan_results[3]
+        self.ci_enc = self.scan_results[4]
+        self.nlli = self.scan_results[5]
+        self.kldi_cond = self.scan_results[6]
+        self.kldi_glob = self.scan_results[7]
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -252,15 +288,21 @@ class MultiStageModel(object):
         self.lam_l2w = theano.shared(value=zero_ary, name='msm_lam_l2w')
         self.set_lam_l2w(1e-5)
 
-        # Grab all of the "optimizable" parameters in "group 1"
-        self.group_1_params = [self.b_input]
+        # Grab all of the "optimizable" parameters in the "encoder"
+        self.group_1_params = []
         self.group_1_params.extend(self.q_z_given_x.mlp_params)
-        self.group_1_params.extend(self.q_hi_given_x_si.mlp_params)
-        # Grab all of the "optimizable" parameters in "group 2"
-        self.group_2_params = [self.W_mix, self.b_mix, \
-                               self.b_obs, self.obs_logvar]
-        self.group_2_params.extend(self.p_hi_given_si.mlp_params)
-        self.group_2_params.extend(self.p_sip1_given_si_hi.mlp_params)
+        self.group_1_params.extend(self.q_hi_given_si_enc.mlp_params)
+        self.group_1_params.extend(self.q_mlp_xi.mlp_params)
+        self.group_1_params.extend(self.q_reader.mlp_params)
+        self.group_1_params.extend(self.q_lstm.mlp_params)
+        self.group_1_params.append(self.b_input)
+        # Grab all of the "optimizable" parameters in the "decoder"
+        self.group_2_params = []
+        self.group_2_params.extend(self.p_hi_given_sim1_dec.mlp_params)
+        self.group_2_params.extend(self.p_mlp_xi.mlp_params)
+        self.group_2_params.extend(self.p_writer.mlp_params)
+        self.group_2_params.extend(self.p_lstm.mlp_params)
+        self.group_2_params.append(self.b_obs)
         # Make a joint list of parameters group 1/2
         self.joint_params = self.group_1_params + self.group_2_params
 
@@ -324,11 +366,6 @@ class MultiStageModel(object):
         self.sample_from_prior = self._construct_sample_from_prior()
         print("Compiling data-guided model sampler...")
         self.sample_from_input = self._construct_sample_from_input()
-        # make easy access points for some interesting parameters
-        self.inf_1_weights = self.q_z_given_x.shared_layers[0].W
-        self.inf_2_weights = self.q_hi_given_x_si.shared_layers[0].W
-        self.gen_gen_weights = self.p_sip1_given_si_hi.mu_layers[-1].W
-        self.gen_inf_weights = self.p_hi_given_si.shared_layers[0].W
         return
 
     def set_sgd_params(self, lr_1=0.01, lr_2=0.01, \
@@ -416,7 +453,6 @@ class MultiStageModel(object):
         Set the output layer bias.
         """
         new_bias = to_fX(new_bias)
-        self.b_input.set_value(new_bias)
         return
 
     def set_obs_bias(self, new_obs_bias=None):
@@ -428,36 +464,10 @@ class MultiStageModel(object):
         self.b_obs.set_value(to_fX(new_bias))
         return
 
-    def _check_model_shapes(self):
-        """
-        Check that inputs/outputs of the various models will pipe together.
-        """
-        obs_dim = self.obs_dim
-        rnn_dim = self.rnn_dim
-        jnt_dim = obs_dim + rnn_dim
-        z_dim = self.z_dim
-        h_dim = self.h_dim
-        # check shape of initialization model
-        assert(self.q_z_given_x.mu_layers[-1].out_dim == z_dim)
-        assert(self.q_z_given_x.shared_layers[0].in_dim == obs_dim)
-        # check shape of the forward conditionals over h_i
-        assert(self.p_hi_given_si.mu_layers[-1].out_dim == h_dim)
-        assert(self.p_hi_given_si.shared_layers[0].in_dim == jnt_dim)
-        assert(self.q_hi_given_x_si.mu_layers[-1].out_dim == h_dim)
-        assert(self.q_hi_given_x_si.shared_layers[0].in_dim == (obs_dim + jnt_dim))
-        # check shape of the forward conditionals over s_{i+1}
-        assert(self.p_sip1_given_si_hi.mu_layers[-1].out_dim == obs_dim)
-
-        # MOD TAG 2
-        #assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == (h_dim + rnn_dim))
-        assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == h_dim)
-
-        return
-
     def _construct_zmuv_samples(self, X, br):
         """
         Construct the necessary (symbolic) samples for computing through this
-        MultiStageModel for input (sybolic) matrix X.
+        MultiStageDRAW for input (sybolic) matrix X.
         """
         z_zmuv = self.rng.normal( \
                 size=(X.shape[0]*br, self.z_dim), \
@@ -612,7 +622,7 @@ class MultiStageModel(object):
     def _construct_sample_from_prior(self):
         """
         Construct a function for drawing independent samples from the
-        distribution generated by this MultiStageModel. This function returns
+        distribution generated by this MultiStageDRAW. This function returns
         the full sequence of "partially completed" examples.
         """
         z_sym = T.matrix()
@@ -643,7 +653,7 @@ class MultiStageModel(object):
     def _construct_sample_from_input(self):
         """
         Construct a function for drawing samples from the distribution
-        generated by this MultiStageModel, conditioned on some inputs to the
+        generated by this MultiStageDRAW, conditioned on some inputs to the
         initial encoder stage (i.e. self.q_z_given_x). This returns the full 
         sequence of "partially completed" examples.
 
@@ -679,6 +689,20 @@ class MultiStageModel(object):
             self.set_train_switch(switch_val=old_switch)
             return model_samps
         return conditional_sampler
+
+if __name__=="__main__":
+    print("Hello world!")
+
+
+
+
+
+
+
+##############
+# EYE BUFFER #
+##############
+
 
 if __name__=="__main__":
     print("Hello world!")

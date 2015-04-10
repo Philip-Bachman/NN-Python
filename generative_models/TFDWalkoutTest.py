@@ -111,7 +111,6 @@ def pretrain_osm(lam_kld=0.0):
     Xc = T.matrix('Xc_base')
     Xm = T.matrix('Xm_base')
     data_dim = Xtr.shape[1]
-    prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0)
 
     ##########################
@@ -145,9 +144,9 @@ def pretrain_osm(lam_kld=0.0):
     in_params['bias_noise'] = 0.0
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this OneStageModel
-    IN = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
+    IN = InfNet(rng=rng, Xd=Xd, \
             params=in_params, shared_param_dicts=None)
-    GN = InfNet(rng=rng, Xd=Xd, prior_sigma=prior_sigma, \
+    GN = InfNet(rng=rng, Xd=Xd, \
             params=gn_params, shared_param_dicts=None)
     # Initialize biases in IN and GN
     IN.init_biases(0.2)
@@ -297,7 +296,6 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
     data_dim = Xtr.shape[1]
     batch_size = 400
     batch_reps = 5
-    prior_sigma = 1.0
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(np.mean(Xtr,axis=1))
     Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0)

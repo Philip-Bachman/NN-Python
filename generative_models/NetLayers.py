@@ -13,10 +13,18 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # ACTIVATIONS AND OTHER STUFF #
 ###############################
 
+def DCG(x):
+    x_dcg = theano.gradient.disconnected_grad(x)
+    return x_dcg
+
 def constFX(x):
     """Cast x as constant TensorVariable with dtype floatX."""
     x_CFX = T.constant(x, dtype=theano.config.floatX)
     return x_CFX
+
+def to_fX(np_ary):
+    np_ary_fX = np_ary.astype(theano.config.floatX)
+    return np_ary_fX
 
 def row_normalize(x):
     """Normalize rows of matrix x to unit (L2) norm."""
@@ -165,10 +173,6 @@ def ortho_matrix(shape=None, gain=1.0):
     W = gain * q[:shape[0], :shape[1]]
     return W
 
-def DCG(x):
-    x_dcg = theano.gradient.disconnected_grad(x)
-    return x_rcg
-
 ######################################
 # BASIC FULLY-CONNECTED HIDDEN LAYER #
 ######################################
@@ -177,23 +181,10 @@ class HiddenLayer(object):
     def __init__(self, rng, input, in_dim, out_dim, \
                  activation=None, pool_size=0, \
                  drop_rate=0., input_noise=0., bias_noise=0., \
-                 W=None, b=None, b_in=None, s_in=None,
-                 name="", W_scale=1.0):
+                 W=None, b=None, name="", W_scale=1.0):
 
         # Setup a shared random generator for this layer
         self.rng = RandStream(rng.randint(1000000))
-
-        # setup input scale and bias params
-        if b_in is None:
-            # input biases are always initialized to zero
-            ary = np.zeros((in_dim,), dtype=theano.config.floatX)
-            b_in = theano.shared(value=ary, name="{0:s}_b_in".format(name))
-        if s_in is None:
-            # input scales are always initialized to one
-            ary = 0.541325 * np.ones((in_dim,), dtype=theano.config.floatX)
-            s_in = theano.shared(value=ary, name="{0:s}_s_in".format(name))
-        self.b_in = b_in
-        self.s_in = s_in
 
         # setup parameters for controlling 
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
@@ -251,7 +242,7 @@ class HiddenLayer(object):
         self.act_l2_sum = T.sum(self.noisy_linear**2.) / self.output.size
 
         # Conveniently package layer parameters
-        self.params = [self.W, self.b, self.b_in, self.s_in]
+        self.params = [self.W, self.b]
         # Layer construction complete...
         return
 
@@ -259,15 +250,13 @@ class HiddenLayer(object):
         """
         Apply feedforward to this input, returning several partial results.
         """
-        # make a symbolic var for the shifted and scaled input
-        clean_input = T.nnet.softplus(self.s_in) * (input + self.b_in)
         # Add gaussian noise to the input (if desired)
         if use_in:
-            fuzzy_input = clean_input + DCG(self.input_noise[0] * \
+            fuzzy_input = input + DCG(self.input_noise[0] * \
                     self.rng.normal(size=clean_input.shape, avg=0.0, std=1.0, \
                     dtype=theano.config.floatX))
         else:
-            fuzzy_input = clean_input
+            fuzzy_input = input
         # Apply masking noise to the input (if desired)
         if use_drop:
             noisy_input = self._drop_from_input(fuzzy_input, \

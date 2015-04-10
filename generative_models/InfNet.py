@@ -16,7 +16,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
-                      softplus_actfun, constFX
+                      softplus_actfun, constFX, DCG
 
 ####################################
 # INFREENCE NETWORK IMPLEMENTATION #
@@ -46,8 +46,6 @@ class InfNet(object):
     Parameters:
         rng: a numpy.random RandomState object
         Xd: symbolic input matrix for inputs
-        prior_sigma: standard deviation of isotropic Gaussian prior that our
-                     inferred posteriors will be penalized for deviating from.
         params: a dict of parameters describing the desired network:
             lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on observable variables
@@ -68,14 +66,12 @@ class InfNet(object):
     def __init__(self, \
             rng=None, \
             Xd=None, \
-            prior_sigma=None, \
             params=None, \
             shared_param_dicts=None):
         # Setup a shared random generator for this network 
         self.rng = RandStream(rng.randint(1000000))
         # Grab the symbolic input matrix
         self.Xd = Xd
-        self.prior_sigma = prior_sigma
         #####################################################
         # Process user-supplied parameters for this network #
         #####################################################
@@ -196,8 +192,7 @@ class InfNet(object):
                         name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
                 self.shared_param_dicts['shared'].append( \
-                        {'W': new_layer.W, 'b': new_layer.b, \
-                         'b_in': new_layer.b_in, 's_in': new_layer.s_in})
+                        {'W': new_layer.W, 'b': new_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -208,7 +203,6 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
             next_input = self.shared_layers[-1].output
@@ -257,8 +251,7 @@ class InfNet(object):
                         name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
                 self.shared_param_dicts['mu'].append( \
-                        {'W': new_layer.W, 'b': new_layer.b, \
-                         'b_in': new_layer.b_in, 's_in': new_layer.s_in})
+                        {'W': new_layer.W, 'b': new_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -269,7 +262,6 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
             next_input = self.mu_layers[-1].output
@@ -321,8 +313,7 @@ class InfNet(object):
                         name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
                 self.shared_param_dicts['sigma'].append( \
-                        {'W': new_layer.W, 'b': new_layer.b, \
-                         'b_in': new_layer.b_in, 's_in': new_layer.s_in})
+                        {'W': new_layer.W, 'b': new_layer.b})
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -333,7 +324,6 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
-                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
             next_input = self.sigma_layers[-1].output
@@ -421,9 +411,9 @@ class InfNet(object):
         output_mean = mu_acts[-1]
         output_logvar = sigma_acts[-1]
         output_samples = output_mean + \
-                ((self.sigma_scale[0] * T.exp(0.5*output_logvar)) * \
-                self.rng.normal(size=output_mean.shape, avg=0.0, std=1.0, \
-                dtype=theano.config.floatX))
+                ( (self.sigma_scale[0] * T.exp(0.5*output_logvar)) * \
+                DCG(self.rng.normal(size=output_mean.shape, avg=0.0, std=1.0, \
+                dtype=theano.config.floatX)) )
         # wrap them up for easy returnage
         result = [output_mean, output_logvar]
         if do_samples:
@@ -438,8 +428,8 @@ class InfNet(object):
             l_rate = T.scalar()
             lam_l1 = T.scalar()
             X_in = T.matrix('in_X_in')
-            W_in = self.W_rica + self.rng.normal(size=self.W_rica.shape, \
-                avg=0.0, std=0.01, dtype=theano.config.floatX)
+            W_in = self.W_rica + DCG(self.rng.normal(size=self.W_rica.shape, \
+                avg=0.0, std=0.01, dtype=theano.config.floatX))
             X_enc = self.encoder(X_in)
             H_rec = T.dot(X_enc, W_in)
             X_rec = T.dot(H_rec, W_in.T)
@@ -513,8 +503,7 @@ class InfNet(object):
         This can be used for "unrolling" a generate->infer->generate->infer...
         loop. Then, we can do backprop through time for various objectives.
         """
-        clone_net = InfNet(rng=rng, Xd=Xd, \
-                prior_sigma=self.prior_sigma, params=self.params, \
+        clone_net = InfNet(rng=rng, Xd=Xd, params=self.params, \
                 shared_param_dicts=self.shared_param_dicts)
         return clone_net
 
@@ -536,8 +525,7 @@ class InfNet(object):
                     old_sp_forked = old_sp.get_value(borrow=False)
                     new_sp = theano.shared(value=old_sp_forked)
                     new_spds[k1][i][k2] = new_sp
-        clone_net = InfNet(rng=rng, Xd=Xd, \
-                prior_sigma=self.prior_sigma, params=self.params, \
+        clone_net = InfNet(rng=rng, Xd=Xd, params=self.params, \
                 shared_param_dicts=new_spds)
         return clone_net
 
@@ -550,8 +538,6 @@ class InfNet(object):
         """
         assert(not (f_name is None))
         f_handle = file(f_name, 'wb')
-        # dump the "simple" python value in self.prior_sigma
-        cPickle.dump(self.prior_sigma, f_handle, protocol=-1)
         # dump the dict self.params, which just holds "simple" python values
         cPickle.dump(self.params, f_handle, protocol=-1)
         # make a copy of self.shared_param_dicts, with numpy arrays in place
@@ -575,7 +561,6 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, \
     """
     assert(not (f_name is None))
     pickle_file = open(f_name)
-    self_dot_prior_sigma = cPickle.load(pickle_file)
     self_dot_params = cPickle.load(pickle_file)
     if not (new_params is None):
         for k in new_params:
@@ -590,8 +575,7 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, \
                 shared_dict[key] = theano.shared(val)
             self_dot_shared_param_dicts[layer_group].append(shared_dict)
     # now, create a PeaNet with the configuration we just unpickled
-    clone_net = InfNet(rng=rng, Xd=Xd, \
-            prior_sigma=self_dot_prior_sigma, params=self_dot_params, \
+    clone_net = InfNet(rng=rng, Xd=Xd, params=self_dot_params, \
             shared_param_dicts=self_dot_shared_param_dicts)
     # helpful output
     print("==================================================")

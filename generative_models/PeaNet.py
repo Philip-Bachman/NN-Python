@@ -180,8 +180,7 @@ class PeaNet(object):
                             name=pnl_name, W_scale=i_scale)
                     proto_net.append(new_layer)
                     self.shared_param_dicts.append( \
-                            {'W': new_layer.W, 'b': new_layer.b, \
-                             'b_in': new_layer.b_in, 's_in': new_layer.s_in})
+                            {'W': new_layer.W, 'b': new_layer.b})
                 else:
                     ##################################################
                     # Initialize a layer with some shared parameters #
@@ -192,7 +191,6 @@ class PeaNet(object):
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
                             W=init_params['W'], b=init_params['b'], \
-                            b_in=init_params['b_in'], s_in=init_params['s_in'], \
                             name=pnl_name, W_scale=i_scale)
                     proto_net.append(new_layer)
                 next_input = proto_net[-1].output
@@ -235,7 +233,6 @@ class PeaNet(object):
                         pool_size=pool_size, drop_rate=drop_prob, \
                         input_noise=layer_in, bias_noise=bias_noise, \
                         W=proto_layer.W, b=proto_layer.b, \
-                        b_in=proto_layer.b_in, s_in=proto_layer.s_in, \
                         in_dim=in_dim, out_dim=out_dim))
                 next_input = spawn_net[-1].output
                 layer_num = layer_num + 1
