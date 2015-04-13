@@ -650,7 +650,7 @@ class VCGLoop(object):
     def sample_from_prior(self, samp_count):
         """
         Draw independent samples from the model's prior, using the gaussian
-        continuous prior of the underlying GenNet.
+        continuous prior of the underlying OneStageModel.
         """
         Xs = self.OSM.sample_from_prior(samp_count)
         return Xs

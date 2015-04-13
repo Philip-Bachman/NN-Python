@@ -36,9 +36,9 @@ class SimpleLSTM(object):
         if W_all is None:
             # Generate initial filters using orthogonal random trick
             W_shape = (self.joint_in_dim, self.joint_out_dim)
-            W_scale = W_scale * (1.0 / np.sqrt(self.joint_in_dim))
+            if W_scale > 0.1:
+                W_scale = W_scale * (1.0 / np.sqrt(self.joint_in_dim))
             W_init = W_scale * npr.normal(0.0, 1.0, W_shape)
-            #W_init = ortho_matrix(shape=W_shape, gain=W_scale)
             W_init = W_init.astype(theano.config.floatX)
             W_all = theano.shared(value=W_init, \
                     name="{0:s}_W_all".format(name))
@@ -96,9 +96,9 @@ class SimpleMLP(object):
         if W is None:
             # Generate initial filters using orthogonal random trick
             W_shape = (self.in_dim, self.out_dim)
-            W_scale = W_scale * (1.0 / np.sqrt(self.in_dim))
+            if W_scale > 0.1:
+                W_scale = W_scale * (1.0 / np.sqrt(self.in_dim))
             W_init = W_scale * npr.normal(0.0, 1.0, W_shape)
-            #W_init = ortho_matrix(shape=W_shape, gain=W_scale)
             W_init = W_init.astype(theano.config.floatX)
             W = theano.shared(value=W_init, \
                     name="{0:s}_W".format(name))
@@ -150,9 +150,9 @@ class SimpleInfNet(object):
         if W_mean is None:
             # Generate initial filters using orthogonal random trick
             W_shape = (self.in_dim, self.out_dim)
-            W_scale = W_scale * (1.0 / np.sqrt(self.in_dim))
+            if W_scale > 0.1:
+                W_scale = W_scale * (1.0 / np.sqrt(self.in_dim))
             W_init = W_scale * npr.normal(0.0, 1.0, W_shape)
-            #W_init = ortho_matrix(shape=W_shape, gain=W_scale)
             W_init = W_init.astype(theano.config.floatX)
             W_mean = theano.shared(value=W_init, \
                     name="{0:s}_W_mean".format(name))
@@ -220,7 +220,7 @@ class SimpleReader(object):
     """
     Basic reader, as described in the DRAW source paper.
     """
-    def __init__(self, x_dim, rnn_dim):
+    def __init__(self, x_dim, rnn_dim, W_scale=1.0):
         self.x_dim = x_dim
         self.rnn_dim = rnn_dim
         self.out_dim = 2*self.x_dim
@@ -238,14 +238,13 @@ class SimpleWriter(object):
     """
     Simple writer, as described in the DRAW source paper.
     """
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim, W_scale=1.0):
 
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.mlp = SimpleMLP(in_dim, out_dim, \
                 W=None, b=None, \
-                name="writer_mlp", W_scale=1.0)
-
+                name="writer_mlp", W_scale=W_scale)
         self.mlp_params = self.mlp.mlp_params
         return
 

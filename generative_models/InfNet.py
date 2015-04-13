@@ -16,7 +16,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
-                      softplus_actfun, constFX, DCG
+                      softplus_actfun, constFX
 
 ####################################
 # INFREENCE NETWORK IMPLEMENTATION #
@@ -58,9 +58,6 @@ class InfNet(object):
             sigma_config: list of "layer descriptions" for sigma part
             activation: "function handle" for the desired non-linearity
             init_scale: scaling factor for hidden layer weights (__ * 0.01)
-            encoder: a function that will be applied to inputs prior to
-                     passing them through the network. this can be used for
-                     in-lining, e.g., PCA preprocessing on training data
         shared_param_dicts: parameters for the MLP controlled by this InfNet
     """
     def __init__(self, \
@@ -101,16 +98,6 @@ class InfNet(object):
             self.init_scale = params['init_scale']
         else:
             self.init_scale = 1.0
-        if 'encoder' in params:
-            self.encoder = params['encoder']
-            self.decoder = params['decoder']
-            self.use_encoder = True
-            self.Xd_encoded = self.encoder(self.Xd)
-        else:
-            self.encoder = lambda x: x
-            self.decoder = lambda x: x
-            self.use_encoder = False
-            self.Xd_encoded = self.encoder(self.Xd)
         if 'sigma_init_scale' in params:
             self.sigma_init_scale = params['sigma_init_scale']
         else:
@@ -146,10 +133,7 @@ class InfNet(object):
         layer_def_pairs = zip(self.shared_config[:-1],self.shared_config[1:])
         layer_num = 0
         # Construct input to the inference network
-        if self.use_encoder:
-            next_input = self.encoder(self.Xd)
-        else:
-            next_input = self.Xd
+        next_input = self.Xd
         for in_def, out_def in layer_def_pairs:
             first_layer = (layer_num == 0)
             last_layer = (layer_num == (len(layer_def_pairs) - 1))
@@ -192,7 +176,7 @@ class InfNet(object):
                         name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
                 self.shared_param_dicts['shared'].append( \
-                        {'W': new_layer.W, 'b': new_layer.b})
+                        new_layer.shared_param_dicts)
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -203,6 +187,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
+                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.shared_layers.append(new_layer)
             next_input = self.shared_layers[-1].output
@@ -251,7 +236,7 @@ class InfNet(object):
                         name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
                 self.shared_param_dicts['mu'].append( \
-                        {'W': new_layer.W, 'b': new_layer.b})
+                        new_layer.shared_param_dicts)
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -262,6 +247,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
+                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.mu_layers.append(new_layer)
             next_input = self.mu_layers[-1].output
@@ -313,7 +299,7 @@ class InfNet(object):
                         name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
                 self.shared_param_dicts['sigma'].append( \
-                        {'W': new_layer.W, 'b': new_layer.b})
+                        new_layer.shared_param_dicts)
             else:
                 ##################################################
                 # Initialize a layer with some shared parameters #
@@ -324,6 +310,7 @@ class InfNet(object):
                         drop_rate=d_rate, input_noise=i_noise, bias_noise=b_noise, \
                         in_dim=in_dim, out_dim=out_dim, \
                         W=init_params['W'], b=init_params['b'], \
+                        b_in=init_params['b_in'], s_in=init_params['s_in'], \
                         name=l_name, W_scale=i_scale)
                 self.sigma_layers.append(new_layer)
             next_input = self.sigma_layers[-1].output
@@ -412,8 +399,8 @@ class InfNet(object):
         output_logvar = sigma_acts[-1]
         output_samples = output_mean + \
                 ( (self.sigma_scale[0] * T.exp(0.5*output_logvar)) * \
-                DCG(self.rng.normal(size=output_mean.shape, avg=0.0, std=1.0, \
-                dtype=theano.config.floatX)) )
+                self.rng.normal(size=output_mean.shape, avg=0.0, std=1.0, \
+                dtype=theano.config.floatX) )
         # wrap them up for easy returnage
         result = [output_mean, output_logvar]
         if do_samples:
@@ -428,9 +415,9 @@ class InfNet(object):
             l_rate = T.scalar()
             lam_l1 = T.scalar()
             X_in = T.matrix('in_X_in')
-            W_in = self.W_rica + DCG(self.rng.normal(size=self.W_rica.shape, \
-                avg=0.0, std=0.01, dtype=theano.config.floatX))
-            X_enc = self.encoder(X_in)
+            W_in = self.W_rica + self.rng.normal(size=self.W_rica.shape, \
+                avg=0.0, std=0.01, dtype=theano.config.floatX)
+            X_enc = X_in
             H_rec = T.dot(X_enc, W_in)
             X_rec = T.dot(H_rec, W_in.T)
             recon_cost = T.sum((X_enc - X_rec)**2.0) / X_enc.shape[0]

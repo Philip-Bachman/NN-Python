@@ -181,7 +181,8 @@ class HiddenLayer(object):
     def __init__(self, rng, input, in_dim, out_dim, \
                  activation=None, pool_size=0, \
                  drop_rate=0., input_noise=0., bias_noise=0., \
-                 W=None, b=None, name="", W_scale=1.0):
+                 W=None, b=None, b_in=None, s_in=None, \
+                 name="", W_scale=1.0):
 
         # Setup a shared random generator for this layer
         self.rng = RandStream(rng.randint(1000000))
@@ -194,6 +195,18 @@ class HiddenLayer(object):
                 name="{0:s}_bias_noise".format(name))
         self.drop_rate = theano.shared(value=(zero_ary+drop_rate), \
                 name="{0:s}_drop_rate".format(name))
+
+        # setup scale and bias params for the input
+        if b_in is None:
+            # input biases are always initialized to zero
+            ary = np.zeros((in_dim,), dtype=theano.config.floatX)
+            b_in = theano.shared(value=ary, name="{0:s}_b_in".format(name))
+        if s_in is None:
+            # input scales are always initialized to one
+            ary = 0.541325 * np.ones((in_dim,), dtype=theano.config.floatX)
+            s_in = theano.shared(value=ary, name="{0:s}_s_in".format(name))
+        self.b_in = b_in
+        self.s_in = s_in
 
         # Set some basic layer properties
         self.pool_size = pool_size
@@ -216,10 +229,10 @@ class HiddenLayer(object):
         if W is None:
             # Generate initial filters using orthogonal random trick
             W_shape = (self.in_dim, self.filt_count)
-            W_scale = W_scale * (1.0 / np.sqrt(self.in_dim))
-            W_init = W_scale * npr.normal(0.0, 1.0, W_shape)
-            #W_init = ortho_matrix(shape=(self.in_dim, self.filt_count), \
-            #        gain=W_scale)
+            #W_scale = W_scale * (1.0 / np.sqrt(self.in_dim))
+            #W_init = W_scale * npr.normal(0.0, 1.0, W_shape)
+            W_init = ortho_matrix(shape=(self.in_dim, self.filt_count), \
+                    gain=W_scale)
             W_init = W_init.astype(theano.config.floatX)
             W = theano.shared(value=W_init, name="{0:s}_W".format(name))
         if b is None:
@@ -242,7 +255,12 @@ class HiddenLayer(object):
         self.act_l2_sum = T.sum(self.noisy_linear**2.) / self.output.size
 
         # Conveniently package layer parameters
-        self.params = [self.W, self.b]
+        self.params = [self.W, self.b, self.b_in, self.s_in]
+        self.shared_param_dicts = { \
+                'W': self.W, \
+                'b': self.b, \
+                'b_in': self.b_in, \
+                's_in': self.s_in }
         # Layer construction complete...
         return
 
@@ -251,25 +269,28 @@ class HiddenLayer(object):
         Apply feedforward to this input, returning several partial results.
         """
         # Add gaussian noise to the input (if desired)
+        #fancy_input = T.nnet.softplus(self.s_in) * (input + self.b_in)
+        fancy_input = input
         if use_in:
-            fuzzy_input = input + DCG(self.input_noise[0] * \
-                    self.rng.normal(size=clean_input.shape, avg=0.0, std=1.0, \
-                    dtype=theano.config.floatX))
+            fuzzy_input = fancy_input + self.input_noise[0] * \
+                    self.rng.normal(size=fancy_input.shape, avg=0.0, std=1.0, \
+                    dtype=theano.config.floatX)
         else:
-            fuzzy_input = input
+            fuzzy_input = fancy_input
         # Apply masking noise to the input (if desired)
         if use_drop:
             noisy_input = self._drop_from_input(fuzzy_input, \
                     self.drop_rate[0])
         else:
             noisy_input = fuzzy_input
+        self.noisy_input = noisy_input
         # Compute linear "pre-activation" for this layer
         linear_output = T.dot(noisy_input, self.W) + self.b
         # Add noise to the pre-activation features (if desired)
         if use_bn:
-            noisy_linear = linear_output + DCG(self.bias_noise[0] * \
+            noisy_linear = linear_output + self.bias_noise[0] * \
                     self.rng.normal(size=linear_output.shape, avg=0.0, \
-                    std=1.0, dtype=theano.config.floatX))
+                    std=1.0, dtype=theano.config.floatX)
         else:
             noisy_linear = linear_output
         # Apply activation function
@@ -277,7 +298,6 @@ class HiddenLayer(object):
         # package partial results for easy return
         results = [linear_output, noisy_linear, final_output]
         return results
-
 
     def _drop_from_input(self, input, p):
         """p is the probability of dropping elements of input."""
@@ -288,13 +308,13 @@ class HiddenLayer(object):
         # get a scaling factor to keep expectations fixed after droppage
         drop_scale = 1. / (1. - p)
         # apply dropout mask and rescaling factor to the input
-        droppy_input = drop_scale * input * DCG(drop_mask)
+        droppy_input = drop_scale * input * drop_mask
         return droppy_input
 
     def _noisy_params(self, P, noise_lvl=0.):
         """Noisy weights, like convolving energy surface with a gaussian."""
-        P_nz = P + DCG(self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
-                dtype=theano.config.floatX))
+        P_nz = P + self.rng.normal(size=P.shape, avg=0.0, std=noise_lvl, \
+                dtype=theano.config.floatX)
         return P_nz
 
 ##############################################

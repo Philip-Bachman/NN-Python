@@ -41,7 +41,7 @@ def test_with_model_init():
     del Xte
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 300
+    batch_size = 200
     batch_reps = 1
 
     ############################################################
@@ -83,10 +83,10 @@ def test_with_model_init():
     #################
     # simple models #
     #################
-    p_writer = SimpleWriter(rnn_dim, obs_dim) # writer for decoder
-    q_reader = SimpleReader(obs_dim, rnn_dim) # reader for encoder
-    p_hi_given_sim1_dec = SimpleInfNet(rng, rnn_dim, h_dim)
-    q_hi_given_si_enc = SimpleInfNet(rng, rnn_dim, h_dim)
+    p_writer = SimpleWriter(rnn_dim, obs_dim, W_scale=0.01)
+    q_reader = SimpleReader(obs_dim, rnn_dim, W_scale=0.01)
+    p_hi_given_sim1_dec = SimpleInfNet(rng, rnn_dim, h_dim, W_scale=0.01)
+    q_hi_given_si_enc = SimpleInfNet(rng, rnn_dim, h_dim, W_scale=0.01)
 
     ################################################################
     # Define parameters for the MultiStageModel, and initialize it #
@@ -103,7 +103,7 @@ def test_with_model_init():
             z_dim=z_dim, h_dim=h_dim, \
             obs_dim=obs_dim, rnn_dim=rnn_dim, \
             mix_dim=mix_dim, read_dim=read_dim, \
-            ir_steps=5, params=msm_params)
+            ir_steps=5, init_scale=0.01, params=msm_params)
     obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
     obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
     MSM_TR.set_input_bias(-obs_mean)

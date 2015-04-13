@@ -16,7 +16,6 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
                       apply_mask, constFX, to_fX
-from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
@@ -43,10 +42,9 @@ class MultiStageModel(object):
         p_sip1_given_si_hi: InfNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
-        model_init_rnn: whether to use a model-based initial rnn state
+        model_init_mix: whether to use a model-based initial mix state
         obs_dim: dimension of the "observation" component of state
-        rnn_dim: dimension of the "RNN" component of state
-        z_dim: dimension of the "initial" latent space
+        z_dim: dimension of the "mixture" latent space
         h_dim: dimension of the "primary" latent space
         ir_steps: number of "iterative refinement" steps to perform
         params: REQUIRED PARAMS SHOWN BELOW
@@ -57,14 +55,14 @@ class MultiStageModel(object):
     def __init__(self, rng=None, x_in=None, x_out=None, \
             p_hi_given_si=None, p_sip1_given_si_hi=None, \
             q_z_given_x=None, q_hi_given_x_si=None, \
-            obs_dim=None, rnn_dim=None, z_dim=None, h_dim=None, \
-            model_init_rnn=True, ir_steps=2, \
+            obs_dim=None, z_dim=None, h_dim=None, \
+            model_init_mix=True, ir_steps=2, \
             params=None, shared_param_dicts=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
 
         # decide whether to initialize from a model or from a "constant"
-        self.model_init_rnn = model_init_rnn
+        self.model_init_mix = model_init_mix
 
         # grab the user-provided parameters
         self.params = params
@@ -87,7 +85,6 @@ class MultiStageModel(object):
 
         # record the dimensions of various spaces relevant to this model
         self.obs_dim = obs_dim
-        self.rnn_dim = rnn_dim
         self.z_dim = z_dim
         self.h_dim = h_dim
         self.ir_steps = ir_steps
@@ -112,27 +109,18 @@ class MultiStageModel(object):
         self.set_l1l2_weight(1.0)
 
         if self.shared_param_dicts is None:
-            # initialize weights and biases for the z -> s0_rnn transform
-            w_mix = to_fX( npr.normal(0.0, 0.1, (self.z_dim, self.rnn_dim)) )
-            b_mix = to_fX( np.zeros((self.rnn_dim,)) )
             b_input = to_fX( np.zeros((self.obs_dim,)) )
             b_obs = to_fX( np.zeros((self.obs_dim,)) )
-            self.W_mix = theano.shared(value=w_mix, name='msm_W_mix')
-            self.b_mix = theano.shared(value=b_mix, name='msm_b_mix')
             self.b_input = theano.shared(value=b_input, name='msm_b_input')
             self.b_obs = theano.shared(value=b_obs, name='msm_b_obs')
             self.obs_logvar = theano.shared(value=zero_ary, name='msm_obs_logvar')
             self.bounded_logvar = constFX(8.0) * \
                     T.tanh(constFX(1.0/8.0) * self.obs_logvar)
             self.shared_param_dicts = {}
-            self.shared_param_dicts['W_mix'] = self.W_mix
-            self.shared_param_dicts['b_mix'] = self.b_mix
             self.shared_param_dicts['b_input'] = self.b_input
             self.shared_param_dicts['b_obs'] = self.b_obs
             self.shared_param_dicts['obs_logvar'] = self.obs_logvar
         else:
-            self.W_mix = self.shared_param_dicts['W_mix']
-            self.b_mix = self.shared_param_dicts['b_mix']
             self.b_input = self.shared_param_dicts['b_input']
             self.b_obs = self.shared_param_dicts['b_obs']
             self.obs_logvar = self.shared_param_dicts['obs_logvar']
@@ -150,9 +138,9 @@ class MultiStageModel(object):
         # Setup self.z and self.s0. #
         #############################
         print("Building computation graph...")
-        rnn_scale = 0.0
-        if self.model_init_rnn: # initialize rnn state from generative model
-            rnn_scale = 1.0
+        mix_scale = 0.0
+        if self.model_init_mix: # initialize mix state from generative model
+            mix_scale = 1.0
         # sample the initial latent variables
         self.q_z_given_x = q_z_given_x
         x_input = self.x_in + self.b_input
@@ -160,10 +148,11 @@ class MultiStageModel(object):
                 do_samples=False)
         self.z = sample_transform(self.z_mean, self.z_logvar, self.z_zmuv)
         # initialize the "RNN" part of state
-        _s0_rnn_model = T.dot(self.z, self.W_mix) + self.b_mix
-        _s0_rnn_const = (constFX(0.0) * T.dot(self.z, self.W_mix)) + self.b_mix
-        self.s0_rnn = T.tanh( ((constFX(rnn_scale) * _s0_rnn_model) + \
-                (constFX(1.0 - rnn_scale) * _s0_rnn_const)) )
+        _s0_mix_model = self.z
+        _s0_mix_const = T.zeros_like(self.z) + \
+                self.q_z_given_x.mu_layers[-1].b
+        self.s0_mix = (constFX(mix_scale) * _s0_mix_model) + \
+                (constFX(1.0 - mix_scale) * _s0_mix_const)
         # initialize the "observation" part of state
         self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
 
@@ -181,46 +170,47 @@ class MultiStageModel(object):
         self.q_hi_given_x_si = q_hi_given_x_si
 
         # function to iterate over in scan
-        def ir_step_func(hi_zmuv, sim1_obs, sim1_rnn):
+        def ir_step_func(hi_zmuv, sim1_obs, sim1_mix):
             # get transformed version of observation state
             sim1_obs_trans = self.obs_transform(sim1_obs)
             # get conditional latent step distribution from generator policy
             hi_p_mean, hi_p_logvar = self.p_hi_given_si.apply( \
-                    T.horizontal_stack(sim1_obs_trans, sim1_rnn), \
+                    T.horizontal_stack(sim1_obs_trans, sim1_mix), \
                     do_samples=False)
             hi_p = sample_transform(hi_p_mean, hi_p_logvar, hi_zmuv)
             # get conditional latent step distribution from guide policy
             grad_ll = self.x_out - sim1_obs_trans
             hi_q_mean, hi_q_logvar = self.q_hi_given_x_si.apply( \
-                    T.horizontal_stack(grad_ll, sim1_obs_trans, sim1_rnn), \
+                    T.horizontal_stack(grad_ll, self.x_out, sim1_mix), \
                     do_samples=False)
             hi_q = sample_transform(hi_q_mean, hi_q_logvar, hi_zmuv)
             # get latent step switchable between generator/guide
             hi = ((self.train_switch[0] * hi_q) + \
                     ((constFX(1.0) - self.train_switch[0]) * hi_p))
 
+            # MOD TAG 1
             # convert the latent step into a step in observation space
             si_step, r0 = p_sip1_given_si_hi.apply(hi, do_samples=False)
             # si_step, r0 = p_sip1_given_si_hi.apply( \
-            #         T.horizontal_stack(hi, si_rnn), do_samples=False)
+            #         T.horizontal_stack(hi, si_mix), do_samples=False)
 
-            # update observation and rnn state based on the sampled step
+            # update observation and mix state based on the sampled step
             si_obs = sim1_obs + si_step
-            si_rnn = constFX(1.0) * sim1_rnn
+            si_mix = constFX(1.0) * sim1_mix
             # compute cost components for this step
             nlli = self.log_prob_func(self.x_out, self.obs_transform(si_obs))
             kldi_cond = gaussian_kld(hi_q_mean, hi_q_logvar, \
                     hi_p_mean, hi_p_logvar)
             kldi_glob = gaussian_kld(hi_p_mean, hi_p_logvar, 0.0, 0.0)
-            return si_obs, si_rnn, nlli, kldi_cond, kldi_glob
+            return si_obs, si_mix, nlli, kldi_cond, kldi_glob
 
-        init_values = [self.s0_obs, self.s0_rnn, None, None, None]
+        init_values = [self.s0_obs, self.s0_mix, None, None, None]
 
         self.scan_results, self.scan_updates = theano.scan(ir_step_func, \
                 outputs_info=init_values, sequences=self.hi_zmuv)
 
         self.si_obs = self.scan_results[0]
-        self.si_rnn = self.scan_results[1]
+        self.si_mix = self.scan_results[1]
         self.nlli = self.scan_results[2]
         self.kldi_cond = self.scan_results[3]
         self.kldi_glob = self.scan_results[4]
@@ -257,8 +247,7 @@ class MultiStageModel(object):
         self.group_1_params.extend(self.q_z_given_x.mlp_params)
         self.group_1_params.extend(self.q_hi_given_x_si.mlp_params)
         # Grab all of the "optimizable" parameters in "group 2"
-        self.group_2_params = [self.W_mix, self.b_mix, \
-                               self.b_obs, self.obs_logvar]
+        self.group_2_params = [self.b_obs, self.obs_logvar]
         self.group_2_params.extend(self.p_hi_given_si.mlp_params)
         self.group_2_params.extend(self.p_sip1_given_si_hi.mlp_params)
         # Make a joint list of parameters group 1/2
@@ -421,7 +410,7 @@ class MultiStageModel(object):
 
     def set_obs_bias(self, new_obs_bias=None):
         """
-        Set initial bias on the obs part of state, but not the rnn part.
+        Set initial bias on the obs part of state, but not the mix part.
         """
         assert(new_obs_bias.shape[0] == self.obs_dim)
         new_bias = np.zeros((self.obs_dim,)) + new_obs_bias
@@ -433,8 +422,8 @@ class MultiStageModel(object):
         Check that inputs/outputs of the various models will pipe together.
         """
         obs_dim = self.obs_dim
-        rnn_dim = self.rnn_dim
-        jnt_dim = obs_dim + rnn_dim
+        mix_dim = self.z_dim
+        jnt_dim = obs_dim + mix_dim
         z_dim = self.z_dim
         h_dim = self.h_dim
         # check shape of initialization model
@@ -449,7 +438,7 @@ class MultiStageModel(object):
         assert(self.p_sip1_given_si_hi.mu_layers[-1].out_dim == obs_dim)
 
         # MOD TAG 2
-        #assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == (h_dim + rnn_dim))
+        #assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == (h_dim + mix_dim))
         assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == h_dim)
 
         return
@@ -480,7 +469,7 @@ class MultiStageModel(object):
         def raw_cost_computer(XI, XO):
             z_zmuv = to_fX( npr.randn(XI.shape[0], self.z_dim) )
             hi_zmuv = to_fX( npr.randn(self.ir_steps, XI.shape[0], self.h_dim) )
-            s0_rnn = to_fX( np.zeros((XI.shape[0],self.z_dim)) )
+            s0_mix = to_fX( np.zeros((XI.shape[0],self.z_dim)) )
             _all_costs = cost_func(XI, XO, z_zmuv, hi_zmuv)
             _init_nlls = _all_costs[-2]
             _init_klds = _all_costs[-1]

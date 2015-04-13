@@ -16,9 +16,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
                       apply_mask, constFX, to_fX, DCG
-from GenNet import GenNet
 from InfNet import InfNet
-from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 from MSDUtils import SimpleLSTM, SimpleMLP, SimpleReader, SimpleWriter
@@ -67,7 +65,7 @@ class MultiStageDRAW(object):
             p_writer=None, q_reader=None, \
             z_dim=None, h_dim=None, \
             obs_dim=None, rnn_dim=None, mix_dim=None, read_dim=None, \
-            ir_steps=2, params=None):
+            ir_steps=2, init_scale=0.01, params=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
 
@@ -133,17 +131,22 @@ class MultiStageDRAW(object):
 
         # initialize MLP for: z -> s_mix, s0_enc, c0_enc, s0_dec, c0_dec
         d = [self.z_dim, (self.mix_dim + 4*self.rnn_dim)]
-        self.mlp_mix = SimpleMLP(d[0], d[1], name='msm_mlp_mix')
+        self.mlp_mix = SimpleMLP(d[0], d[1], W_scale=2*init_scale, \
+                name='msm_mlp_mix')
         # initialize MLP for: s_mix, read, sim1_dec -> xi_enc
         d = [(self.mix_dim + self.read_dim + self.rnn_dim), 4*self.rnn_dim]
-        self.q_mlp_xi = SimpleMLP(d[0], d[1], name='msm_q_mlp_xi')
+        self.q_mlp_xi = SimpleMLP(d[0], d[1], W_scale=init_scale, \
+                name='msm_q_mlp_xi')
         # initialize MLP for: s_mix, hi -> xi_dec
         d = [(self.mix_dim + self.h_dim), 4*self.rnn_dim]
-        self.p_mlp_xi = SimpleMLP(d[0], d[1], name='msm_p_mlp_xi')
+        self.p_mlp_xi = SimpleMLP(d[0], d[1], W_scale=init_scale, \
+                name='msm_p_mlp_xi')
         # initialize LSTM for encoder and decoder (assume same size)
         d = [4*self.rnn_dim, self.rnn_dim]
-        self.q_lstm = SimpleLSTM(d[0], d[1], name='msm_q_lstm')
-        self.p_lstm = SimpleLSTM(d[0], d[1], name='msm_p_lstm')
+        self.q_lstm = SimpleLSTM(d[0], d[1], W_scale=init_scale, \
+                name='msm_q_lstm')
+        self.p_lstm = SimpleLSTM(d[0], d[1], W_scale=init_scale, \
+                name='msm_p_lstm')
 
         # setup a function for computing reconstruction log likelihood
         if self.x_type == 'bernoulli':
@@ -170,15 +173,15 @@ class MultiStageDRAW(object):
         # initialize the encoder/decoder state
         _init_model = self.mlp_mix.apply(self.z)
         _init_const = (constFX(0.0) * _init_model) + self.mlp_mix.get_bias()
-        _init_state = T.tanh( ((constFX(i_scale) * _init_model) + \
-                (constFX(1.0 - i_scale) * _init_const)) )
+        _init_state = ((constFX(i_scale) * _init_model) + \
+                (constFX(1.0 - i_scale) * _init_const))
         # get initial mixture, encoder, and decoder states
         md, rd = self.mix_dim, self.rnn_dim
         self.s_mix = _init_state[:,0:md]
-        self.s0_enc = _init_state[:,md:(md + (1*rd))]
-        self.c0_enc = _init_state[:,(md + (1*rd)):(md + (2*rd))]
-        self.s0_dec = _init_state[:,(md + (2*rd)):(md + (3*rd))]
-        self.c0_dec = _init_state[:,(md + (3*rd)):(md + (4*rd))]
+        self.s0_enc = T.tanh(_init_state[:,md:(md + (1*rd))])
+        self.c0_enc = T.tanh(_init_state[:,(md + (1*rd)):(md + (2*rd))])
+        self.s0_dec = T.tanh(_init_state[:,(md + (2*rd)):(md + (3*rd))])
+        self.c0_dec = T.tanh(_init_state[:,(md + (3*rd)):(md + (4*rd))])
 
         # initialize the "constructed observation" state
         self.s0_obs = T.zeros_like(self.x_in) + self.b_obs

@@ -180,7 +180,7 @@ class PeaNet(object):
                             name=pnl_name, W_scale=i_scale)
                     proto_net.append(new_layer)
                     self.shared_param_dicts.append( \
-                            {'W': new_layer.W, 'b': new_layer.b})
+                            new_layer.shared_param_dicts)
                 else:
                     ##################################################
                     # Initialize a layer with some shared parameters #
@@ -191,6 +191,7 @@ class PeaNet(object):
                             drop_rate=0., input_noise=0., bias_noise=0., \
                             in_dim=in_dim, out_dim=out_dim, \
                             W=init_params['W'], b=init_params['b'], \
+                            b_in=init_params['b_in'], s_in=init_params['s_in'], \
                             name=pnl_name, W_scale=i_scale)
                     proto_net.append(new_layer)
                 next_input = proto_net[-1].output
@@ -233,6 +234,7 @@ class PeaNet(object):
                         pool_size=pool_size, drop_rate=drop_prob, \
                         input_noise=layer_in, bias_noise=bias_noise, \
                         W=proto_layer.W, b=proto_layer.b, \
+                        b_in=proto_layer.b_in, s_in=proto_layer.s_in, \
                         in_dim=in_dim, out_dim=out_dim))
                 next_input = spawn_net[-1].output
                 layer_num = layer_num + 1
@@ -249,14 +251,6 @@ class PeaNet(object):
                 self.proto_params.extend(pl.params)
                 if (i == (len(pn) - 1)):
                     self.class_params.extend(pl.params)
-
-        # Build loss functions for denoising autoencoder training. This sets up
-        # a cost function for each possible layer, as determined by the maximum
-        # number of layers in any proto-network. The DAE cost for layer i will
-        # be the mean DAE cost over all i'th layers in the proto-networks.
-        self.dae_lam_l1 = theano.shared( \
-            value=np.asarray([0.2]).astype(theano.config.floatX))
-        self._construct_dae_layers(rng, lam_l1=self.dae_lam_l1, nz_lvl=0.25)
 
         # create symbolic "hooks" for observing the output of this network,
         # either without perturbations or subject to perturbations
@@ -318,55 +312,6 @@ class PeaNet(object):
             x2 = self.spawn_nets[1][-1].linear_output
             ent_loss = (ent_fun(x1) + ent_fun(x2)) / 2.0
         return ent_loss
-
-    def _construct_dae_layers(self, rng, lam_l1=None, nz_lvl=0.25):
-        """
-        Build cost functions for training DAEs defined for all hidden layers
-        of the proto-networks making up this generalized ensemble. That is,
-        construct a DAE for every proto-layer that isn't a classification
-        layer. Inputs to each DAE are taken from the clean and post-fuzzed
-        inputs of the spawn-net layer for the 'first' spawn-net spawned from
-        any given proto-net.
-        """
-        self.dae_params = []
-        self.dae_costs = []
-        ACT_FUN = lambda x: relu_actfun(x)
-        # The number of hidden layers in each proto-network is depth-1, where
-        # depth is the total number of layers in the network. This is because
-        # we count the output layer as well as the hidden layers.
-        for d in range(self.max_proto_depth - 1):
-            d_params = []
-            d_costs = []
-            for pn_key in range(len(self.proto_nets)):
-                # Get the "first" spawn-net spawned from this proto-net
-                sn_key = self.proto_keys.index(pn_key)
-                sn = self.spawn_nets[sn_key]
-                if (d < (len(sn) - 1)):
-                    # Construct a DAE for this proto/spawn-net hidden layer
-                    W_sn = sn[d].W
-                    b_sn = sn[d].b
-                    ci_sn = sn[d].clean_input # the input to be reconstructed
-                    fi_sn = sn[d].fuzzy_input # the input to reconstruct from
-                    vis_dim = sn[d].in_dim
-                    hid_dim = sn[d].filt_count
-                    # Construct the DAE layer object
-                    dae_layer = DAELayer(rng=rng, \
-                            clean_input=ci_sn, \
-                            fuzzy_input=fi_sn, \
-                            in_dim=vis_dim, out_dim=hid_dim, \
-                            activation=ACT_FUN, \
-                            input_noise=nz_lvl, \
-                            W=W_sn, b_h=b_sn, b_v=None)
-                    d_params.extend(dae_layer.params)
-                    d_costs.append(dae_layer.compute_costs(lam_l1))
-            # Record the set of all DAE params to-be-optimized at depth d
-            self.dae_params.append(d_params)
-            # Record the sum of reconstruction costs for DAEs at depth d (in
-            # self.dae_costs[d][0]) and the sum of sparse regularization costs
-            # for DAEs at depth d (in self.dae_costs[d][1]).
-            self.dae_costs.append([T.sum([c[0] for c in d_costs]), \
-                    T.sum([c[1] for c in d_costs])])
-        return
 
     def _construct_sample_posterior(self):
         """
