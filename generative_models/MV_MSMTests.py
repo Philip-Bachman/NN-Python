@@ -108,8 +108,8 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
-    params['init_scale'] = 1.4 * init_scale
+    params['activation'] = relu_actfun
+    params['init_scale'] = 1.0
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -155,33 +155,24 @@ def test_with_model_init():
             q_hi_given_x_si=q_hi_given_x_si, \
             obs_dim=obs_dim, z_dim=z_dim, h_dim=h_dim, \
             model_init_mix=True, ir_steps=4, params=msm_params)
-    obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
-    obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
-    MSM_TR.set_input_bias(-obs_mean)
-    MSM_TR.set_obs_bias(0.2*obs_mean_logit)
     MSM_VA = None
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
-    out_file = open("MU_RESULTS.txt", 'wb')
+    out_file = open("MV_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.001
     momentum = 0.5
     tr_idx = np.arange(batch_size) + tr_samples
     for i in range(500000):
-        scale = min(1.0, ((i+1) / 5000.0))
-        l1l2_weight = min(1.0, ((i+1) / 2500.0))
+        scale = min(1.0, ((i+1) / 2500.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.95
-        if (i > 150000):
+        if (i > 50000):
             momentum = 0.90
-        elif (i > 100000):
-            momentum = 0.70
-        elif (i > 50000):
-            momentum = 0.60
         else:
-            momentum = 0.50
+            momentum = 0.66
         # get the indices of training samples for this batch update
         tr_idx += batch_size
         if (np.max(tr_idx) >= tr_samples):
@@ -225,9 +216,8 @@ def test_with_model_init():
             Xb_tr = Xb_tr.astype(theano.config.floatX)
         # set sgd and objective function hyperparams for this update
         MSM.set_sgd_params(lr_1=lr_1, lr_2=lr_2, \
-                mom_1=(scale*momentum), mom_2=0.99)
+                mom_1=(scale*momentum), mom_2=0.98)
         MSM.set_train_switch(1.0)
-        MSM.set_l1l2_weight(l1l2_weight)
         MSM.set_lam_nll(lam_nll=1.0)
         MSM.set_lam_kld(lam_kld_1=lam_kld, lam_kld_2=lam_kld)
         MSM.set_lam_l2w(1e-4)
@@ -262,7 +252,7 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MU_B_SAMPLES_IND_b{0:d}.png".format(i)
+            file_name = "MV_B_SAMPLES_IND_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # draw some conditional random samples from the model
             samp_count = 200
@@ -277,7 +267,7 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MU_B_SAMPLES_CND_GD_b{0:d}.png".format(i)
+            file_name = "MV_B_SAMPLES_CND_GD_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # draw some conditional random samples from the model
             model_samps = MSM.sample_from_input(Xs, guided_decoding=False)
@@ -289,41 +279,41 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MU_B_SAMPLES_CND_UD_b{0:d}.png".format(i)
+            file_name = "MV_B_SAMPLES_CND_UD_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # visualize some important weights in the model
-            # file_name = "MU_A_INF_1_WEIGHTS_b{0:d}.png".format(i)
+            # file_name = "MV_A_INF_1_WEIGHTS_b{0:d}.png".format(i)
             # W = MSM.inf_1_weights.get_value(borrow=False).T
             # utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            # file_name = "MU_A_INF_2_WEIGHTS_b{0:d}.png".format(i)
+            # file_name = "MV_A_INF_2_WEIGHTS_b{0:d}.png".format(i)
             # W = MSM.inf_2_weights.get_value(borrow=False).T
             # utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            # file_name = "MU_A_GEN_GEN_WEIGHTS_b{0:d}.png".format(i)
+            # file_name = "MV_A_GEN_GEN_WEIGHTS_b{0:d}.png".format(i)
             # W = MSM.gen_gen_weights.get_value(borrow=False)
             # utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            file_name = "MU_A_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MV_A_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.gen_inf_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             raw_costs = MSM.compute_raw_costs(Xb_va, Xb_va)
             init_nll, init_kld, cond_kld, glob_kld, step_nll, step_kld = raw_costs
             step_nll[0] = step_nll[1] # scale of first NLL is overwhemling
-            file_name = "MU_B_H0_KLDS_b{0:d}.png".format(i)
+            file_name = "MV_B_H0_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(init_kld.shape[1]), \
                     np.mean(init_kld, axis=0), file_name)
-            file_name = "MU_B_HI_COND_KLDS_b{0:d}.png".format(i)
+            file_name = "MV_B_HI_COND_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(cond_kld.shape[1]), \
                     np.mean(cond_kld, axis=0), file_name)
-            file_name = "MU_B_HI_GLOB_KLDS_b{0:d}.png".format(i)
+            file_name = "MV_B_HI_GLOB_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(glob_kld.shape[1]), \
                     np.mean(glob_kld, axis=0), file_name)
-            file_name = "MU_B_STEP_NLLS_b{0:d}.png".format(i)
+            file_name = "MV_B_STEP_NLLS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(step_nll.shape[0]), \
                     step_nll, file_name)
-            file_name = "MU_B_STEP_KLDS_b{0:d}.png".format(i)
+            file_name = "MV_B_STEP_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(step_kld.shape[0]), \
                     step_kld, file_name)
-            file_name = "MU_B_STEP_VFES_b{0:d}.png".format(i)
+            file_name = "MV_B_STEP_VFES_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(step_kld.shape[0]).ravel(), \
                     (np.cumsum(step_kld.ravel())+step_nll.ravel()), file_name)
             #Xb_tr = binarize_data(Xtr.take(tr_idx, axis=0))
@@ -339,7 +329,7 @@ def test_with_model_init():
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
-            # file_name = "MU_B_FREE_ENERGY_TR_b{0:d}.png".format(i)
+            # file_name = "MV_B_FREE_ENERGY_TR_b{0:d}.png".format(i)
             # utils.plot_scatter(fe_terms[1], fe_terms[0], file_name, \
             #         x_label='Posterior KLd', y_label='Negative Log-likelihood')
             # compute free-energy terms on validation samples
@@ -352,7 +342,7 @@ def test_with_model_init():
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
-            # file_name = "MU_B_FREE_ENERGY_VA_b{0:d}.png".format(i)
+            # file_name = "MV_B_FREE_ENERGY_VA_b{0:d}.png".format(i)
             # utils.plot_scatter(fe_terms[1], fe_terms[0], file_name, \
             #         x_label='Posterior KLd', y_label='Negative Log-likelihood')
 

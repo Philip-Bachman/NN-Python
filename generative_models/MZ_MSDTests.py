@@ -104,10 +104,6 @@ def test_with_model_init():
             obs_dim=obs_dim, rnn_dim=rnn_dim, \
             mix_dim=mix_dim, read_dim=read_dim, \
             ir_steps=5, init_scale=0.01, params=msm_params)
-    obs_mean = (0.9 * np.mean(Xtr, axis=0)) + 0.05
-    obs_mean_logit = np.log(obs_mean / (1.0 - obs_mean))
-    MSM_TR.set_input_bias(-obs_mean)
-    MSM_TR.set_obs_bias(0.2*obs_mean_logit)
     MSM_VA = None
 
     ################################################################

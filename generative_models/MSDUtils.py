@@ -29,6 +29,9 @@ class SimpleLSTM(object):
         # Set some basic layer properties
         self.in_dim = in_dim
         self.hid_dim = hid_dim
+        # basic LSTM uses linear functions of previous "exposed" state and
+        # the current input for computing the input, output, and forget gates
+        # as well as the current "proposed memory adjustment".
         self.joint_in_dim = self.in_dim + self.hid_dim
         self.joint_out_dim = 4 * self.hid_dim
 
@@ -53,6 +56,7 @@ class SimpleLSTM(object):
 
         # Conveniently package layer parameters
         self.mlp_params = [self.W_all, self.b_all]
+        self.shared_param_dicts = {'W': self.W_all, 'b': self.b_all}
         # Layer construction complete...
         return
 
@@ -65,17 +69,18 @@ class SimpleLSTM(object):
         # merge exogenous (i.e. x_t) and endogenous (i.e. h_tm1) inputs
         joint_input = T.horizontal_stack(x_t, h_tm1)
         joint_output = T.dot(joint_input, self.W_all) + self.b_all
+        jo_T = joint_output.T
         # compute transformed input to the layer
-        g_t = T.tanh( joint_output[:,0:(1*hd)] )
+        g_t = T.tanh( jo_T[:,0:(1*hd)].T )
         # compute input gate
-        i_t = T.nnet.sigmoid( joint_output[:,(1*hd):(2*hd)] )
+        i_t = T.nnet.sigmoid( jo_T[:,(1*hd):(2*hd)].T )
         # compute forget gate
-        f_t = T.nnet.sigmoid( joint_output[:,(2*hd):(3*hd)] )
+        f_t = T.nnet.sigmoid( jo_T[:,(2*hd):(3*hd)].T )
         # compute output gate
-        o_t = T.nnet.sigmoid( joint_output[:,(3*hd):(4*hd)] )
-        # compute current memory state
+        o_t = T.nnet.sigmoid( jo_T[:,(3*hd):(4*hd)].T )
+        # compute updated memory state
         c_t = (f_t * c_tm1) + (i_t * g_t)
-        # compute current exposed state
+        # compute updated exposed state
         h_t = (o_t * T.tanh(c_t))
         return h_t, c_t
 

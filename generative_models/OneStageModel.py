@@ -137,7 +137,6 @@ class OneStageModel(object):
         # shared var momentum parameters for generator and inferencer
         self.mom_1 = theano.shared(value=zero_ary, name='osm_mom_1')
         self.mom_2 = theano.shared(value=zero_ary, name='osm_mom_2')
-        self.it_count = theano.shared(value=zero_ary, name='osm_it_count')
         # init parameters for controlling learning dynamics
         self.set_sgd_params()
         # init shared var for weighting nll of data given posterior sample
@@ -180,7 +179,7 @@ class OneStageModel(object):
         # Construct the updates for the generator and inferencer networks
         self.joint_updates = get_adam_updates(params=self.joint_params, \
                 grads=self.joint_grads, alpha=self.lr_1, \
-                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                beta1=self.mom_1, beta2=self.mom_2, \
                 mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
 
         # Construct a function for jointly training the generator/inferencer
@@ -240,21 +239,6 @@ class OneStageModel(object):
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_l2w
         self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
-        return
-
-    def set_output_bias(self, new_bias=None):
-        """
-        Set the output layer bias.
-        """
-        new_bias = new_bias.astype(theano.config.floatX)
-        self.p_x_given_z.mu_layers[-1].b.set_value(new_bias)
-        return
-
-    def set_input_bias(self, new_bias=None):
-        """
-        Set the input layer bias.
-        """
-        new_bias = new_bias.astype(theano.config.floatX)
         return
 
     def _construct_nll_costs(self):

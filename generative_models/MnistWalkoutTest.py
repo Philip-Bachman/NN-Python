@@ -176,10 +176,6 @@ def pretrain_osm(lam_kld=0.0):
             p_x_given_z=GN, q_z_given_x=IN, \
             x_dim=data_dim, z_dim=PRIOR_DIM, params=osm_params)
     OSM.set_lam_l2w(1e-5)
-    safe_mean = (0.9 * Xtr_mean) + 0.05
-    safe_mean_logit = np.log(safe_mean / (1.0 - safe_mean))
-    OSM.set_output_bias(safe_mean_logit)
-    OSM.set_input_bias(-Xtr_mean)
 
     ######################
     # BASIC VAE TRAINING #

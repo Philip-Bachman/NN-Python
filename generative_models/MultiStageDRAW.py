@@ -119,14 +119,9 @@ class MultiStageDRAW(object):
         # shared global prior -- e.g. zero mean and unit variance.
         self.kzg_weight = theano.shared(value=zero_ary, name='msm_kzg_weight')
         self.set_kzg_weight(0.1)
-        # this weight balances l1 vs. l2 penalty on posterior KLds
-        self.l1l2_weight = theano.shared(value=zero_ary, name='msm_l1l2_weight')
-        self.set_l1l2_weight(1.0)
 
         # setup trainable input/output bias parameters
-        b_input = to_fX( np.zeros((self.obs_dim,)) )
         b_obs = to_fX( np.zeros((self.obs_dim,)) )
-        self.b_input = theano.shared(value=b_input, name='msm_b_input')
         self.b_obs = theano.shared(value=b_obs, name='msm_b_obs')
 
         # initialize MLP for: z -> s_mix, s0_enc, c0_enc, s0_dec, c0_dec
@@ -134,15 +129,15 @@ class MultiStageDRAW(object):
         self.mlp_mix = SimpleMLP(d[0], d[1], W_scale=2*init_scale, \
                 name='msm_mlp_mix')
         # initialize MLP for: s_mix, read, sim1_dec -> xi_enc
-        d = [(self.mix_dim + self.read_dim + self.rnn_dim), 4*self.rnn_dim]
+        d = [(self.mix_dim + self.read_dim + self.rnn_dim), self.rnn_dim]
         self.q_mlp_xi = SimpleMLP(d[0], d[1], W_scale=init_scale, \
                 name='msm_q_mlp_xi')
         # initialize MLP for: s_mix, hi -> xi_dec
-        d = [(self.mix_dim + self.h_dim), 4*self.rnn_dim]
+        d = [(self.mix_dim + self.h_dim), self.rnn_dim]
         self.p_mlp_xi = SimpleMLP(d[0], d[1], W_scale=init_scale, \
                 name='msm_p_mlp_xi')
         # initialize LSTM for encoder and decoder (assume same size)
-        d = [4*self.rnn_dim, self.rnn_dim]
+        d = [self.rnn_dim, self.rnn_dim]
         self.q_lstm = SimpleLSTM(d[0], d[1], W_scale=init_scale, \
                 name='msm_q_lstm')
         self.p_lstm = SimpleLSTM(d[0], d[1], W_scale=init_scale, \
@@ -166,8 +161,7 @@ class MultiStageDRAW(object):
             i_scale = 1.0
         # sample the initial latent variables
         self.q_z_given_x = q_z_given_x
-        x_input = self.x_in + self.b_input
-        self.z_mean, self.z_logvar = self.q_z_given_x.apply(x_input, \
+        self.z_mean, self.z_logvar = self.q_z_given_x.apply(self.x_in, \
                 do_samples=False)
         self.z = sample_transform(self.z_mean, self.z_logvar, self.z_zmuv)
         # initialize the encoder/decoder state
@@ -277,7 +271,6 @@ class MultiStageDRAW(object):
         # shared var momentum parameters for generator and inferencer
         self.mom_1 = theano.shared(value=zero_ary, name='msm_mom_1')
         self.mom_2 = theano.shared(value=zero_ary, name='msm_mom_2')
-        self.it_count = theano.shared(value=zero_ary, name='msm_it_count')
         # init parameters for controlling learning dynamics
         self.set_sgd_params()
         # init shared var for weighting nll of data given posterior sample
@@ -298,7 +291,6 @@ class MultiStageDRAW(object):
         self.group_1_params.extend(self.q_mlp_xi.mlp_params)
         self.group_1_params.extend(self.q_reader.mlp_params)
         self.group_1_params.extend(self.q_lstm.mlp_params)
-        self.group_1_params.append(self.b_input)
         # Grab all of the "optimizable" parameters in the "decoder"
         self.group_2_params = []
         self.group_2_params.extend(self.p_hi_given_sim1_dec.mlp_params)
@@ -345,11 +337,11 @@ class MultiStageDRAW(object):
         # Construct the updates for the generator and inferencer networks
         self.group_1_updates = get_adam_updates(params=self.group_1_params, \
                 grads=self.joint_grads, alpha=self.lr_1, \
-                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                beta1=self.mom_1, beta2=self.mom_2, \
                 mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
         self.group_2_updates = get_adam_updates(params=self.group_2_params, \
                 grads=self.joint_grads, alpha=self.lr_2, \
-                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                beta1=self.mom_1, beta2=self.mom_2, \
                 mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
         self.joint_updates = OrderedDict()
         for k in self.group_1_updates:
@@ -441,32 +433,6 @@ class MultiStageDRAW(object):
         self.kzg_weight.set_value(to_fX(new_val))
         return
 
-    def set_l1l2_weight(self, l1l2_weight=1.0):
-        """
-        Set the weight for shaping penalty on posterior KLds.
-        """
-        assert((l1l2_weight >= 0.0) and (l1l2_weight <= 1.0))
-        zero_ary = np.zeros((1,))
-        new_val = zero_ary + l1l2_weight
-        self.l1l2_weight.set_value(to_fX(new_val))
-        return
-
-    def set_input_bias(self, new_bias=None):
-        """
-        Set the output layer bias.
-        """
-        new_bias = to_fX(new_bias)
-        return
-
-    def set_obs_bias(self, new_obs_bias=None):
-        """
-        Set initial bias on the obs part of state, but not the rnn part.
-        """
-        assert(new_obs_bias.shape[0] == self.obs_dim)
-        new_bias = np.zeros((self.obs_dim,)) + new_obs_bias
-        self.b_obs.set_value(to_fX(new_bias))
-        return
-
     def _construct_zmuv_samples(self, X, br):
         """
         Construct the necessary (symbolic) samples for computing through this
@@ -523,21 +489,10 @@ class MultiStageDRAW(object):
         """
         Construct the posterior KL-divergence part of cost to minimize.
         """
-        kld_hi_cond_l1 = self.kldi_cond
-        kld_hi_cond_l2 = self.kldi_cond**2.0
-        kld_hi_glob_l1 = self.kldi_glob
-        kld_hi_glob_l2 = self.kldi_glob**2.0
-        kld_hi_cond_all = (self.l1l2_weight[0] * kld_hi_cond_l1) + \
-                    ((constFX(1.0) - self.l1l2_weight[0]) * kld_hi_cond_l2)
-        kld_hi_glob_all = (self.l1l2_weight[0] * kld_hi_glob_l1) + \
-                    ((constFX(1.0) - self.l1l2_weight[0]) * kld_hi_glob_l2)
-        kld_hi_cond = T.sum(T.sum(kld_hi_cond_all, axis=0), axis=1)
-        kld_hi_glob = T.sum(T.sum(kld_hi_glob_all, axis=0), axis=1)
+        kld_hi_cond = T.sum(T.sum(self.kldi_cond, axis=0), axis=1)
+        kld_hi_glob = T.sum(T.sum(self.kldi_glob, axis=0), axis=1)
         # construct KLd cost for the distributions over z
-        kld_z_all = self.init_klds
-        kld_z_l1l2 = (self.l1l2_weight[0] * kld_z_all) + \
-                ((constFX(1.0) - self.l1l2_weight[0]) * kld_z_all**2.0)
-        kld_z = T.sum(kld_z_l1l2, axis=1)
+        kld_z = T.sum(self.init_klds, axis=1)
         return [kld_z, kld_hi_cond, kld_hi_glob]
 
     def _construct_reg_costs(self):
@@ -596,15 +551,12 @@ class MultiStageDRAW(object):
             old_lam_nll = self.lam_nll.get_value(borrow=False)
             old_lam_kld_1 = self.lam_kld_1.get_value(borrow=False)
             old_lam_kld_2 = self.lam_kld_2.get_value(borrow=False)
-            old_l1l2_weight = self.l1l2_weight.get_value(borrow=False)
             vfe_lam_nll = (0.0 * old_lam_nll) + 1.0
             vfe_lam_kld_1 = (0.0 * old_lam_kld_1) + 1.0
             vfe_lam_kld_2 = (0.0 * old_lam_kld_2) + 1.0
-            vfe_l1l2_weight = (0.0 * old_l1l2_weight) + 1.0
             self.lam_nll.set_value(vfe_lam_nll)
             self.lam_kld_1.set_value(vfe_lam_kld_1)
             self.lam_kld_2.set_value(vfe_lam_kld_2)
-            self.l1l2_weight.set_value(vfe_l1l2_weight)
             # compute a multi-sample estimate of variational free-energy
             nll_sum = np.zeros((XI.shape[0],))
             kld_sum = np.zeros((XI.shape[0],))
@@ -618,7 +570,6 @@ class MultiStageDRAW(object):
             self.lam_nll.set_value(old_lam_nll)
             self.lam_kld_1.set_value(old_lam_kld_1)
             self.lam_kld_2.set_value(old_lam_kld_2)
-            self.l1l2_weight.set_value(old_l1l2_weight)
             return [mean_nll, mean_kld]
         return fe_term_estimator
 

@@ -85,7 +85,7 @@ def norm_clip(dW, max_l2_norm=10.0):
     return dW_clipped
 
 def get_adam_updates(params=None, grads=None, \
-        alpha=None, beta1=None, beta2=None, it_count=None, \
+        alpha=None, beta1=None, beta2=None, \
         mom2_init=1e-3, smoothing=1e-6, max_grad_norm=10000.0):
     """
     Get the Theano updates to perform ADAM optimization of the shared-var
@@ -98,16 +98,18 @@ def get_adam_updates(params=None, grads=None, \
 
     # make an OrderedDict to hold the updates
     updates = OrderedDict()
-
-    # update the iteration counter
-    updates[it_count] = it_count + 1.
-    
-    # apply a bias correction factor to the learning rate
-    fix1 = 1. - beta1[0]**(it_count[0] + 1.)
-    fix2 = 1. - beta2[0]**(it_count[0] + 1.)
-    lr_t = alpha[0] * (T.sqrt(fix2) / fix1)
     
     for p in params:
+        # initialize update the iteration counter
+        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+        it_count = theano.shared(value=zero_ary)
+        it_count_new = it_count + 1.
+
+        # apply a bias correction factor to the learning rate
+        fix1 = 1. - beta1[0]**(it_count[0] + 1.)
+        fix2 = 1. - beta2[0]**(it_count[0] + 1.)
+        lr_t = alpha[0] * (T.sqrt(fix2) / fix1)
+
         # get gradient for parameter p
         grad_p = norm_clip(grads[p], max_grad_norm)
 
@@ -123,13 +125,15 @@ def get_adam_updates(params=None, grads=None, \
         
         # compute the effective gradient
         effgrad = mom1_new / (T.sqrt(mom2_new) + smoothing)
-        #clipped_grad = norm_clip(effgrad, max_grad_norm)
         
         # do update
         p_new = p - (lr_t * effgrad)
             
-        # apply update
+        # apply updates
         updates[p] = p_new
+        updates[mom1] = mom1_new
+        updates[mom2] = mom2_new
+        updates[it_count] = it_count_new
         
     return updates
 
@@ -150,7 +154,7 @@ def get_adadelta_updates(params=None, grads=None, \
     
     for p in params:
         # get gradient for parameter p
-        grad_p = grads[p]
+        grad_p = norm_clip(grads[p], max_grad_norm)
 
         # initialize squared gradient accumulator
         mom_ary = (0.0 * p.get_value(borrow=False)) + 1.0
@@ -161,12 +165,12 @@ def get_adadelta_updates(params=None, grads=None, \
         
         # compute the effective gradient
         effgrad = grad_p / (T.sqrt(mom1_new) + 1e-6)
-        clipped_grad = norm_clip(effgrad, max_grad_norm)
         
         # do update
         p_new = p - (lr_t * clipped_grad)
             
         # apply update
         updates[p] = p_new
+        updates[mom1] = mom1_new
         
     return updates

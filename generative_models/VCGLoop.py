@@ -228,7 +228,6 @@ class VCGLoop(object):
         # shared var momentum parameters for all networks
         self.mom_1 = theano.shared(value=zero_ary, name='vcg_mom_1')
         self.mom_2 = theano.shared(value=zero_ary, name='vcg_mom_2')
-        self.it_count = theano.shared(value=zero_ary, name='vcg_it_count')
         # shared var weights for adversarial classification objective
         self.dw_dn = theano.shared(value=zero_ary, name='vcg_dw_dn')
         self.dw_gn = theano.shared(value=zero_ary, name='vcg_dw_gn')
@@ -314,15 +313,15 @@ class VCGLoop(object):
         # own learning rates, which lets you turn their learning on/off.
         self.dn_updates = get_adam_updates(params=self.dn_params, \
                 grads=self.joint_grads, alpha=self.lr_dn, \
-                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                beta1=self.mom_1, beta2=self.mom_2, \
                 mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
         self.gn_updates = get_adam_updates(params=self.gn_params, \
                 grads=self.joint_grads, alpha=self.lr_gn, \
-                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                beta1=self.mom_1, beta2=self.mom_2, \
                 mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
         self.in_updates = get_adam_updates(params=self.in_params, \
                 grads=self.joint_grads, alpha=self.lr_in, \
-                beta1=self.mom_1, beta2=self.mom_2, it_count=self.it_count, \
+                beta1=self.mom_1, beta2=self.mom_2, \
                 mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
 
         # bag up all the updates required for training
