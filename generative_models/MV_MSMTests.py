@@ -12,7 +12,7 @@ import theano.tensor as T
 
 # phil's sweetness
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
-from NetLayers import relu_actfun, softplus_actfun, \
+from NetLayers import relu_actfun, softplus_actfun, tanh_actfun, \
                       apply_mask, binarize_data, row_shuffle
 from InfNet import InfNet
 from MultiStageModel import MultiStageModel
@@ -39,8 +39,8 @@ def test_with_model_init():
     del Xte
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 200
-    batch_reps = 5
+    batch_size = 250
+    batch_reps = 1
 
 
     ############################################################
@@ -51,7 +51,7 @@ def test_with_model_init():
     h_dim = 100
     mix_dim = z_dim
     jnt_dim = obs_dim + mix_dim
-    init_scale = 0.9
+    init_scale = 1.0
     
     x_type = 'bernoulli'
 
@@ -68,7 +68,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
+    params['activation'] = tanh_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -78,17 +78,17 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     p_hi_given_si = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    p_hi_given_si.init_biases(0.2)
+    p_hi_given_si.init_biases(0.0)
     ######################
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [h_dim, 500, 500]
+    shared_config = [(h_dim + mix_dim), 500, 500]
     top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
+    params['activation'] = tanh_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -98,7 +98,7 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     p_sip1_given_si_hi = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    p_sip1_given_si_hi.init_biases(0.2)
+    p_sip1_given_si_hi.init_biases(0.0)
     ###############
     # q_z_given_x #
     ###############
@@ -108,8 +108,8 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = relu_actfun
-    params['init_scale'] = 1.0
+    params['activation'] = tanh_actfun
+    params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
@@ -118,7 +118,7 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     q_z_given_x = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    q_z_given_x.init_biases(0.2)
+    q_z_given_x.init_biases(0.0)
     ###################
     # q_hi_given_x_si #
     ###################
@@ -128,7 +128,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
+    params['activation'] = tanh_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -138,7 +138,7 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     q_hi_given_x_si = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    q_hi_given_x_si.init_biases(0.2)
+    q_hi_given_x_si.init_biases(0.0)
 
 
     ################################################################
@@ -154,7 +154,7 @@ def test_with_model_init():
             q_z_given_x=q_z_given_x, \
             q_hi_given_x_si=q_hi_given_x_si, \
             obs_dim=obs_dim, z_dim=z_dim, h_dim=h_dim, \
-            model_init_mix=True, ir_steps=4, params=msm_params)
+            model_init_mix=True, ir_steps=2, params=msm_params)
     MSM_VA = None
 
     ################################################################
@@ -172,56 +172,28 @@ def test_with_model_init():
         if (i > 50000):
             momentum = 0.90
         else:
-            momentum = 0.66
+            momentum = 0.50
         # get the indices of training samples for this batch update
         tr_idx += batch_size
         if (np.max(tr_idx) >= tr_samples):
             # we finished an "epoch", so we rejumble the training set
             Xtr = row_shuffle(Xtr)
             tr_idx = np.arange(batch_size)
-        if ((i < 50000) or ((i % 50000) > 10005)):
-            # train on the training set
-            MSM = MSM_TR
-            MSM_VA = None
-            lr_1 = scale*learn_rate
-            lr_2 = scale*learn_rate
-            lam_kld = 1.0 #+ (scale * 0.25)
-            #Xb_tr = binarize_data(Xtr.take(tr_idx, axis=0))
-            Xb_tr = Xtr.take(tr_idx, axis=0)
-            Xb_tr = Xb_tr.astype(theano.config.floatX)
-        else:
-            # fine-tune forked variational posteriors on the validation set
-            if MSM_VA is None:
-                print("FORKING MSM FOR VALIDATION POSTERIOR TUNING...")
-                # created a forked-parameter clone of the MultiStageModel
-                mim_bool = MSM_TR.model_init_mix
-                ir_steps = MSM_TR.ir_steps
-                q_z_given_x_va = q_z_given_x.forked_param_clone(rng=rng, Xd=x_in_sym)
-                q_hi_given_x_si_va = q_hi_given_x_si.forked_param_clone(rng=rng, Xd=x_in_sym)
-                MSM_VA = MultiStageModel(rng=rng, x_in=x_in_sym, x_out=x_out_sym, \
-                        p_hi_given_si=p_hi_given_si, \
-                        p_sip1_given_si_hi=p_sip1_given_si_hi, \
-                        q_z_given_x=q_z_given_x, \
-                        q_hi_given_x_si=q_hi_given_x_si, \
-                        obs_dim=obs_dim, z_dim=z_dim, h_dim=h_dim, \
-                        model_init_mix=mim_bool, ir_steps=ir_steps, \
-                        params=msm_params, shared_param_dicts=MSM_TR.shared_param_dicts)
-            MSM = MSM_VA
-            lr_1 = 0.001
-            lr_2 = 0.0
-            lam_kld = 1.0
-            va_idx = npr.randint(low=0,high=va_samples,size=(batch_size,))
-            #Xb_tr = binarize_data(Xva.take(va_idx, axis=0))
-            Xb_tr = Xva.take(va_idx, axis=0)
-            Xb_tr = Xb_tr.astype(theano.config.floatX)
+        # train on the training set
+        MSM = MSM_TR
+        MSM_VA = None
+        lam_kld = 1.2
+        #Xb_tr = binarize_data(Xtr.take(tr_idx, axis=0))
+        Xb_tr = Xtr.take(tr_idx, axis=0)
+        Xb_tr = Xb_tr.astype(theano.config.floatX)
         # set sgd and objective function hyperparams for this update
-        MSM.set_sgd_params(lr_1=lr_1, lr_2=lr_2, \
-                mom_1=(scale*momentum), mom_2=0.98)
+        MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
+                mom_1=scale*momentum, mom_2=0.95)
         MSM.set_train_switch(1.0)
         MSM.set_lam_nll(lam_nll=1.0)
         MSM.set_lam_kld(lam_kld_1=lam_kld, lam_kld_2=lam_kld)
         MSM.set_lam_l2w(1e-4)
-        MSM.set_kzg_weight(0.1)
+        MSM.set_kzg_weight(0.05)
         # perform a minibatch update and record the cost for this batch
         result = MSM.train_joint(Xb_tr, Xb_tr, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]

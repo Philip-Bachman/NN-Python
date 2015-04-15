@@ -57,15 +57,20 @@ def relu_actfun(x):
     x_relu = T.maximum(0., x)
     return x_relu
 
-def softplus_actfun(x, scale=2.0):
+def softplus_actfun(x, scale=None):
     """Compute rescaled softplus activation for x."""
-    #x_softplus = T.log(1.0 + T.exp(x))
-    x_softplus = constFX(1.0 / scale) * T.nnet.softplus(scale*x)
+    if scale is None:
+        x_softplus = (1.0 / 2.0) * T.nnet.softplus(2.0*x)
+    else:
+        x_softplus = (1.0 / scale) * T.nnet.softplus(scale*x)
     return x_softplus
 
-def tanh_actfun(x, scale=1.0):
+def tanh_actfun(x, scale=None):
     """Compute  rescaled tanh activation for x."""
-    x_tanh = scale * T.tanh(constFX(1/scale) * x)
+    if scale is None:
+        x_tanh = T.tanh(x)
+    else:
+        x_tanh = scale * T.tanh(constFX(1/scale) * x)
     return x_tanh
 
 def maxout_actfun(input, pool_size, filt_count):

@@ -187,9 +187,9 @@ class MultiStageModel(object):
 
             # MOD TAG 1
             # convert the latent step into a step in observation space
-            si_step, r0 = p_sip1_given_si_hi.apply(hi, do_samples=False)
-            # si_step, r0 = p_sip1_given_si_hi.apply( \
-            #         T.horizontal_stack(hi, si_mix), do_samples=False)
+            #si_step, r0 = p_sip1_given_si_hi.apply(hi, do_samples=False)
+            si_step, r0 = p_sip1_given_si_hi.apply( \
+                    T.horizontal_stack(hi, sim1_mix), do_samples=False)
 
             # update observation and mix state based on the sampled step
             si_obs = sim1_obs + si_step
@@ -407,8 +407,8 @@ class MultiStageModel(object):
         assert(self.p_sip1_given_si_hi.mu_layers[-1].out_dim == obs_dim)
 
         # MOD TAG 2
-        #assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == (h_dim + mix_dim))
-        assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == h_dim)
+        assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == (h_dim + mix_dim))
+        #assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == h_dim)
 
         return
 
