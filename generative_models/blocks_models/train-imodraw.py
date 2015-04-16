@@ -39,20 +39,13 @@ from blocks.bricks.cost import BinaryCrossEntropy
 from blocks.bricks.recurrent import SimpleRecurrent, LSTM
 import cPickle as pickle
 
-from draw import *
-
-import sys, resource
-
-resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
-sys.setrecursionlimit(10**7)
+from models import *
 
 fuel.config.floatX = theano.config.floatX
 
 #----------------------------------------------------------------------------
 def main(name, epochs, batch_size, learning_rate, attention,
          n_iter, mix_dim, enc_dim, dec_dim, z_dim, oldmodel):
-
-    sys.setrecursionlimit(10**7)
 
     datasource = name
     if datasource == 'mnist':
@@ -167,32 +160,39 @@ def main(name, epochs, batch_size, learning_rate, attention,
     #x_recons = samples[-1, :, :]
     #x_recons = samples[-1, :, :]
 
-    recons_term = BinaryCrossEntropy().apply(x, x_recons)
-    recons_term.name = "recons_term"
+    nll_term = BinaryCrossEntropy().apply(x, x_recons)
+    nll_term.name = "nll_term"
 
-    cost = recons_term + kl_terms.sum(axis=0).mean()
-    cost.name = "nll_bound"
+    kld_term = kl_terms.sum(axis=0).mean()
+    kld_term.name = "kld_term"
 
-    #------------------------------------------------------------
-    cg = ComputationGraph([cost])
+    nll_bound = nll_term + kld_term
+    nll_bound.name = "nll_bound"
+
+    # grab the computation graph for the VFE bound on NLL
+    cg = ComputationGraph([nll_bound])
     params = VariableFilter(roles=[PARAMETER])(cg.variables)
 
+    # apply some l2 regularization to the model parameters
+    reg_term = (1e-4 * sum([tensor.sum(p**2.0) for p in params])) + \
+               (0.2 * kld_term)
+    reg_term.name = "reg_term"
+
+    # compute the final cost of VFE + regularization
+    total_cost = nll_bound + reg_term
+
     algorithm = GradientDescent(
-        cost=cost, 
+        cost=total_cost, 
         params=params,
         step_rule=CompositeRule([
             StepClipping(10.), 
             Adam(learning_rate),
         ])
-        #step_rule=RMSProp(learning_rate),
-        #step_rule=Momentum(learning_rate=learning_rate, momentum=0.95)
     )
-    #algorithm.add_updates(scan_updates)
-
 
     #------------------------------------------------------------------------
     # Setup monitors
-    monitors = [cost]
+    monitors = [nll_bound, nll_term, kld_term, reg_term]
     for t in range(n_iter+1):
         kl_term_t = kl_terms[t,:].mean()
         kl_term_t.name = "kl_term_%d" % t
@@ -209,7 +209,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
     train_monitors += [aggregation.mean(algorithm.total_step_norm)]
     # Live plotting...
     plot_channels = [
-        ["train_nll_bound", "test_nll_bound"],
+        ["train_nll_bound", "valid_nll_bound"],
         ["train_kl_term_%d" % t for t in range(n_iter+1)],
         #["train_recons_term_%d" % t for t in range(n_iter)],
         ["train_total_gradient_norm", "train_total_step_norm"]
@@ -219,36 +219,35 @@ def main(name, epochs, batch_size, learning_rate, attention,
 
     if datasource == 'mnist':
         mnist_train = BinarizedMNIST("train", sources=['features'], flatten=['features'])
-        # mnist_valid = BinarizedMNIST("valid", sources=['features'])
-        mnist_test = BinarizedMNIST("test", sources=['features'], flatten=['features'])
+        mnist_valid = BinarizedMNIST("valid", sources=['features'])
+        #mnist_test = BinarizedMNIST("test", sources=['features'], flatten=['features'])
         train_stream = DataStream(mnist_train, iteration_scheme=SequentialScheme(mnist_train.num_examples, batch_size))
-        # valid_stream = DataStream(mnist_valid, iteration_scheme=SequentialScheme(mnist_valid.num_examples, batch_size))
-        test_stream  = DataStream(mnist_test,  iteration_scheme=SequentialScheme(mnist_test.num_examples, batch_size))
+        valid_stream = DataStream(mnist_valid, iteration_scheme=SequentialScheme(mnist_valid.num_examples, batch_size))
+        #test_stream  = DataStream(mnist_test,  iteration_scheme=SequentialScheme(mnist_test.num_examples, batch_size))
     else:
         raise Exception('Unknown name %s'%datasource)
 
 
     main_loop = MainLoop(
-        model=Model(cost),
+        model=Model(total_cost),
         data_stream=train_stream,
         algorithm=algorithm,
         extensions=[
             Timing(),
             FinishAfter(after_n_epochs=epochs),
             TrainingDataMonitoring(
-                train_monitors, 
+                train_monitors,
                 prefix="train",
                 after_epoch=True),
-            # DataStreamMonitoring(
-            #     monitors,
-            #     valid_stream,
-            #     prefix="valid"),
             DataStreamMonitoring(
                 monitors,
-                test_stream,
-                prefix="test"),
+                valid_stream,
+                prefix="valid"),
+            # DataStreamMonitoring(
+            #     monitors,
+            #     test_stream,
+            #     prefix="test"),
             Checkpoint(name+".pkl", after_epoch=True, save_separately=['log', 'model']),
-            # Dump(name),
             Plot(name, channels=plot_channels),
             ProgressBar(),
             Printing()])

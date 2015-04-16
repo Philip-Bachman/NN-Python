@@ -38,7 +38,7 @@ from blocks.bricks import Tanh, MLP
 from blocks.bricks.cost import BinaryCrossEntropy
 from blocks.bricks.recurrent import SimpleRecurrent, LSTM
 
-from draw import *
+from models import *
 from attention import ZoomableAttentionWindow
 
 fuel.config.floatX = theano.config.floatX

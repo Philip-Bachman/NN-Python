@@ -5,15 +5,15 @@ sys.path.append("./lib")
 
 import logging
 import theano
-import theano.tensor as T
-import numpy as np
+import numpy
 
 from theano import tensor
 
 from blocks.bricks.base import application, _Brick, Brick, lazy
 from blocks.bricks.recurrent import BaseRecurrent, recurrent
+from blocks.initialization import Constant, IsotropicGaussian, Orthogonal
 from blocks.bricks import Random, MLP, Linear, Tanh, Softmax, Sigmoid, Initializable
-from blocks.bricks import Tanh, Identity
+from blocks.bricks import Tanh, Identity, Activation, Feedforward
 from blocks.utils import shared_floatx_nans
 from blocks.roles import add_role, WEIGHT, BIAS, PARAMETER
 
@@ -31,9 +31,96 @@ def gaussian_kld(mu_left, logvar_left, mu_right, logvar_right):
     We do KL(N(mu_left, logvar_left) || N(mu_right, logvar_right)).
     """
     gauss_klds = 0.5 * (logvar_right - logvar_left + \
-            (T.exp(logvar_left) / T.exp(logvar_right)) + \
-            ((mu_left - mu_right)**2.0 / T.exp(logvar_right)) - 1.0)
+            (tensor.exp(logvar_left) / tensor.exp(logvar_right)) + \
+            ((mu_left - mu_right)**2.0 / tensor.exp(logvar_right)) - 1.0)
     return gauss_klds
+
+################################
+# Softplus activation function #
+################################
+
+class Softplus(Activation):
+    @application(inputs=['input_'], outputs=['output'])
+    def apply(self, input_):
+        return tensor.nnet.softplus(input_)
+
+###################################################
+# Diagonal Gaussian conditional density estimator #
+###################################################
+
+class CondNet(Initializable, Feedforward):
+    """A simple multi-layer perceptron for diagonal Gaussian conditionals.
+
+    Note -- For now, we require both activations and dims to be specified.
+
+    Parameters
+    ----------
+    activations : list of :class:`.Brick`, :class:`.BoundApplication`,
+                  or ``None``
+        A list of activations to apply after each linear transformation.
+        Give ``None`` to not apply any activation. It is assumed that the
+        application method to use is ``apply``. Required for
+        :meth:`__init__`. The length of this list should be two less than
+        the length of dims, as first dim is the input dim and the last dim
+        is the dim of the output Gaussian.
+    dims : list of ints
+        A list of input dimensions, as well as the output dimension of the
+        last layer. Required for :meth:`~.Brick.allocate`.
+    """
+    def __init__(self, activations=None, dims=None, **kwargs):
+        if activations is None:
+            raise ValueError("activations must be specified.")
+        if dims is None:
+            raise ValueError("dims must be specified.")
+        if not (len(dims) == (len(activations) + 2)):
+            raise ValueError("len(dims) != len(activations) + 2.")
+        super(CondNet, self).__init__(**kwargs)
+        
+        self.dims = dims
+        self.shared_acts = activations
+
+        # construct the shared linear transforms for feedforward
+        self.shared_linears = []
+        for i in range(len(dims)-2):
+            self.shared_linears.append( \
+                Linear(dims[i], dims[i+1], name='shared_linear_{}'.format(i)))
+
+        self.mean_linear = Linear(dims[-2], dims[-1], name='mean_linear')
+        self.logvar_linear = Linear(dims[-2], dims[-1], name='logvar_linear',
+                                    weights_init=Constant(0.))
+
+        self.children = self.shared_linears + self.shared_acts
+        self.children.append(self.mean_linear)
+        self.children.append(self.logvar_linear)
+        return
+
+    def get_dim(self, name):
+        if name == 'input':
+            return self.dims[0]
+        elif name == 'output':
+            return self.dims[-1]
+        else:
+            raise ValueError("Invalid dim name: {}".format(name))
+        return
+
+    @property
+    def input_dim(self):
+        return self.dims[0]
+
+    @property
+    def output_dim(self):
+        return self.dims[-1]
+
+    @application(inputs=['x', 'u'], outputs=['z_mean', 'z_logvar', 'z'])
+    def apply(self, x, u):
+        f = [ x ]
+        for linear, activation in zip(self.shared_linears, self.shared_acts):
+            f.append( activation.apply(linear.apply(f[-1])) )
+        z_mean = self.mean_linear.apply(f[-1])
+        z_logvar = self.logvar_linear.apply(f[-1])
+        z = z_mean + (u * tensor.exp(0.5 * z_logvar))
+        return z_mean, z_logvar, z
+
 
 ###################################################
 # More standard LSTM implementation, no peepholes #
@@ -197,7 +284,7 @@ class Qsampler(Initializable, Random):
         logvar = self.logvar_transform.apply(x)
 
         # ... and scale/translate samples
-        z = mean + T.exp(0.5 * logvar) * u
+        z = mean + tensor.exp(0.5 * logvar) * u
 
         # Calculate KL
         all_klds = gaussian_kld(mean, logvar, 0.0, 0.0)
@@ -220,104 +307,6 @@ class Qsampler(Initializable, Random):
 
         """
         z_prior = u
-        return z_prior
-
-############################################
-# Qsampler for pairs of diagonal Gaussians #
-############################################
-
-class Qsampler2(Initializable, Random):
-    def __init__(self, input_p_dim, input_q_dim, z_dim, **kwargs):
-        super(Qsampler2, self).__init__(**kwargs)
-
-        self.mean_p_transform = Linear(
-                name=self.name+'_mean_p',
-                input_dim=input_p_dim, output_dim=z_dim, 
-                weights_init=self.weights_init, biases_init=self.biases_init,
-                use_bias=True)
-
-        self.logvar_p_transform = Linear(
-                name=self.name+'_logvar_p',
-                input_dim=input_p_dim, output_dim=z_dim, 
-                weights_init=self.weights_init, biases_init=self.biases_init,
-                use_bias=True)
-
-        self.mean_q_transform = Linear(
-                name=self.name+'_mean_q',
-                input_dim=input_q_dim, output_dim=z_dim, 
-                weights_init=self.weights_init, biases_init=self.biases_init,
-                use_bias=True)
-
-        self.logvar_q_transform = Linear(
-                name=self.name+'_logvar_q',
-                input_dim=input_q_dim, output_dim=z_dim, 
-                weights_init=self.weights_init, biases_init=self.biases_init,
-                use_bias=True)
-
-        self.children = [self.mean_p_transform, self.logvar_p_transform, \
-                         self.mean_q_transform, self.logvar_q_transform]
-        return
-    
-    def get_dim(self, name):
-        if name == 'input':
-            return self.mean_transform.get_dim('input')
-        elif name == 'output':
-            return self.mean_transform.get_dim('output')
-        else:
-            raise ValueError
-        return
-
-    @application(inputs=['x_p', 'x_q', 'u'], outputs=['z_p', 'z_q', 'all_klds'])
-    def sample(self, x_p, x_q, u):
-        """
-        Return a samples and the corresponding KL term
-
-        Parameters
-        ----------
-        x_p : input features for estimating p's mean and log-variance
-        x_q : input features for estimating q's mean and log-variance
-        u : standard Normal samples to scale and shift
-
-        Returns
-        -------
-        z : tensor.matrix
-            Samples drawn from Q(z|x) 
-        kl : tensor.vector
-            KL(Q(z|x) || P_z)
-        
-        """
-        mean_p = self.mean_p_transform.apply(x_p)
-        logvar_p = self.logvar_p_transform.apply(x_p)
-        mean_q = self.mean_p_transform.apply(x_q)
-        logvar_q = self.logvar_p_transform.apply(x_q)
-
-        # ... and scale/translate samples
-        z_p = mean_p + T.exp(0.5 * logvar_p) * u
-        z_q = mean_q + T.exp(0.5 * logvar_q) * u
-
-        # Calculate KL
-        all_klds = gaussian_kld(mean_p, logvar_p, mean_q, logvar_q)
-        return z_p, z_q, all_klds
-
-    @application(inputs=['x_p', 'u'], outputs=['z_prior'])
-    def sample_from_prior(self, x_p, u):
-        """
-        Sample z from the prior distribution P_z.
-
-        Parameters
-        ----------
-        u : tensor.matrix
-            gaussian random source 
-
-        Returns
-        -------
-        z : tensor.matrix
-            samples 
-
-        """
-        mean_p = self.mean_p_transform.apply(x_p)
-        logvar_p = self.logvar_p_transform.apply(x_p)
-        z_prior = mean_p + T.exp(0.5 * logvar_p) * u
         return z_prior
 
 #-----------------------------------------------------------------------------
@@ -343,7 +332,7 @@ class Reader(Initializable):
 
     @application(inputs=['x', 'x_hat', 'h_dec'], outputs=['r'])
     def apply(self, x, x_hat, h_dec):
-        return T.concatenate([x, x_hat], axis=1)
+        return tensor.concatenate([x, x_hat], axis=1)
 
 class AttentionReader(Initializable):
     def __init__(self, x_dim, dec_dim, height, width, N, **kwargs):
@@ -380,7 +369,7 @@ class AttentionReader(Initializable):
         w     = gamma * self.zoomer.read(x    , center_y, center_x, delta, sigma)
         w_hat = gamma * self.zoomer.read(x_hat, center_y, center_x, delta, sigma)
         
-        return T.concatenate([w, w_hat], axis=1)
+        return tensor.concatenate([w, w_hat], axis=1)
 
 #-----------------------------------------------------------------------------
 
@@ -508,12 +497,12 @@ class DrawModel(BaseRecurrent, Initializable, Random):
                states=['c', 'h_enc', 'c_enc', 'z', 'kl', 'h_dec', 'c_dec'],
                outputs=['c', 'h_enc', 'c_enc', 'z', 'kl', 'h_dec', 'c_dec'])
     def iterate(self, u, c, h_enc, c_enc, z, kl, h_dec, c_dec, x):
-        x_hat = x-T.nnet.sigmoid(c)
+        x_hat = x-tensor.nnet.sigmoid(c)
         r = self.reader.apply(x, x_hat, h_dec)
-        i_enc = self.encoder_mlp.apply(T.concatenate([r, h_dec], axis=1))
+        i_enc = self.encoder_mlp.apply(tensor.concatenate([r, h_dec], axis=1))
         h_enc, c_enc = self.encoder_rnn.apply(states=h_enc, cells=c_enc, inputs=i_enc, iterate=False)
         z, all_klds = self.sampler.sample(h_enc, u)
-        kl = T.sum(all_klds, axis=1)
+        kl = tensor.sum(all_klds, axis=1)
 
         i_dec = self.decoder_mlp.apply(z)
         h_dec, c_dec = self.decoder_rnn.apply(states=h_dec, cells=c_dec, inputs=i_dec, iterate=False)
@@ -549,7 +538,7 @@ class DrawModel(BaseRecurrent, Initializable, Random):
         c, h_enc, c_enc, z, kl, h_dec, c_dec = \
             rvals = self.iterate(x=features, u=u)
 
-        x_recons = T.nnet.sigmoid(c[-1,:,:])
+        x_recons = tensor.nnet.sigmoid(c[-1,:,:])
         x_recons.name = "reconstruction"
 
         kl.name = "kl"
@@ -574,7 +563,7 @@ class DrawModel(BaseRecurrent, Initializable, Random):
 
         c, _, _, = self.decode(u)
         #c, _, _, center_y, center_x, delta = self.decode(u)
-        return T.nnet.sigmoid(c)
+        return tensor.nnet.sigmoid(c)
 
 
 ############################################
@@ -639,7 +628,7 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         # initialize to zeros...
         for p in self.params:
             p_nan = p.get_value(borrow=False)
-            p_zeros = np.zeros(p_nan.shape)
+            p_zeros = numpy.zeros(p_nan.shape)
             p.set_value(p_zeros.astype(theano.config.floatX))
         return
  
@@ -676,14 +665,14 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
                states=['c', 'h_enc', 'c_enc', 'z_gen', 'kl', 'h_dec', 'c_dec'],
                outputs=['c', 'h_enc', 'c_enc', 'z_gen', 'kl', 'h_dec', 'c_dec'])
     def iterate(self, u, c, h_enc, c_enc, z_gen, kl, h_dec, c_dec, x, s_mix):
-        x_hat = x - T.nnet.sigmoid(c)
+        x_hat = x - tensor.nnet.sigmoid(c)
         r = self.reader.apply(x, x_hat, h_dec)
-        i_enc = self.encoder_mlp.apply(T.concatenate([r, h_dec, s_mix], axis=1))
+        i_enc = self.encoder_mlp.apply(tensor.concatenate([r, h_dec, s_mix], axis=1))
         h_enc, c_enc = self.encoder_rnn.apply(states=h_enc, cells=c_enc, inputs=i_enc, iterate=False)
         z_gen, akl = self.draw_sampler.sample(h_enc, u)
-        kl = T.sum(akl, axis=1)
+        kl = tensor.sum(akl, axis=1)
 
-        i_dec = self.decoder_mlp.apply(T.concatenate([z_gen, s_mix], axis=1))
+        i_dec = self.decoder_mlp.apply(tensor.concatenate([z_gen, s_mix], axis=1))
         h_dec, c_dec = self.decoder_rnn.apply(states=h_dec, cells=c_dec, inputs=i_dec, iterate=False)
         c = c + self.writer.apply(h_dec)
         return c, h_enc, c_enc, z_gen, kl, h_dec, c_dec
@@ -694,7 +683,7 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
     def decode(self, u, c, h_dec, c_dec, s_mix):
         batch_size = c.shape[0]
         z = self.draw_sampler.sample_from_prior(u)
-        i_dec = self.decoder_mlp.apply(T.concatenate([z, s_mix], axis=1))
+        i_dec = self.decoder_mlp.apply(tensor.concatenate([z, s_mix], axis=1))
         h_dec, c_dec = self.decoder_rnn.apply(
                     states=h_dec, cells=c_dec, 
                     inputs=i_dec, iterate=False)
@@ -736,12 +725,12 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
                                  h_dec=hd0, c_dec=cd0, x=features, s_mix=sm0)
 
         # grab the observations generated by the DRAW model
-        x_recons = T.nnet.sigmoid(c[-1,:,:])
+        x_recons = tensor.nnet.sigmoid(c[-1,:,:])
         x_recons.name = "reconstruction"
         # group up the klds from mixture and DRAW models
-        kl_mix = T.sum(akl_mix, axis=1)
+        kl_mix = tensor.sum(akl_mix, axis=1)
         klm_row = kl_mix.reshape((1, batch_size), ndim=2)
-        kl = T.vertical_stack(klm_row, kl_draw)
+        kl = tensor.vertical_stack(klm_row, kl_draw)
         kl.name = "kl"
         return x_recons, kl
 
@@ -775,7 +764,7 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
 
         c, _, _, = self.decode(u=u, h_dec=hd0, c_dec=cd0, s_mix=sm0)
         #c, _, _, center_y, center_x, delta = self.decode(u)
-        return T.nnet.sigmoid(c)
+        return tensor.nnet.sigmoid(c)
 
 
 ############################################
@@ -783,6 +772,8 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
 ############################################
 
 class MultiStageModel(BaseRecurrent, Initializable, Random):
+    """The underlying models should all be CondNets.
+    """
     def __init__(self, p_hi_given_si, p_sip1_given_si_hi,
                  q_z_given_x, q_hi_given_x_si, \
                  n_iter, **kwargs):
@@ -806,8 +797,7 @@ class MultiStageModel(BaseRecurrent, Initializable, Random):
     def _allocate(self):
         # we only have the output/canvas bias
         c_dim = self.get_dim('c')
-        self.c_0 = shared_floatx_nans((1, c_dim),
-                                          name='c_0')
+        self.c_0 = shared_floatx_nans((c_dim,), name='c_0')
         add_role(self.c_0, PARAMETER)
         # add the theano shared variables to our parameter lists
         self.params.extend([ self.c_0 ])
@@ -817,7 +807,7 @@ class MultiStageModel(BaseRecurrent, Initializable, Random):
         # initialize to zeros...
         for p in self.params:
             p_nan = p.get_value(borrow=False)
-            p_zeros = np.zeros(p_nan.shape)
+            p_zeros = numpy.zeros(p_nan.shape)
             p.set_value(p_zeros.astype(theano.config.floatX))
         return
  
@@ -841,19 +831,20 @@ class MultiStageModel(BaseRecurrent, Initializable, Random):
                outputs=['c', 'kl'])
     def iterate(self, u_gen, c, kl, x_out, s_mix):
         # get gradient of log-likelihood w.r.t. x_out given c
-        c_obs = T.nnet.sigmoid(c)
+        c_obs = tensor.nnet.sigmoid(c)
         x_hat = x_out - c_obs
-        # compute distribution over next step for the guide
-        q_in = T.concatenate([x_hat, c_obs, s_mix], axis=1)
-        z_q, z_q_mean, z_q_logvar = self.q_hi_given_x_si.apply(q_in, u_gen)
-        # compute distribution over next step for the generator
-        p_in = T.concatenate([c_obs, s_mix], axis=1)
-        z_p, z_p_mean, z_p_logvar = self.p_hi_given_si.apply(p_in, u_gen)
+        # compute distribution over next step from the guide
+        q_in = tensor.concatenate([x_hat, c_obs, s_mix], axis=1)
+        z_q_mean, z_q_logvar, z_q = self.q_hi_given_x_si.apply(q_in, u_gen)
+        # compute distribution over next step from the generator
+        p_in = tensor.concatenate([c_obs, s_mix], axis=1)
+        z_p_mean, z_p_logvar, z_p = self.p_hi_given_si.apply(p_in, u_gen)
         # get KL(guide || generator)
         akl = gaussian_kld(z_q_mean, z_q_logvar, z_p_mean, z_p_logvar)
-        kl = T.sum(akl, axis=1)
+        kl = tensor.sum(akl, axis=1)
         # get additive update from the generator
-        c_step = self.p_sip1_given_hi.apply(z_q)
+        s_in = tensor.concatenate([s_mix, z_q], axis=1)
+        c_step = self.p_sip1_given_si_hi.apply(s_in)
         c = c + c_step
         return c, kl
 
@@ -862,12 +853,13 @@ class MultiStageModel(BaseRecurrent, Initializable, Random):
                outputs=['c'])
     def decode(self, u_gen, c, s_mix):
         # get the information on which to condition the step distribution
-        c_obs = T.nnet.sigmoid(c)
-        p_in = T.concatenate([c_obs, s_mix], axis=1)
+        c_obs = tensor.nnet.sigmoid(c)
+        p_in = tensor.concatenate([c_obs, s_mix], axis=1)
         # scale and shift the ZMUV Gaussian samples in z
-        z_p, z_p_mean, z_p_logvar = self.p_hi_given_si.apply(p_in, u_gen)
+        z_p_mean, z_p_logvar, z_p = self.p_hi_given_si.apply(p_in, u_gen)
         # get steps sampled from the conditional step distribution
-        c_step = self.p_sip1_given_hi.apply(z_p)
+        s_in = tensor.concatenate([s_mix, z_p], axis=1)
+        c_step = self.p_sip1_given_si_hi.apply(s_in)
         c = c + c_step
         return c
 
@@ -883,25 +875,185 @@ class MultiStageModel(BaseRecurrent, Initializable, Random):
         u_mix = self.theano_rng.normal(
                     size=(batch_size, u_mix_dim),
                     avg=0., std=1.)
-        z_mix, z_mix_mean, z_mix_logvar = self.q_z_given_x.apply(x_in, u_mix)
+        z_mix_mean, z_mix_logvar, z_mix = self.q_z_given_x.apply(x_in, u_mix)
         akl_mix = gaussian_kld(z_mix_mean, z_mix_logvar, 0.0, 0.0)
-        kl_mix = T.sum(akl_mix, axis=1).reshape((1, batch_size), ndim=2)
-        s_mix = 2.0 * T.tanh(0.5 * z_mix)
+        kl_mix = tensor.sum(akl_mix, axis=1).reshape((1, batch_size), ndim=2)
+        s_mix = 2.0 * tensor.tanh(0.5 * z_mix)
 
-        # get some zero-mean, unit std. Gaussian noise for the loop
+        # get some zero-mean, unit-std. Gaussian noise for the loop
         u_gen = self.theano_rng.normal(
                     size=(self.n_iter, batch_size, u_gen_dim),
                     avg=0., std=1.)
 
         # run the iterative refinement loop
-        c, kl_gen = self.iterate(u_gen=u_gen, c=c0, x_out=x_out, \
+        c0 = tensor.zeros_like(x_out) + self.c_0
+        ci, kl_gen = self.iterate(u_gen=u_gen, c=c0, x_out=x_out, \
                                  s_mix=s_mix)
 
         # grab the observations generated by the refinement model
-        x_recons = T.nnet.sigmoid(c[-1,:,:])
+        x_recons = tensor.nnet.sigmoid(ci[-1,:,:])
+        #x_recons = tensor.nnet.sigmoid(tensor.vertical_stack(c0[0], ci))
         x_recons.name = "reconstruction"
         # group up the klds from mixture and refinement models
-        kl = T.vertical_stack(klm_row, kl_draw)
+        kl = tensor.vertical_stack(kl_mix, kl_gen)
+        kl.name = "kl"
+        return x_recons, kl
+
+    @application(inputs=['n_samples'], outputs=['samples'])
+    def sample(self, n_samples):
+        """Sample from model.
+
+        Returns 
+        -------
+
+        samples : tensor3 (n_samples, n_iter, x_dim)
+        """
+        u_mix_dim = self.get_dim('u_mix')
+        u_gen_dim = self.get_dim('u_gen')
+        c_dim = self.get_dim('c')
+
+        # deal with the infinite mixture intialization
+        u_mix = self.theano_rng.normal(
+                    size=(n_samples, u_mix_dim),
+                    avg=0., std=1.)
+        z_mix = u_mix
+        s_mix = 2.0 * tensor.tanh(0.5 * z_mix)
+
+        # get some zero-mean, unit-std. Gaussian noise for the loop
+        u_gen = self.theano_rng.normal(
+                    size=(self.n_iter, n_samples, u_gen_dim),
+                    avg=0., std=1.)
+
+        # get initial sate of "canvas"
+        c0 = tensor.alloc(0.0, n_samples, c_dim) + self.c_0
+        # sample the multi-stage generative process
+        ci = self.decode(u_gen=u_gen, s_mix=s_mix)
+        # include the initial canvas state with the samples
+        c = ci
+        #c = tensor.vertical_stack(c0[0].reshape(1,c_dim), ci)
+        return tensor.nnet.sigmoid(c)
+
+
+##############################
+# Dot-matrix image generator #
+##############################
+
+class DotMatrix(BaseRecurrent, Initializable, Random):
+    """Infinite mixture of LSTM generators, like variationally.
+
+    We 'encode' to Gaussian posteriors in some latent space using a CondNet
+    and then 'decode' using an LSTM that generates binary images column-wise
+    from left-to-right. More or less.
+    """
+    def __init__(self, 
+                 enc_mlp,
+                 dec_rnn,
+                 dec_mlp_in,
+                 dec_mlp_out,
+                 im_shape,
+                 mix_dim,
+                 **kwargs):
+        super(DotMatrix, self).__init__(**kwargs)
+        # grab handles for underlying models
+        self.enc_mlp = enc_mlp
+        self.dec_rnn = dec_rnn
+        self.dec_mlp_in = dec_mlp_in
+        self.dec_mlp_out = dec_mlp_out
+        self.im_shape = im_shape
+        self.mix_dim = mix_dim
+
+        # record the sub-models that underlie this model
+        self.children = [self.enc_mlp, \
+                         self.dec_rnn, \
+                         self.dec_mlp]
+        return
+ 
+    def get_dim(self, name):
+        if name in ['x_obs', 'x_hat']:
+            return self.im_shape[0]
+        elif name == 'h_dec':
+            return self.dec_rnn.get_dim('states')
+        elif name == 'c_dec':
+            return self.dec_rnn.get_dim('cells')
+        elif name == 's_mix':
+            return self.mix_dim
+        elif name == 'z_mix':
+            return self.enc_mlp.get_dim('output')
+        else:
+            super(DotMatrix, self).get_dim(name)
+        return
+
+    #------------------------------------------------------------------------
+
+    @recurrent(sequences=['x_obs'], contexts=['s_mix'],
+               states=['x_hat', 'h_dec', 'c_dec'],
+               outputs=['x_hat', 'h_dec', 'c_dec'])
+    def iterate(self, x_obs, x_hat, h_dec, c_dec, s_mix):
+        # compute prediction for this time step
+        x_log = self.dec_mlp_out.apply(h_dec)
+        x_hat = tensor.nnet.sigmoid(x_log)
+        # update rnn state using current observation and previous state
+        i_mlp = T.concatenate([x_obs, h_dec, s_mix], axis=1)
+        i_dec = self.dec_mlp_in.apply(i_mlp)
+        h_dec, c_dec = self.dec_rnn.apply(
+                    states=h_dec, cells=c_dec,
+                    inputs=i_dec, iterate=False)
+        return x_hat, h_dec, c_dec
+
+    @recurrent(sequences=['u'], contexts=['s_mix'], 
+               states=['x_hat', 'h_dec', 'c_dec'],
+               outputs=['x_hat', 'h_dec', 'c_dec'])
+    def decode(self, u, c, h_dec, c_dec, s_mix):
+        batch_size = c.shape[0]
+        z = self.draw_sampler.sample_from_prior(u)
+        i_dec = self.decoder_mlp.apply(tensor.concatenate([z, s_mix], axis=1))
+        h_dec, c_dec = self.decoder_rnn.apply(
+                    states=h_dec, cells=c_dec, 
+                    inputs=i_dec, iterate=False)
+        c = c + self.writer.apply(h_dec)
+        return c, h_dec, c_dec
+
+    #------------------------------------------------------------------------
+
+    @application(inputs=['features'], outputs=['recons', 'kl'])
+    def reconstruct(self, features):
+        batch_size = features.shape[0]
+        z_mix_dim = self.get_dim('z_mix')
+        z_gen_dim = self.get_dim('z_gen')
+        ce_dim = self.get_dim('c_enc')
+        cd_dim = self.get_dim('c_dec')
+        he_dim = self.get_dim('h_enc')
+        hd_dim = self.get_dim('h_dec')
+
+        # deal with the infinite mixture intialization
+        u_mix = self.theano_rng.normal(
+                    size=(batch_size, z_mix_dim),
+                    avg=0., std=1.)
+        f_mix = self.mix_enc_mlp.apply(features)
+        z_mix, akl_mix = self.mix_sampler.sample(f_mix, u_mix)
+        mix_init = self.mix_dec_mlp.apply(z_mix)
+        cd0 = mix_init[:, :cd_dim]
+        hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
+        ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
+        he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):(cd_dim+hd_dim+ce_dim+he_dim)]
+        sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
+
+        # Sample from mean-zeros std.-one Gaussian
+        u_draw = self.theano_rng.normal(
+                    size=(self.n_iter, batch_size, z_gen_dim),
+                    avg=0., std=1.)
+
+        c, h_enc, c_enc, z, kl_draw, h_dec, c_dec = \
+            rvals = self.iterate(u=u_draw, h_enc=he0, c_enc=ce0, \
+                                 h_dec=hd0, c_dec=cd0, x=features, s_mix=sm0)
+
+        # grab the observations generated by the DRAW model
+        x_recons = tensor.nnet.sigmoid(c[-1,:,:])
+        x_recons.name = "reconstruction"
+        # group up the klds from mixture and DRAW models
+        kl_mix = tensor.sum(akl_mix, axis=1)
+        klm_row = kl_mix.reshape((1, batch_size), ndim=2)
+        kl = tensor.vertical_stack(klm_row, kl_draw)
         kl.name = "kl"
         return x_recons, kl
 
@@ -935,4 +1087,4 @@ class MultiStageModel(BaseRecurrent, Initializable, Random):
 
         c, _, _, = self.decode(u=u, h_dec=hd0, c_dec=cd0, s_mix=sm0)
         #c, _, _, center_y, center_x, delta = self.decode(u)
-        return T.nnet.sigmoid(c)
+        return tensor.nnet.sigmoid(c)
