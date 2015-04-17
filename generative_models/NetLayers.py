@@ -274,8 +274,8 @@ class HiddenLayer(object):
         Apply feedforward to this input, returning several partial results.
         """
         # Add gaussian noise to the input (if desired)
-        #fancy_input = T.nnet.softplus(self.s_in) * (input + self.b_in)
-        fancy_input = input
+        fancy_input = T.nnet.softplus(self.s_in) * (input + self.b_in)
+        #fancy_input = input
         if use_in:
             fuzzy_input = fancy_input + self.input_noise[0] * \
                     self.rng.normal(size=fancy_input.shape, avg=0.0, std=1.0, \

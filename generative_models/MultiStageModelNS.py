@@ -15,7 +15,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      apply_mask
+                      apply_mask, to_fX
 from InfNet import InfNet
 from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
@@ -38,7 +38,7 @@ class MultiStageModel(object):
         p_sip1_given_si_hi: InfNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
-        model_init_rnn: whether to use a model-based initial rnn state
+        model_init_mix: whether to use a model-based initial mix state
         obs_dim: dimension of the observations to generate
         rnn_dim: dimension of the latent "RNN state"
         z_dim: dimension of the "initial" latent space
@@ -53,8 +53,8 @@ class MultiStageModel(object):
             p_sip1_given_si_hi=None, \
             q_z_given_x=None, \
             q_hi_given_x_si=None, \
-            model_init_rnn=True, 
-            obs_dim=None, rnn_dim=None,\
+            model_init_rnn=True, \
+            obs_dim=None, rnn_dim=None, \
             z_dim=None, h_dim=None, \
             ir_steps=4, params=None, \
             shared_param_dicts=None):
@@ -95,7 +95,7 @@ class MultiStageModel(object):
         self.batch_reps = T.lscalar()
 
         # setup switching variable for changing between sampling/training
-        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+        zero_ary = to_fX( np.zeros((1,)) )
         self.train_switch = theano.shared(value=zero_ary, name='msm_train_switch')
         self.set_train_switch(1.0)
         # setup a weight for pulling priors over hi given si towards a
@@ -105,7 +105,7 @@ class MultiStageModel(object):
 
         if self.shared_param_dicts is None:
             # initialize weights and biases for the z -> s0_rnn transform
-            b_obs = np.zeros((self.obs_dim,)).astype(theano.config.floatX)
+            b_obs = to_fX( np.zeros((self.obs_dim,)) )
             self.b_obs = theano.shared(value=b_obs, name='msm_b_obs')
             self.obs_logvar = theano.shared(value=zero_ary, name='msm_obs_logvar')
             self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar)
@@ -181,7 +181,7 @@ class MultiStageModel(object):
         ######################################################################
 
         # shared var learning rate for generator and inferencer
-        zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+        zero_ary = to_fX( np.zeros((1,)) )
         self.lr_1 = theano.shared(value=zero_ary, name='msm_lr_1')
         self.lr_2 = theano.shared(value=zero_ary, name='msm_lr_2')
         # shared var momentum parameters for generator and inferencer
@@ -232,6 +232,11 @@ class MultiStageModel(object):
         param_reg_cost = self._construct_reg_costs()
         self.reg_cost = self.lam_l2w[0] * param_reg_cost
         self.joint_cost = self.nll_cost + self.kld_cost + self.reg_cost
+        ##############################
+        # CONSTRUCT A PER-INPUT COST #
+        ##############################
+        self.obs_costs = self.nll_costs + self.kld_z + self.kld_hi_cond + \
+                         self.kld_hi_glob
 
         # Get the gradient of the joint cost for all optimizable parameters
         print("Computing gradients of self.joint_cost...")
@@ -278,14 +283,14 @@ class MultiStageModel(object):
         zero_ary = np.zeros((1,))
         # set learning rates
         new_lr_1 = zero_ary + lr_1
-        self.lr_1.set_value(new_lr_1.astype(theano.config.floatX))
+        self.lr_1.set_value(to_fX(new_lr_1))
         new_lr_2 = zero_ary + lr_2
-        self.lr_2.set_value(new_lr_2.astype(theano.config.floatX))
+        self.lr_2.set_value(to_fX(new_lr_2))
         # set momentums
         new_mom_1 = zero_ary + mom_1
-        self.mom_1.set_value(new_mom_1.astype(theano.config.floatX))
+        self.mom_1.set_value(to_fX(new_mom_1))
         new_mom_2 = zero_ary + mom_2
-        self.mom_2.set_value(new_mom_2.astype(theano.config.floatX))
+        self.mom_2.set_value(to_fX(new_mom_2))
         return
 
     def set_lam_nll(self, lam_nll=1.0):
@@ -294,7 +299,7 @@ class MultiStageModel(object):
         """
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_nll
-        self.lam_nll.set_value(new_lam.astype(theano.config.floatX))
+        self.lam_nll.set_value(to_fX(new_lam))
         return
 
     def set_lam_kld(self, lam_kld_1=1.0, lam_kld_2=1.0):
@@ -303,9 +308,9 @@ class MultiStageModel(object):
         """
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_kld_1
-        self.lam_kld_1.set_value(new_lam.astype(theano.config.floatX))
+        self.lam_kld_1.set_value(to_fX(new_lam))
         new_lam = zero_ary + lam_kld_2
-        self.lam_kld_2.set_value(new_lam.astype(theano.config.floatX))
+        self.lam_kld_2.set_value(to_fX(new_lam))
         return
 
     def set_lam_l2w(self, lam_l2w=1e-3):
@@ -314,7 +319,7 @@ class MultiStageModel(object):
         """
         zero_ary = np.zeros((1,))
         new_lam = zero_ary + lam_l2w
-        self.lam_l2w.set_value(new_lam.astype(theano.config.floatX))
+        self.lam_l2w.set_value(to_fX(new_lam))
         return
 
     def set_train_switch(self, switch_val=0.0):
@@ -327,8 +332,7 @@ class MultiStageModel(object):
             switch_val = 1.0
         zero_ary = np.zeros((1,))
         new_val = zero_ary + switch_val
-        new_val = new_val.astype(theano.config.floatX)
-        self.train_switch.set_value(new_val)
+        self.train_switch.set_value(to_fX(new_val))
         return
 
     def set_kzg_weight(self, kzg_weight=0.2):
@@ -338,8 +342,7 @@ class MultiStageModel(object):
         assert(kzg_weight >= 0.0)
         zero_ary = np.zeros((1,))
         new_val = zero_ary + kzg_weight
-        new_val = new_val.astype(theano.config.floatX)
-        self.kzg_weight.set_value(new_val)
+        self.kzg_weight.set_value(to_fX(new_val))
         return
 
     def _check_model_shapes(self):
@@ -432,7 +435,7 @@ class MultiStageModel(object):
         xo = T.matrix()
         # collect the outputs to return from this function
         outputs = [self.joint_cost, self.nll_cost, self.kld_cost, \
-                self.reg_cost]
+                self.reg_cost, self.obs_costs]
         # compile the theano function
         func = theano.function(inputs=[ xi, xo, self.batch_reps ], \
                 outputs=outputs, \
@@ -477,7 +480,7 @@ class MultiStageModel(object):
         inputs = [self.x_in, self.x_out]
         cost_func = theano.function(inputs=inputs, outputs=all_step_costs)
         def raw_cost_computer(XI, XO):
-            s0_rnn = np.zeros((XI.shape[0],self.z_dim)).astype(theano.config.floatX)
+            s0_rnn = to_fX( np.zeros((XI.shape[0],self.z_dim)) )
             _all_costs = cost_func(XI, XO)
             # for i, ac in enumerate(_all_costs):
             #     print("_all_costs[{0:d}].shape: {1:s}".format(i, str(ac.shape)))
@@ -488,11 +491,11 @@ class MultiStageModel(object):
             _step_klds = np.mean(np.sum(_all_costs[1], axis=2, keepdims=True), axis=1)
             sk = [np.sum(np.mean(_init_klds, axis=0))]
             sk.extend([k for k in _step_klds])
-            _step_klds = np.asarray(sk).astype(theano.config.floatX)
+            _step_klds = to_fX( np.asarray(sk) )
             _step_nlls = np.mean(_all_costs[0], axis=1)
             sn = [np.mean(_init_nlls, axis=0)]
             sn.extend([k for k in _step_nlls])
-            _step_nlls = np.asarray(sn).astype(theano.config.floatX)
+            _step_nlls = to_fX( np.asarray(sn) )
             results = [_init_nlls, _init_klds, _kld_cond, _kld_glob, \
                        _step_nlls, _step_klds]
             return results
@@ -556,11 +559,11 @@ class MultiStageModel(object):
                         self.x_in: T.zeros_like(x_sym), \
                         self.x_out: T.zeros_like(x_sym)})
         def prior_sampler(samp_count):
-            x_samps = np.zeros((samp_count, self.obs_dim)).astype(theano.config.floatX)
+            x_samps = to_fX( np.zeros((samp_count, self.obs_dim)) )
             old_switch = self.train_switch.get_value(borrow=False)
             # set model to generation mode
             self.set_train_switch(switch_val=0.0)
-            z_samps = npr.randn(samp_count, self.z_dim).astype(theano.config.floatX)
+            z_samps = to_fX( npr.randn(samp_count, self.z_dim) )
             model_samps = sample_func(z_samps, x_samps)
             # set model back to either training or generation mode
             self.set_train_switch(switch_val=old_switch)
@@ -583,10 +586,10 @@ class MultiStageModel(object):
                 givens={self.x_in: xi, \
                         self.x_out: xo})
         def conditional_sampler(XI, XO=None, guided_decoding=False):
-            XI = XI.astype(theano.config.floatX)
+            XI = to_fX( XI )
             if XO is None:
                 XO = XI
-            XO = XO.astype(theano.config.floatX)
+            XO = to_fX( XO )
             # set model to desired generation mode                
             old_switch = self.train_switch.get_value(borrow=False)
             if guided_decoding:

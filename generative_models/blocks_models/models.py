@@ -709,6 +709,7 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         f_mix = self.mix_enc_mlp.apply(features)
         z_mix, akl_mix = self.mix_sampler.sample(f_mix, u_mix)
         mix_init = self.mix_dec_mlp.apply(z_mix)
+        #mix_init = tensor.nnet.tanh(self.mix_dec_mlp.apply(z_mix))
         cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
         ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
@@ -946,7 +947,8 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
     from left-to-right. More or less.
     """
     def __init__(self, 
-                 enc_mlp,
+                 enc_x_to_z,
+                 enc_z_to_mix,
                  dec_rnn,
                  dec_mlp_in,
                  dec_mlp_out,
@@ -955,17 +957,17 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
                  **kwargs):
         super(DotMatrix, self).__init__(**kwargs)
         # grab handles for underlying models
-        self.enc_mlp = enc_mlp
-        self.dec_rnn = dec_rnn
-        self.dec_mlp_in = dec_mlp_in
-        self.dec_mlp_out = dec_mlp_out
+        self.enc_x_to_z = enc_x_to_z     # go from x to z
+        self.enc_z_to_mix = enc_z_to_mix # go from z to mixture params
+        self.dec_rnn = dec_rnn           # LSTM for statefulness
+        self.dec_mlp_in = dec_mlp_in     # provide i_dec
+        self.dec_mlp_out = dec_mlp_out   # predict from h_dec
         self.im_shape = im_shape
         self.mix_dim = mix_dim
 
         # record the sub-models that underlie this model
-        self.children = [self.enc_mlp, \
-                         self.dec_rnn, \
-                         self.dec_mlp]
+        self.children = [self.enc_x_to_z, self.enc_z_to_mix, \
+                         self.dec_rnn, self.dec_mlp_in, self.dec_mlp_out]
         return
  
     def get_dim(self, name):
@@ -978,7 +980,7 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
         elif name == 's_mix':
             return self.mix_dim
         elif name == 'z_mix':
-            return self.enc_mlp.get_dim('output')
+            return self.enc_x_to_z.get_dim('output')
         else:
             super(DotMatrix, self).get_dim(name)
         return
@@ -989,11 +991,11 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
                states=['x_hat', 'h_dec', 'c_dec'],
                outputs=['x_hat', 'h_dec', 'c_dec'])
     def iterate(self, x_obs, x_hat, h_dec, c_dec, s_mix):
-        # compute prediction for this time step
+        # compute predictions for this time step
         x_log = self.dec_mlp_out.apply(h_dec)
         x_hat = tensor.nnet.sigmoid(x_log)
         # update rnn state using current observation and previous state
-        i_mlp = T.concatenate([x_obs, h_dec, s_mix], axis=1)
+        i_mlp = tensor.concatenate([x_obs, h_dec, s_mix], axis=1)
         i_dec = self.dec_mlp_in.apply(i_mlp)
         h_dec, c_dec = self.dec_rnn.apply(
                     states=h_dec, cells=c_dec,
@@ -1003,59 +1005,61 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
     @recurrent(sequences=['u'], contexts=['s_mix'], 
                states=['x_hat', 'h_dec', 'c_dec'],
                outputs=['x_hat', 'h_dec', 'c_dec'])
-    def decode(self, u, c, h_dec, c_dec, s_mix):
-        batch_size = c.shape[0]
-        z = self.draw_sampler.sample_from_prior(u)
-        i_dec = self.decoder_mlp.apply(tensor.concatenate([z, s_mix], axis=1))
-        h_dec, c_dec = self.decoder_rnn.apply(
-                    states=h_dec, cells=c_dec, 
+    def decode(self, u, x_hat, h_dec, c_dec, s_mix):
+        # update the rnn state using previous state information
+        i_mlp = T.concatenate([x_hat, h_dec, s_mix], axis=1)
+        i_dec = self.dec_mlp_in.apply(i_mlp)
+        h_dec, c_dec = self.dec_rnn.apply(
+                    states=h_dec, cells=c_dec,
                     inputs=i_dec, iterate=False)
-        c = c + self.writer.apply(h_dec)
-        return c, h_dec, c_dec
+        # get predicted probablities at this time step
+        x_log = self.dec_mlp_out.apply(h_dec)
+        x_prob = tensor.nnet.sigmoid(x_log)
+        # sample binary pixels using the uniform random values in u
+        x_hat = u < x_prob
+        return x_hat, h_dec, c_dec
 
     #------------------------------------------------------------------------
 
-    @application(inputs=['features'], outputs=['recons', 'kl'])
-    def reconstruct(self, features):
-        batch_size = features.shape[0]
+    @application(inputs=['x_in', 'x_out'], outputs=['x_hat', 'kl_mix'])
+    def reconstruct(self, x_in, x_out):
+        batch_size = x_in.shape[0]
         z_mix_dim = self.get_dim('z_mix')
-        z_gen_dim = self.get_dim('z_gen')
-        ce_dim = self.get_dim('c_enc')
         cd_dim = self.get_dim('c_dec')
-        he_dim = self.get_dim('h_enc')
         hd_dim = self.get_dim('h_dec')
+        im_rows = self.im_shape[0]
+        im_cols = self.im_shape[1]
 
-        # deal with the infinite mixture intialization
+        # get noise to transform for q(z | x)
         u_mix = self.theano_rng.normal(
                     size=(batch_size, z_mix_dim),
                     avg=0., std=1.)
-        f_mix = self.mix_enc_mlp.apply(features)
-        z_mix, akl_mix = self.mix_sampler.sample(f_mix, u_mix)
-        mix_init = self.mix_dec_mlp.apply(z_mix)
+
+        # compute conditional over z given x and sample from it
+        z_mix_mean, z_mix_logvar, z_mix = \
+                self.enc_x_to_z.apply(x_in, u_mix)
+        akl_mix = gaussian_kld(z_mix_mean, z_mix_logvar, 0.0, 0.0)
+        kl_mix = tensor.sum(akl_mix, axis=1)
+        kl_mix.name = "kl_mix"
+
+        # transform samples from q(z|x) into some seed state info
+        mix_init = self.enc_z_to_mix.apply(z_mix)
         cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
-        ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
-        he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):(cd_dim+hd_dim+ce_dim+he_dim)]
-        sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
+        sm0 = mix_init[:, (cd_dim+hd_dim):]
 
-        # Sample from mean-zeros std.-one Gaussian
-        u_draw = self.theano_rng.normal(
-                    size=(self.n_iter, batch_size, z_gen_dim),
-                    avg=0., std=1.)
+        # reshape target outputs for scanning over columns
+        x_out = x_out.reshape((batch_size, im_rows, im_cols), ndim=3)
+        x_obs = x_out.dimshuffle(2, 0, 1)
 
-        c, h_enc, c_enc, z, kl_draw, h_dec, c_dec = \
-            rvals = self.iterate(u=u_draw, h_enc=he0, c_enc=ce0, \
-                                 h_dec=hd0, c_dec=cd0, x=features, s_mix=sm0)
+        # scan over pixels column-wise for prediction log-likelihood
+        x_hat, h_dec, c_dec = self.iterate( \
+                x_obs=x_obs, h_dec=hd0, c_dec=cd0, s_mix=sm0)
 
-        # grab the observations generated by the DRAW model
-        x_recons = tensor.nnet.sigmoid(c[-1,:,:])
-        x_recons.name = "reconstruction"
-        # group up the klds from mixture and DRAW models
-        kl_mix = tensor.sum(akl_mix, axis=1)
-        klm_row = kl_mix.reshape((1, batch_size), ndim=2)
-        kl = tensor.vertical_stack(klm_row, kl_draw)
-        kl.name = "kl"
-        return x_recons, kl
+        # grab the predicted pixel probabilities in flattened form
+        x_hat = x_hat.dimshuffle(1, 2, 0).reshape((batch_size, (im_rows*im_cols)))
+        x_hat.name = "x_hat"
+        return x_hat, kl_mix
 
     @application(inputs=['n_samples'], outputs=['samples'])
     def sample(self, n_samples):
@@ -1064,27 +1068,28 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
         Returns 
         -------
 
-        samples : tensor3 (n_samples, n_iter, x_dim)
+        samples : tensor3 (n_samples, obs_dim)
         """
         z_mix_dim = self.get_dim('z_mix')
-        z_gen_dim = self.get_dim('z_gen')
         cd_dim = self.get_dim('c_dec')
         hd_dim = self.get_dim('h_dec')
+        im_rows = self.im_shape[0]
+        im_cols = self.im_shape[1]
 
-        # deal with the infinite mixture intialization
-        sm0 = self.theano_rng.normal(
+        # get noise to from the anchor for q(z | x)
+        z_mix = self.theano_rng.normal(
                     size=(n_samples, z_mix_dim),
                     avg=0., std=1.)
 
-        mix_init = self.mix_dec_mlp.apply(sm0)
-        cd0 = mix_init[:, 0:cd_dim]
+        # transform samples from q(z|x) into some seed state info
+        mix_init = self.enc_z_to_mix.apply(z_mix)
+        cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
+        sm0 = mix_init[:, (cd_dim+hd_dim):]
 
-        # Sample from zero-mean unit-std. Gaussian
-        u = self.theano_rng.normal(
-                    size=(self.n_iter, n_samples, z_gen_dim),
-                    avg=0., std=1.)
+        # generate some uniform random values to use for pixel sampling
+        u = self.theano_rng.uniform(
+                    size=(im_cols, n_samples, im_rows))
 
-        c, _, _, = self.decode(u=u, h_dec=hd0, c_dec=cd0, s_mix=sm0)
-        #c, _, _, center_y, center_x, delta = self.decode(u)
-        return tensor.nnet.sigmoid(c)
+        samples, _, _, = self.decode(u=u, h_dec=hd0, c_dec=cd0, s_mix=sm0)
+        return samples

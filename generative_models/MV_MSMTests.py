@@ -13,10 +13,11 @@ import theano.tensor as T
 # phil's sweetness
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 from NetLayers import relu_actfun, softplus_actfun, tanh_actfun, \
-                      apply_mask, binarize_data, row_shuffle
+                      apply_mask, binarize_data, row_shuffle, to_fX
 from InfNet import InfNet
-from MultiStageModel import MultiStageModel
+from MultiStageModelNS import MultiStageModel
 from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist
+from HelperFuncs import collect_obs_costs
 import utils
 
 
@@ -39,8 +40,10 @@ def test_with_model_init():
     del Xte
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 250
-    batch_reps = 1
+    batch_size = 100
+    carry_size = 20
+    batch_reps = 5
+    reset_prob = 0.05
 
 
     ############################################################
@@ -49,8 +52,8 @@ def test_with_model_init():
     obs_dim = Xtr.shape[1]
     z_dim = 20
     h_dim = 100
-    mix_dim = z_dim
-    jnt_dim = obs_dim + mix_dim
+    rnn_dim = z_dim
+    jnt_dim = obs_dim + rnn_dim
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -68,7 +71,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = tanh_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -83,12 +86,12 @@ def test_with_model_init():
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [(h_dim + mix_dim), 500, 500]
+    shared_config = [h_dim, 500, 500]
     top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = tanh_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -108,7 +111,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = tanh_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -128,7 +131,7 @@ def test_with_model_init():
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = tanh_actfun
+    params['activation'] = softplus_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -153,8 +156,8 @@ def test_with_model_init():
             p_sip1_given_si_hi=p_sip1_given_si_hi, \
             q_z_given_x=q_z_given_x, \
             q_hi_given_x_si=q_hi_given_x_si, \
-            obs_dim=obs_dim, z_dim=z_dim, h_dim=h_dim, \
-            model_init_mix=True, ir_steps=2, params=msm_params)
+            obs_dim=obs_dim, rnn_dim=rnn_dim, z_dim=z_dim, h_dim=h_dim, \
+            model_init_rnn=True, ir_steps=3, params=msm_params)
     MSM_VA = None
 
     ################################################################
@@ -164,7 +167,8 @@ def test_with_model_init():
     costs = [0. for i in range(10)]
     learn_rate = 0.001
     momentum = 0.5
-    tr_idx = np.arange(batch_size) + tr_samples
+    fresh_idx = np.arange(batch_size) + tr_samples
+    carry_idx = np.arange(carry_size)
     for i in range(500000):
         scale = min(1.0, ((i+1) / 2500.0))
         if (((i + 1) % 10000) == 0):
@@ -174,29 +178,35 @@ def test_with_model_init():
         else:
             momentum = 0.50
         # get the indices of training samples for this batch update
-        tr_idx += batch_size
-        if (np.max(tr_idx) >= tr_samples):
+        fresh_idx += batch_size
+        if (np.max(fresh_idx) >= tr_samples):
             # we finished an "epoch", so we rejumble the training set
             Xtr = row_shuffle(Xtr)
-            tr_idx = np.arange(batch_size)
+            fresh_idx = np.arange(batch_size)
+        if ((i == 0) or (npr.rand() < reset_prob)):
+            # sample a fully random batch
+            carry_idx = npr.randint(low=0,high=tr_samples,size=(carry_size,))
+        batch_idx = fresh_idx #np.concatenate([fresh_idx, carry_idx])
         # train on the training set
         MSM = MSM_TR
         MSM_VA = None
-        lam_kld = 1.2
-        #Xb_tr = binarize_data(Xtr.take(tr_idx, axis=0))
-        Xb_tr = Xtr.take(tr_idx, axis=0)
-        Xb_tr = Xb_tr.astype(theano.config.floatX)
+        lam_kld = 1.0
         # set sgd and objective function hyperparams for this update
         MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
-                mom_1=scale*momentum, mom_2=0.95)
+                mom_1=scale*momentum, mom_2=0.98)
         MSM.set_train_switch(1.0)
         MSM.set_lam_nll(lam_nll=1.0)
         MSM.set_lam_kld(lam_kld_1=lam_kld, lam_kld_2=lam_kld)
         MSM.set_lam_l2w(1e-4)
-        MSM.set_kzg_weight(0.05)
+        MSM.set_kzg_weight(0.1)
         # perform a minibatch update and record the cost for this batch
+        Xb_tr = to_fX( Xtr.take(batch_idx, axis=0) )
         result = MSM.train_joint(Xb_tr, Xb_tr, batch_reps)
-        costs = [(costs[j] + result[j]) for j in range(len(result))]
+        batch_costs = result[-1] # get the per-input costs
+        obs_costs = collect_obs_costs(batch_costs, batch_reps)
+        carry_idx = batch_idx[np.argsort(-obs_costs)[0:carry_size]]
+
+        costs = [(costs[j] + result[j]) for j in range(len(result)-1)]
         if ((i % 500) == 0):
             costs = [(v / 500.0) for v in costs]
             str1 = "-- batch {0:d} --".format(i)
@@ -212,8 +222,7 @@ def test_with_model_init():
         if (((i % 2000) == 0) or ((i < 10000) and ((i % 1000) == 0))):
             # Get some validation samples for computing diagnostics
             Xva = row_shuffle(Xva)
-            Xb_va = Xva[0:5000].astype(theano.config.floatX)
-            #Xb_va = binarize_data(Xva[0:5000])
+            Xb_va = to_fX( Xva[0:5000] )
             # draw some independent random samples from the model
             samp_count = 200
             model_samps = MSM.sample_from_prior(samp_count)
@@ -288,10 +297,7 @@ def test_with_model_init():
             file_name = "MV_B_STEP_VFES_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(step_kld.shape[0]).ravel(), \
                     (np.cumsum(step_kld.ravel())+step_nll.ravel()), file_name)
-            #Xb_tr = binarize_data(Xtr.take(tr_idx, axis=0))
-            tr_idx = npr.randint(low=0,high=tr_samples,size=(5000,))
-            Xb_tr = Xtr.take(tr_idx, axis=0)
-            Xb_tr = Xb_tr.astype(theano.config.floatX)
+            Xb_tr = to_fX( Xtr[0:5000] )
             fe_terms = MSM.compute_fe_terms(Xb_tr, Xb_tr, 30)
             fe_nll = np.mean(fe_terms[0])
             fe_kld = np.mean(fe_terms[1])
