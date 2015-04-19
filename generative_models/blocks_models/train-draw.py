@@ -151,15 +151,25 @@ def main(name, epochs, batch_size, learning_rate,
     #x_recons = samples[-1, :, :]
     #x_recons = samples[-1, :, :]
 
-    recons_term = BinaryCrossEntropy().apply(x, x_recons)
-    recons_term.name = "recons_term"
+    nll_term = BinaryCrossEntropy().apply(x, x_recons)
+    nll_term.name = "nll_term"
 
-    cost = recons_term + kl_terms.sum(axis=0).mean()
-    cost.name = "nll_bound"
+    kld_term = kl_terms.sum(axis=0).mean()
+    kld_term.name = "kld_term"
 
-    #------------------------------------------------------------
-    cg = ComputationGraph([cost])
+    nll_bound = nll_term + kld_term
+    nll_bound.name = "nll_bound"
+
+    # grab the computation graph for the VFE bound on NLL
+    cg = ComputationGraph([nll_bound])
     params = VariableFilter(roles=[PARAMETER])(cg.variables)
+
+    # apply some l2 regularization to the model parameters
+    reg_term = 1e-5 * sum([tensor.sum(p**2.0) for p in params])
+    reg_term.name = "reg_term"
+
+    # compute the final cost of VFE + regularization
+    cost = nll_bound + reg_term
 
     algorithm = GradientDescent(
         cost=cost, 
@@ -256,7 +266,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, dest="name",
                 default="mnist", help="Name for this experiment")
     parser.add_argument("--epochs", type=int, dest="epochs",
-                default=100, help="Number of training epochs to do")
+                default=1000, help="Number of training epochs to do")
     parser.add_argument("--bs", "--batch-size", type=int, dest="batch_size",
                 default=200, help="Size of each mini-batch")
     parser.add_argument("--lr", "--learning-rate", type=float, dest="learning_rate",
