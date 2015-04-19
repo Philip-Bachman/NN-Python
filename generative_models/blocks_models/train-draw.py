@@ -169,6 +169,7 @@ def main(name, epochs, batch_size, learning_rate,
 
     # compute the final cost of VFE + regularization
     cost = nll_bound + reg_term
+    cost.name = "full_cost"
 
     algorithm = GradientDescent(
         cost=cost, 
@@ -185,7 +186,7 @@ def main(name, epochs, batch_size, learning_rate,
 
     #------------------------------------------------------------------------
     # Setup monitors
-    monitors = [cost]
+    monitors = [cost, nll_bound]
     for t in range(n_iter):
         kl_term_t = kl_terms[t,:].mean()
         kl_term_t.name = "kl_term_%d" % t
@@ -202,7 +203,7 @@ def main(name, epochs, batch_size, learning_rate,
     train_monitors += [aggregation.mean(algorithm.total_step_norm)]
     # Live plotting...
     plot_channels = [
-        ["train_nll_bound", "test_nll_bound"],
+        ["train_nll_bound", "valid_nll_bound"],
         ["train_kl_term_%d" % t for t in range(n_iter)],
         #["train_recons_term_%d" % t for t in range(n_iter)],
         ["train_total_gradient_norm", "train_total_step_norm"]
@@ -212,11 +213,11 @@ def main(name, epochs, batch_size, learning_rate,
 
     if datasource == 'mnist':
         mnist_train = BinarizedMNIST("train", sources=['features'], flatten=['features'])
-        # mnist_valid = BinarizedMNIST("valid", sources=['features'])
-        mnist_test = BinarizedMNIST("test", sources=['features'], flatten=['features'])
+        mnist_valid = BinarizedMNIST("test", sources=['features'], flatten=['features'])
+        # mnist_test = BinarizedMNIST("test", sources=['features'], flatten=['features'])
         train_stream = DataStream(mnist_train, iteration_scheme=SequentialScheme(mnist_train.num_examples, batch_size))
-        # valid_stream = DataStream(mnist_valid, iteration_scheme=SequentialScheme(mnist_valid.num_examples, batch_size))
-        test_stream  = DataStream(mnist_test,  iteration_scheme=SequentialScheme(mnist_test.num_examples, batch_size))
+        valid_stream = DataStream(mnist_valid, iteration_scheme=SequentialScheme(mnist_valid.num_examples, batch_size))
+        # test_stream  = DataStream(mnist_test,  iteration_scheme=SequentialScheme(mnist_test.num_examples, batch_size))
     else:
         raise Exception('Unknown name %s'%datasource)
 
@@ -232,14 +233,14 @@ def main(name, epochs, batch_size, learning_rate,
                 train_monitors, 
                 prefix="train",
                 after_epoch=True),
-            # DataStreamMonitoring(
-            #     monitors,
-            #     valid_stream,
-            #     prefix="valid"),
             DataStreamMonitoring(
                 monitors,
-                test_stream,
-                prefix="test"),
+                valid_stream,
+                prefix="valid"),
+            # DataStreamMonitoring(
+            #     monitors,
+            #     test_stream,
+            #     prefix="test"),
             Checkpoint(name+".pkl", after_epoch=True, save_separately=['log', 'model']),
             # Dump(name),
             Plot(name, channels=plot_channels),

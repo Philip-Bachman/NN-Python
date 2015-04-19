@@ -99,6 +99,7 @@ class MultiStageModel(object):
         self.x_in = x_in
         self.x_out = x_out
         self.batch_reps = T.lscalar()
+        self.iter_clock = T.eye(self.ir_steps)
 
         # setup switching variable for changing between sampling/training
         zero_ary = to_fX( np.zeros((1,)) )
@@ -169,22 +170,25 @@ class MultiStageModel(object):
 
         for i in range(self.ir_steps):
             print("Building MSM step {0:d}...".format(i+1))
+            # get variables used throughout this refinement step
             si_rnn = self.si_rnn[i]
             si_obs = self.si_obs[i]
             si_obs_trans = self.obs_transform(si_obs)
             grad_ll = self.x_out - si_obs_trans
+            clock_vals = T.alloc(0.0, si_rnn.shape[0], self.ir_steps) + \
+                    self.iter_clock[i]
 
             # get droppy versions of
             drop_obs = drop_mask * si_obs_trans
-            drop_grad = drop_mask * grad_ll
+            drop_grad = drop_mask * self.x_out #grad_ll
 
             # get samples of next hi, conditioned on current si
             hi_p_mean, hi_p_logvar, hi_p = self.p_hi_given_si.apply( \
-                    T.horizontal_stack(drop_obs, si_rnn), \
+                    T.horizontal_stack(drop_obs, si_rnn, clock_vals), \
                     do_samples=True)
             # now we build the model for variational hi given si
             hi_q_mean, hi_q_logvar, hi_q = self.q_hi_given_x_si.apply( \
-                    T.horizontal_stack(drop_grad, drop_obs, si_rnn), \
+                    T.horizontal_stack(drop_grad, drop_obs, si_rnn, clock_vals), \
                     do_samples=True)
             # make hi samples that can be switched between hi_p and hi_q
             self.hi.append( ((self.train_switch[0] * hi_q) + \
@@ -198,8 +202,9 @@ class MultiStageModel(object):
             # MOD TAG 1
             # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
             si_obs_step, _ = self.p_sip1_given_si_hi.apply( \
-                    T.horizontal_stack(self.hi[i], si_rnn), do_samples=False)
-                    #self.hi[i], do_samples=False)
+                    self.hi[i], do_samples=False)
+                    #T.horizontal_stack(self.hi[i], si_rnn), do_samples=False)
+                    
                     
             # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
             sip1_obs = si_obs + si_obs_step
@@ -208,7 +213,7 @@ class MultiStageModel(object):
             self.si_obs.append(sip1_obs)
             self.si_rnn.append(sip1_rnn)
 
-        self._check_model_shapes()
+        #self._check_model_shapes()
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
         ######################################################################
