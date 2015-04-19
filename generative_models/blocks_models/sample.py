@@ -101,6 +101,13 @@ if __name__ == "__main__":
     samples = do_sample(16*16)
     #samples = np.random.normal(size=(16, 100, 28*28))
 
+    if (len(samples.shape) == 2):
+        # there was only one iter of sampling, so fake more iters
+        temp = np.zeros((3, samples.shape[0], samples.shape[1]))
+        temp[0,:,:] = samples.copy()
+        temp[1,:,:] = samples.copy()
+        samples = temp
+
     n_iter, N, D = samples.shape
 
     samples = samples.reshape( (n_iter, N, args.size, args.size) )

@@ -40,9 +40,9 @@ def test_with_model_init():
     del Xte
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 100
+    batch_size = 500
     carry_size = 20
-    batch_reps = 5
+    batch_reps = 1
     reset_prob = 0.05
 
 
@@ -86,7 +86,7 @@ def test_with_model_init():
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [h_dim, 500, 500]
+    shared_config = [(h_dim + rnn_dim), 500, 500]
     top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -157,7 +157,7 @@ def test_with_model_init():
             q_z_given_x=q_z_given_x, \
             q_hi_given_x_si=q_hi_given_x_si, \
             obs_dim=obs_dim, rnn_dim=rnn_dim, z_dim=z_dim, h_dim=h_dim, \
-            model_init_rnn=True, ir_steps=3, params=msm_params)
+            model_init_rnn=True, ir_steps=4, params=msm_params)
     MSM_VA = None
 
     ################################################################
@@ -165,7 +165,7 @@ def test_with_model_init():
     ################################################################
     out_file = open("MV_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.001
+    learn_rate = 0.0005
     momentum = 0.5
     fresh_idx = np.arange(batch_size) + tr_samples
     carry_idx = np.arange(carry_size)
@@ -199,6 +199,8 @@ def test_with_model_init():
         MSM.set_lam_kld(lam_kld_1=lam_kld, lam_kld_2=lam_kld)
         MSM.set_lam_l2w(1e-4)
         MSM.set_kzg_weight(0.1)
+        MSM.set_drop_rate(0.3)
+        MSM.p_hi_given_si.set_bias_noise(0.2)
         # perform a minibatch update and record the cost for this batch
         Xb_tr = to_fX( Xtr.take(batch_idx, axis=0) )
         result = MSM.train_joint(Xb_tr, Xb_tr, batch_reps)
@@ -220,6 +222,8 @@ def test_with_model_init():
             out_file.flush()
             costs = [0.0 for v in costs]
         if (((i % 2000) == 0) or ((i < 10000) and ((i % 1000) == 0))):
+            MSM.set_drop_rate(0.0)
+            MSM.p_hi_given_si.set_bias_noise(0.0)
             # Get some validation samples for computing diagnostics
             Xva = row_shuffle(Xva)
             Xb_va = to_fX( Xva[0:5000] )

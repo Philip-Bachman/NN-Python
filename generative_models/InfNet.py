@@ -16,7 +16,7 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
-                      softplus_actfun, constFX
+                      softplus_actfun, constFX, to_fX
 
 ####################################
 # INFREENCE NETWORK IMPLEMENTATION #
@@ -323,7 +323,7 @@ class InfNet(object):
         if not ('sigma_scale' in self.shared_param_dicts['sigma'][-1]):
             # we use a hack-ish check to remain compatible with loading models
             # that were saved before the addition of the sigma_scale param.
-            zero_ary = np.zeros((1,)).astype(theano.config.floatX)
+            zero_ary = to_fX(np.zeros((1,)))
             self.sigma_scale = theano.shared(value=zero_ary)
             new_dict = {'sigma_scale': self.sigma_scale}
             self.shared_param_dicts['sigma'].append(new_dict)
@@ -397,13 +397,14 @@ class InfNet(object):
         # construct the outputs we will want to access
         output_mean = mu_acts[-1]
         output_logvar = sigma_acts[-1]
-        output_samples = output_mean + \
-                ( (self.sigma_scale[0] * T.exp(0.5*output_logvar)) * \
-                self.rng.normal(size=output_mean.shape, avg=0.0, std=1.0, \
-                dtype=theano.config.floatX) )
+
         # wrap them up for easy returnage
         result = [output_mean, output_logvar]
         if do_samples:
+            output_samples = output_mean + \
+                    ( (self.sigma_scale[0] * T.exp(0.5*output_logvar)) * \
+                    self.rng.normal(size=output_mean.shape, avg=0.0, std=1.0, \
+                    dtype=theano.config.floatX) )
             result.append(output_samples)
         return result
 
@@ -438,7 +439,21 @@ class InfNet(object):
         """
         zero_ary = np.zeros((1,))
         new_scale = zero_ary + sigma_scale
-        self.sigma_scale.set_value(new_scale.astype(theano.config.floatX))
+        self.sigma_scale.set_value(to_fX(new_scale))
+        return
+
+    def set_bias_noise(self, bias_noise=0.0):
+        """
+        Set the bias noise in all hidden layers to the given value.
+        """
+        new_ary = np.zeros((1,)) + bias_noise
+        new_bn = to_fX( new_ary )
+        for layer in self.shared_layers:
+            layer.bias_noise.set_value(new_bn)
+        for layer in self.mu_layers:
+            layer.bias_noise.set_value(new_bn)
+        for layer in self.sigma_layers:
+            layer.bias_noise.set_value(new_bn)
         return
 
     def _act_reg_cost(self):
@@ -471,15 +486,15 @@ class InfNet(object):
         for layer in self.shared_layers:
             b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
             b_vec = b_vec + (b_std * npr.randn(*b_vec.shape))
-            layer.b.set_value(b_vec.astype(theano.config.floatX))
+            layer.b.set_value(to_fX(b_vec))
         for layer in self.mu_layers[:-1]:
             b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
             b_vec = b_vec + (b_std * npr.randn(*b_vec.shape))
-            layer.b.set_value(b_vec.astype(theano.config.floatX))
+            layer.b.set_value(to_fX(b_vec))
         for layer in self.sigma_layers[:-1]:
             b_vec = (0.0 * layer.b.get_value(borrow=False)) + b_init
             b_vec = b_vec + (b_std * npr.randn(*b_vec.shape))
-            layer.b.set_value(b_vec.astype(theano.config.floatX))
+            layer.b.set_value(to_fX(b_vec))
         return
 
     def shared_param_clone(self, rng=None, Xd=None):
@@ -558,7 +573,7 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, \
         for numpy_dict in self_dot_numpy_param_dicts[layer_group]:
             shared_dict = {}
             for key in numpy_dict:
-                val = numpy_dict[key].astype(theano.config.floatX)
+                val = to_fX(numpy_dict[key])
                 shared_dict[key] = theano.shared(val)
             self_dot_shared_param_dicts[layer_group].append(shared_dict)
     # now, create a PeaNet with the configuration we just unpickled

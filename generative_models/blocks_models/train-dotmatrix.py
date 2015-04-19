@@ -34,7 +34,7 @@ from blocks.extensions.saveload import Checkpoint, Dump
 from blocks.extensions.monitoring import DataStreamMonitoring, TrainingDataMonitoring
 from blocks.main_loop import MainLoop
 from blocks.model import Model
-from blocks.bricks import Tanh, Identity
+from blocks.bricks import Tanh, Identity, Rectifier
 from blocks.bricks.cost import BinaryCrossEntropy
 from blocks.bricks.recurrent import SimpleRecurrent, LSTM
 import cPickle as pickle
@@ -44,18 +44,14 @@ from models import *
 fuel.config.floatX = theano.config.floatX
 
 #----------------------------------------------------------------------------
-def main(name, epochs, batch_size, learning_rate, attention,
-         n_iter, mix_dim, enc_dim, dec_dim, z_dim, oldmodel):
+def main(name, epochs, batch_size, learning_rate,
+         z_dim, mix_dim, enc_dim, dec_dim, oldmodel):
 
-    datasource = name
-    if datasource == 'mnist':
-        x_dim = 28*28
-        img_height, img_width = (28, 28)
-    elif datasource == 'sketch':
-        x_dim = 56*56
-        img_height, img_width = (56, 56)
-    else:
-        raise Exception('Unknown name %s'%datasource)
+    datasource = 'mnist'
+    x_dim = 28*28
+    im_shape = (28, 28)
+    im_rows = 28
+    im_cols = 28
     
     rnninits = {
         #'weights_init': Orthogonal(),
@@ -67,29 +63,6 @@ def main(name, epochs, batch_size, learning_rate, attention,
         'weights_init': IsotropicGaussian(0.01),
         'biases_init': Constant(0.),
     }
-    
-    # if attention != "":
-    #     read_N, write_N = attention.split(',')
-    
-    #     read_N = int(read_N)
-    #     write_N = int(write_N)
-    #     read_dim = 2*read_N**2
-
-    #     reader = AttentionReader(x_dim=x_dim, dec_dim=dec_dim,
-    #                              width=img_width, height=img_height,
-    #                              N=read_N, **inits)
-    #     writer = AttentionWriter(input_dim=dec_dim, output_dim=x_dim,
-    #                              width=img_width, height=img_height,
-    #                              N=write_N, **inits)
-    #     attention_tag = "r%d-w%d" % (read_N, write_N)
-    # else:
-    #     read_dim = 2*x_dim
-
-    #     reader = Reader(x_dim=x_dim, dec_dim=dec_dim, **inits)
-    #     writer = Writer(input_dim=dec_dim, output_dim=x_dim, **inits)
-
-    #     attention_tag = "full"
-    attention_tag = "full"
 
     #----------------------------------------------------------------------
 
@@ -106,72 +79,50 @@ def main(name, epochs, batch_size, learning_rate, attention,
         return "%s%d" % (leading, -exp)
 
     lr_str = lr_tag(learning_rate)
-    name = "%s-%s-t%d-enc%d-dec%d-z%d-lr%s" % (name, attention_tag, n_iter, enc_dim, dec_dim, z_dim, lr_str)
+    name = "%s-enc%d-dec%d-zd%d-md%d-lr%s" % (name, enc_dim, dec_dim, z_dim, mix_dim, lr_str)
 
     print("\nRunning experiment %s" % name)
     print("         learning rate: %5.3f" % learning_rate)
-    print("             attention: %s" % attention)
-    print("          n_iterations: %d" % n_iter)
     print("     encoder dimension: %d" % enc_dim)
-    print("           z dimension: %d" % z_dim)
     print("     decoder dimension: %d" % dec_dim)
+    print("           z dimension: %d" % z_dim)
+    print("         mix dimension: %d" % mix_dim)
+    
     print()
 
     #----------------------------------------------------------------------
-
-    # setup the reader and writer
-    read_dim = 2*x_dim
-    reader_mlp = Reader(x_dim=x_dim, dec_dim=dec_dim, **inits)
-    writer_mlp = MLP([None], [dec_dim, x_dim], \
-                     name="writer_mlp", **inits)
-    attention_tag = "full"
     
     # setup the mixture weight sampler
-    mix_enc_mlp = CondNet([Tanh()], [x_dim, 500, mix_dim], \
-                          name="mix_enc_mlp", **inits)
-    mix_dec_mlp = MLP([Tanh(), Tanh()], \
-                      [mix_dim, 500, (2*enc_dim + 2*dec_dim + mix_dim)], \
-                      name="mix_dec_mlp", **inits)
-    # setup the components of the generative DRAW model
-    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
-                        name="enc_mlp_in", **inits)
-    dec_mlp_in = MLP([Identity()], [             (z_dim + mix_dim), 4*dec_dim], \
-                        name="dec_mlp_in", **inits)
-    enc_mlp_out = CondNet([], [enc_dim, z_dim], name="enc_mlp_out", **inits)
-    dec_mlp_out = CondNet([], [dec_dim, z_dim], name="dec_mlp_out", **inits)
-    enc_rnn = LSTM(dim=enc_dim, name="enc_rnn", **rnninits)
-    dec_rnn = LSTM(dim=dec_dim, name="dec_rnn", **rnninits)
+    enc_x_to_z = CondNet(activations=[Rectifier()], 
+            dims=[x_dim, enc_dim, z_dim], **inits)
+    enc_z_to_mix = MLP(activations=[Rectifier(), Tanh()],
+            dims=[z_dim, enc_dim, (2*dec_dim + mix_dim)], **inits)
+    dec_rnn = LSTM(dim=dec_dim, name="RNN_dec", **rnninits)
+    dec_mlp_in = MLP(activations=[None],
+            dims=[(im_rows + dec_dim + mix_dim), 4*dec_dim], **inits)
+    dec_mlp_out = MLP(activations=[None],
+            dims=[dec_dim, im_rows], **inits)
 
-    draw = IMoDrawModels(
-                n_iter,
-                mix_enc_mlp=mix_enc_mlp,
-                mix_dec_mlp=mix_dec_mlp,
-                reader_mlp=reader_mlp,
-                enc_mlp_in=enc_mlp_in,
-                enc_mlp_out=enc_mlp_out,
-                enc_rnn=enc_rnn,
+    dm_model = DotMatrix(
+                enc_x_to_z=enc_x_to_z,
+                enc_z_to_mix=enc_z_to_mix,
+                dec_rnn=dec_rnn,
                 dec_mlp_in=dec_mlp_in,
                 dec_mlp_out=dec_mlp_out,
-                dec_rnn=dec_rnn,
-                writer_mlp=writer_mlp)
-    draw.initialize()
+                im_shape=im_shape,
+                mix_dim=mix_dim)
+    dm_model.initialize()
 
     #------------------------------------------------------------------------
     x = tensor.matrix('features')
     
-    #x_recons = 1. + x
-    x_recons, kl_terms = draw.reconstruct(x)
-    #x_recons, _, _, _, _ = draw.silly(x, n_steps=10, batch_size=100)
-    #x_recons = x_recons[-1,:,:]
-
-    #samples = draw.sample(100) 
-    #x_recons = samples[-1, :, :]
-    #x_recons = samples[-1, :, :]
+    x_recons, kl_terms = dm_model.reconstruct(x, x)
+    x_recons.name = "OO_x_recons_OO"
 
     nll_term = BinaryCrossEntropy().apply(x, x_recons)
     nll_term.name = "nll_term"
 
-    kld_term = kl_terms.sum(axis=0).mean()
+    kld_term = kl_terms.mean()
     kld_term.name = "kld_term"
 
     nll_bound = nll_term + kld_term
@@ -182,7 +133,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
     params = VariableFilter(roles=[PARAMETER])(cg.variables)
 
     # apply some l2 regularization to the model parameters
-    reg_term = 1e-5 * sum([tensor.sum(p**2.0) for p in params])
+    reg_term = (1e-5 * sum([tensor.sum(p**2.0) for p in params]))
     reg_term.name = "reg_term"
 
     # compute the final cost of VFE + regularization
@@ -200,16 +151,6 @@ def main(name, epochs, batch_size, learning_rate, attention,
     #------------------------------------------------------------------------
     # Setup monitors
     monitors = [nll_bound, nll_term, kld_term, reg_term]
-    for t in range(n_iter+1):
-        kl_term_t = kl_terms[t,:].mean()
-        kl_term_t.name = "kl_term_%d" % t
-
-        #x_recons_t = T.nnet.sigmoid(c[t,:,:])
-        #recons_term_t = BinaryCrossEntropy().apply(x, x_recons_t)
-        #recons_term_t = recons_term_t.mean()
-        #recons_term_t.name = "recons_term_%d" % t
-
-        monitors += [kl_term_t]
 
     train_monitors = monitors[:]
     train_monitors += [aggregation.mean(algorithm.total_gradient_norm)]
@@ -217,8 +158,6 @@ def main(name, epochs, batch_size, learning_rate, attention,
     # Live plotting...
     plot_channels = [
         ["train_nll_bound", "valid_nll_bound"],
-        ["train_kl_term_%d" % t for t in range(n_iter+1)],
-        #["train_recons_term_%d" % t for t in range(n_iter)],
         ["train_total_gradient_norm", "train_total_step_norm"]
     ]
 
@@ -278,18 +217,14 @@ if __name__ == "__main__":
                 default=200, help="Size of each mini-batch")
     parser.add_argument("--lr", "--learning-rate", type=float, dest="learning_rate",
                 default=1e-3, help="Learning rate")
-    parser.add_argument("--attention", "-a", type=str, default="",
-                help="Use attention mechanism (read_window,write_window)")
-    parser.add_argument("--niter", type=int, dest="n_iter",
-                default=10, help="No. of iterations")
-    parser.add_argument("--mix-dim", type=int, dest="mix_dim",
-                default=20, help="Continuous mixture dimension")
-    parser.add_argument("--enc-dim", type=int, dest="enc_dim",
-                default=256, help="Encoder RNN state dimension")
-    parser.add_argument("--dec-dim", type=int, dest="dec_dim",
-                default=256, help="Decoder  RNN state dimension")
     parser.add_argument("--z-dim", type=int, dest="z_dim",
-                default=100, help="Z-vector dimension")
+                default=25, help="Z-vector dimension")
+    parser.add_argument("--mix-dim", type=int, dest="mix_dim",
+                default=10, help="Continuous mixture dimension")
+    parser.add_argument("--enc-dim", type=int, dest="enc_dim",
+                default=256, help="Encoder MLP dimension")
+    parser.add_argument("--dec-dim", type=int, dest="dec_dim",
+                default=256, help="Decoder RNN dimension")
     parser.add_argument("--oldmodel", type=str,
                 help="Use a model pkl file created by a previous run as a starting point for all parameters")
     args = parser.parse_args()

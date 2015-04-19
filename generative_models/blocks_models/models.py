@@ -571,57 +571,39 @@ class DrawModel(BaseRecurrent, Initializable, Random):
 ############################################
 
 class IMoDrawModels(BaseRecurrent, Initializable, Random):
-    def __init__(self, n_iter, mix_enc_mlp, mix_sampler, mix_dec_mlp,
-                    reader, encoder_mlp, encoder_rnn, draw_sampler, 
-                    decoder_mlp, decoder_rnn, writer, **kwargs):
+    def __init__(self, n_iter, mix_enc_mlp, mix_dec_mlp,
+                    reader_mlp, enc_mlp_in, enc_rnn, enc_mlp_out,
+                    dec_mlp_in, dec_rnn, dec_mlp_out, writer_mlp,
+                    **kwargs):
         super(IMoDrawModels, self).__init__(**kwargs)
         # record the desired step count
         self.n_iter = n_iter
         # grab handles for mixture stuff
         self.mix_enc_mlp = mix_enc_mlp
-        self.mix_sampler = mix_sampler
         self.mix_dec_mlp = mix_dec_mlp
         # grab handles for DRAW model stuff
-        self.reader = reader
-        self.encoder_mlp = encoder_mlp
-        self.encoder_rnn = encoder_rnn
-        self.draw_sampler = draw_sampler
-        self.decoder_mlp = decoder_mlp
-        self.decoder_rnn = decoder_rnn
-        self.writer = writer
+        self.reader_mlp = reader_mlp
+        self.enc_mlp_in = enc_mlp_in
+        self.enc_rnn = enc_rnn
+        self.enc_mlp_out = enc_mlp_out
+        self.dec_mlp_in = dec_mlp_in
+        self.dec_rnn = dec_rnn
+        self.dec_mlp_out = dec_mlp_out
+        self.writer_mlp = writer_mlp
 
         # record the sub-models that underlie this model
-        self.children = [self.reader, self.mix_enc_mlp, self.mix_sampler,
-                         self.mix_dec_mlp, self.encoder_mlp, self.encoder_rnn,
-                         self.draw_sampler, self.writer, self.decoder_mlp,
-                         self.decoder_rnn]
+        self.children = [self.mix_enc_mlp, self.mix_dec_mlp, self.reader_mlp,
+                         self.enc_mlp_in, self.enc_rnn, self.enc_mlp_out,
+                         self.dec_mlp_in, self.dec_rnn, self.dec_mlp_out,
+                         self.writer_mlp]
         return
 
     def _allocate(self):
         c_dim = self.get_dim('c')
-        h_enc_dim = self.get_dim('h_enc')
-        h_dec_dim = self.get_dim('h_dec')
-        c_enc_dim = self.get_dim('c_enc')
-        c_dec_dim = self.get_dim('c_dec')
-
-        self.c_0 = shared_floatx_nans((1, c_dim),
-                                          name='c_0')
-        self.c_enc_0 = shared_floatx_nans((1, c_enc_dim),
-                                               name='c_enc_0')
-        self.c_dec_0 = shared_floatx_nans((1, c_dec_dim),
-                                               name='c_dec_0')
-        self.h_enc_0 = shared_floatx_nans((1, h_enc_dim),
-                                               name='h_enc_0')
-        self.h_dec_0 = shared_floatx_nans((1, h_dec_dim),
-                                               name='h_dec_0')
+        self.c_0 = shared_floatx_nans((1, c_dim), name='c_0')
         add_role(self.c_0, PARAMETER)
-        add_role(self.c_enc_0, PARAMETER)
-        add_role(self.c_dec_0, PARAMETER)
-        add_role(self.h_enc_0, PARAMETER)
-        add_role(self.h_dec_0, PARAMETER)
         # add the theano shared variables to our parameter lists
-        self.params.extend([self.c_0, self.c_enc_0, self.c_dec_0, \
-                            self.h_enc_0, self.h_dec_0])
+        self.params.extend([ self.c_0 ])
         return
 
     def _initialize(self):
@@ -634,19 +616,19 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
  
     def get_dim(self, name):
         if name == 'c':
-            return self.reader.get_dim('x_dim')
+            return self.reader_mlp.get_dim('x_dim')
         elif name == 'z_mix':
-            return self.mix_sampler.get_dim('output')
+            return self.mix_enc_mlp.get_dim('output')
         elif name == 'h_enc':
-            return self.encoder_rnn.get_dim('states')
+            return self.enc_rnn.get_dim('states')
         elif name == 'c_enc':
-            return self.encoder_rnn.get_dim('cells')
+            return self.enc_rnn.get_dim('cells')
         elif name in ['z_gen', 'z_mean', 'z_log_sigma']:
-            return self.draw_sampler.get_dim('output')
+            return self.enc_mlp_out.get_dim('output')
         elif name == 'h_dec':
-            return self.decoder_rnn.get_dim('states')
+            return self.dec_rnn.get_dim('states')
         elif name == 'c_dec':
-            return self.decoder_rnn.get_dim('cells')
+            return self.dec_rnn.get_dim('cells')
         elif name == 'kl':
             return 0
         elif name == 'center_y':
@@ -665,16 +647,29 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
                states=['c', 'h_enc', 'c_enc', 'z_gen', 'kl', 'h_dec', 'c_dec'],
                outputs=['c', 'h_enc', 'c_enc', 'z_gen', 'kl', 'h_dec', 'c_dec'])
     def iterate(self, u, c, h_enc, c_enc, z_gen, kl, h_dec, c_dec, x, s_mix):
+        # get the current "reconstruction error"
         x_hat = x - tensor.nnet.sigmoid(c)
-        r = self.reader.apply(x, x_hat, h_dec)
-        i_enc = self.encoder_mlp.apply(tensor.concatenate([r, h_dec, s_mix], axis=1))
-        h_enc, c_enc = self.encoder_rnn.apply(states=h_enc, cells=c_enc, inputs=i_enc, iterate=False)
-        z_gen, akl = self.draw_sampler.sample(h_enc, u)
+        r = self.reader_mlp.apply(x, x_hat, h_dec)
+        # update the encoder RNN state
+        i_enc = self.enc_mlp_in.apply(tensor.concatenate([r, h_dec, s_mix], axis=1))
+        h_enc, c_enc = self.enc_rnn.apply(states=h_enc, cells=c_enc,
+                                          inputs=i_enc, iterate=False)
+        # estimate encoder conditional over z given h_enc
+        q_gen_mean, q_gen_logvar, q_z_gen = \
+                self.enc_mlp_out.apply(h_enc, u)
+        # estimate decoder conditional over z given h_dec
+        p_gen_mean, p_gen_logvar, p_z_gen = \
+                self.dec_mlp_out.apply(h_dec, u)
+        # compute KL(q(z | h_enc) || p(z | h_dec))
+        akl = gaussian_kld(q_gen_mean, q_gen_logvar, p_gen_mean, p_gen_logvar)
         kl = tensor.sum(akl, axis=1)
-
-        i_dec = self.decoder_mlp.apply(tensor.concatenate([z_gen, s_mix], axis=1))
-        h_dec, c_dec = self.decoder_rnn.apply(states=h_dec, cells=c_dec, inputs=i_dec, iterate=False)
-        c = c + self.writer.apply(h_dec)
+        z_gen = q_z_gen
+        # update the decoder RNN state
+        i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
+        h_dec, c_dec = self.dec_rnn.apply(states=h_dec, cells=c_dec, \
+                                          inputs=i_dec, iterate=False)
+        # apply a stochastic update to the canvas
+        c = c + self.writer_mlp.apply(h_dec)
         return c, h_enc, c_enc, z_gen, kl, h_dec, c_dec
 
     @recurrent(sequences=['u'], contexts=['s_mix'], 
@@ -682,18 +677,24 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
                outputs=['c', 'h_dec', 'c_dec'])
     def decode(self, u, c, h_dec, c_dec, s_mix):
         batch_size = c.shape[0]
-        z = self.draw_sampler.sample_from_prior(u)
-        i_dec = self.decoder_mlp.apply(tensor.concatenate([z, s_mix], axis=1))
-        h_dec, c_dec = self.decoder_rnn.apply(
-                    states=h_dec, cells=c_dec, 
+        # sample z from p(z | h_dec)
+        p_gen_mean, p_gen_logvar, p_z_gen = \
+                self.dec_mlp_out.apply(h_dec, u)
+        z_gen = p_z_gen
+        # update the decoder RNN state
+        i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
+        h_dec, c_dec = self.dec_rnn.apply(
+                    states=h_dec, cells=c_dec,
                     inputs=i_dec, iterate=False)
-        c = c + self.writer.apply(h_dec)
+        # apply a stochastic update to the canvas
+        c = c + self.writer_mlp.apply(h_dec)
         return c, h_dec, c_dec
 
     #------------------------------------------------------------------------
 
     @application(inputs=['features'], outputs=['recons', 'kl'])
     def reconstruct(self, features):
+        # get important size and shape information
         batch_size = features.shape[0]
         z_mix_dim = self.get_dim('z_mix')
         z_gen_dim = self.get_dim('z_gen')
@@ -706,29 +707,29 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         u_mix = self.theano_rng.normal(
                     size=(batch_size, z_mix_dim),
                     avg=0., std=1.)
-        f_mix = self.mix_enc_mlp.apply(features)
-        z_mix, akl_mix = self.mix_sampler.sample(f_mix, u_mix)
+        z_mix_mean, z_mix_logvar, z_mix = \
+                self.mix_enc_mlp.apply(features, u_mix)
+        akl_mix = gaussian_kld(z_mix_mean, z_mix_logvar, 0.0, 0.0)
         mix_init = self.mix_dec_mlp.apply(z_mix)
-        #mix_init = tensor.nnet.tanh(self.mix_dec_mlp.apply(z_mix))
         cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
         ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
         he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):(cd_dim+hd_dim+ce_dim+he_dim)]
         sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
 
-        # Sample from mean-zeros std.-one Gaussian
+        # get zero-mean, unit-std. Gaussian samples for use in scan op
         u_draw = self.theano_rng.normal(
                     size=(self.n_iter, batch_size, z_gen_dim),
                     avg=0., std=1.)
-
+        # run the multi-stage guided generative process
         c, h_enc, c_enc, z, kl_draw, h_dec, c_dec = \
             rvals = self.iterate(u=u_draw, h_enc=he0, c_enc=ce0, \
                                  h_dec=hd0, c_dec=cd0, x=features, s_mix=sm0)
 
-        # grab the observations generated by the DRAW model
+        # grab the observations generated by the multi-stage process
         x_recons = tensor.nnet.sigmoid(c[-1,:,:])
         x_recons.name = "reconstruction"
-        # group up the klds from mixture and DRAW models
+        # group up the klds from mixture init and multi-stage generation
         kl_mix = tensor.sum(akl_mix, axis=1)
         klm_row = kl_mix.reshape((1, batch_size), ndim=2)
         kl = tensor.vertical_stack(klm_row, kl_draw)
@@ -755,10 +756,10 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
                     avg=0., std=1.)
 
         mix_init = self.mix_dec_mlp.apply(sm0)
-        cd0 = mix_init[:, 0:cd_dim]
+        cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
 
-        # Sample from zero-mean unit-std. Gaussian
+        # sample from zero-mean unit-std. Gaussian
         u = self.theano_rng.normal(
                     size=(self.n_iter, n_samples, z_gen_dim),
                     avg=0., std=1.)
@@ -1007,7 +1008,7 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
                outputs=['x_hat', 'h_dec', 'c_dec'])
     def decode(self, u, x_hat, h_dec, c_dec, s_mix):
         # update the rnn state using previous state information
-        i_mlp = T.concatenate([x_hat, h_dec, s_mix], axis=1)
+        i_mlp = tensor.concatenate([x_hat, h_dec, s_mix], axis=1)
         i_dec = self.dec_mlp_in.apply(i_mlp)
         h_dec, c_dec = self.dec_rnn.apply(
                     states=h_dec, cells=c_dec,
@@ -1017,6 +1018,7 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
         x_prob = tensor.nnet.sigmoid(x_log)
         # sample binary pixels using the uniform random values in u
         x_hat = u < x_prob
+        x_hat = tensor.cast(x_hat, 'floatX')
         return x_hat, h_dec, c_dec
 
     #------------------------------------------------------------------------
@@ -1092,4 +1094,6 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
                     size=(im_cols, n_samples, im_rows))
 
         samples, _, _, = self.decode(u=u, h_dec=hd0, c_dec=cd0, s_mix=sm0)
+        samples = samples.dimshuffle(1, 2, 0)
+        samples = samples.reshape((n_samples, (im_rows*im_cols)))
         return samples

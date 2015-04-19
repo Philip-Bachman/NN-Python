@@ -24,7 +24,6 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # phil's sweetness
 from NetLayers import relu_actfun, softplus_actfun, \
                       safe_softmax, safe_log
-from GenNet import GenNet
 from InfNet import InfNet
 from PeaNet import PeaNet
 
@@ -110,8 +109,8 @@ class GITrip(object):
     """
     Controller for training a variational autoencoder.
 
-    The generator must be an instance of the GenNet class implemented in
-    "GenNet.py". The inferencer for the continuous latent variables must be an
+    The generator must be an instance of the InfNet class implemented in
+    "InfNet.py". The inferencer for the continuous latent variables must be an
     instance of the InfNet class implemented in "InfNet.py". The inferencer
     for the categorical latent variables must be an instance of the PeaNet
     class implemented in "PeaNet.py".
@@ -122,7 +121,7 @@ class GITrip(object):
         Yd: symbolic "label" input to this VAE
         Xc: symbolic "control" input to this VAE
         Xm: symbolic "mask" input to this VAE
-        g_net: The GenNet instance that will serve as the base generator
+        g_net: The InfNet instance that will serve as the base generator
         i_net: The InfNet instance for inferring continuous posteriors
         p_net: The PeaNet instance for inferring categorical posteriors
         data_dim: dimension of the "observable data" variables
