@@ -54,7 +54,7 @@ def test_with_model_init():
     h_dim = 100
     rnn_dim = z_dim
     jnt_dim = obs_dim + rnn_dim
-    ir_steps = 4
+    ir_steps = 6
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -67,7 +67,7 @@ def test_with_model_init():
     # p_hi_given_si #
     #################
     params = {}
-    shared_config = [(jnt_dim+ir_steps), 500, 500]
+    shared_config = [(jnt_dim+ir_steps), 500]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -88,7 +88,7 @@ def test_with_model_init():
     ######################
     params = {}
     #shared_config = [h_dim, 500, 500]
-    shared_config = [(h_dim + ir_steps), 500, 500]
+    shared_config = [(h_dim + ir_steps), 500]
     top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -108,7 +108,7 @@ def test_with_model_init():
     # q_z_given_x #
     ###############
     params = {}
-    shared_config = [obs_dim, 500, 500]
+    shared_config = [obs_dim, 500]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -128,7 +128,7 @@ def test_with_model_init():
     # q_hi_given_x_si #
     ###################
     params = {}
-    shared_config = [(obs_dim + jnt_dim + ir_steps), 500, 500]
+    shared_config = [(obs_dim + jnt_dim + ir_steps), 500]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config

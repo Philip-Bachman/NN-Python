@@ -182,7 +182,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
     params = VariableFilter(roles=[PARAMETER])(cg.variables)
 
     # apply some l2 regularization to the model parameters
-    reg_term = 1e-5 * sum([tensor.sum(p**2.0) for p in params])
+    reg_term = (1e-5 * sum([tensor.sum(p**2.0) for p in params])) + (0.2 * kld_term)
     reg_term.name = "reg_term"
 
     # compute the final cost of VFE + regularization

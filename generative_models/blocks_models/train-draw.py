@@ -111,7 +111,7 @@ def main(name, epochs, batch_size, learning_rate,
     name = "DRAW-%s-%s-t%d-enc%d-dec%d-z%d-lr%s" % (name, attention_tag, n_iter, enc_dim, dec_dim, z_dim, lr_str)
 
     print("\nRunning experiment %s" % name)
-    print("         learning rate: %5.3f" % learning_rate)
+    print("         learning rate: %5.5f" % learning_rate)
     print("             attention: %s" % attention)
     print("          n_iterations: %d" % n_iter)
     print("     encoder dimension: %d" % enc_dim)
