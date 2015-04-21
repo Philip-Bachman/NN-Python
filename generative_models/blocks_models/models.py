@@ -658,8 +658,9 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         q_gen_mean, q_gen_logvar, q_z_gen = \
                 self.enc_mlp_out.apply(h_enc, u)
         # estimate decoder conditional over z given h_dec
-        p_gen_mean, p_gen_logvar, p_z_gen = \
-                self.dec_mlp_out.apply(h_dec, u)
+        # p_gen_mean, p_gen_logvar, p_z_gen = \
+        #         self.dec_mlp_out.apply(h_dec, u)
+        p_gen_mean, p_gen_logvar, p_z_gen = 0.0, 0.0, u
         # compute KL(q(z | h_enc) || p(z | h_dec))
         akl = gaussian_kld(q_gen_mean, q_gen_logvar, p_gen_mean, p_gen_logvar)
         kl = tensor.sum(akl, axis=1)
@@ -680,7 +681,8 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         # sample z from p(z | h_dec)
         p_gen_mean, p_gen_logvar, p_z_gen = \
                 self.dec_mlp_out.apply(h_dec, u)
-        z_gen = p_z_gen
+        # z_gen = p_z_gen
+        z_gen = u
         # update the decoder RNN state
         i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
         h_dec, c_dec = self.dec_rnn.apply(

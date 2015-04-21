@@ -49,6 +49,7 @@ class MultiStageModel(object):
                 obs_transform: can be 'none' or 'sigmoid'
     """
     def __init__(self, rng=None, x_in=None, x_out=None, \
+            p_s0_given_z = None, \
             p_hi_given_si=None, \
             p_sip1_given_si_hi=None, \
             q_z_given_x=None, \
@@ -91,6 +92,7 @@ class MultiStageModel(object):
         # grab handles to the relevant InfNets
         self.q_z_given_x = q_z_given_x
         self.q_hi_given_x_si = q_hi_given_x_si
+        self.p_s0_given_z = p_s0_given_z
         self.p_hi_given_si = p_hi_given_si
         self.p_sip1_given_si_hi = p_sip1_given_si_hi
 
@@ -153,15 +155,20 @@ class MultiStageModel(object):
         self.z_mean, self.z_logvar, self.z = \
                 self.q_z_given_x.apply(drop_x, do_samples=True)
 
+        # self.s0_jnt, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
+        # self.s0_rnn = self.s0_jnt[:,:self.rnn_dim]
+        # self.s0_obs = self.s0_jnt[:,self.rnn_dim:]
+
         _s0_rnn_model = self.z + self.b_rnn
         _s0_rnn_const = (0.0 * self.z) + self.b_rnn
-        self.s0_rnn = (rnn_scale * _s0_rnn_model) + \
-                ((1.0 - rnn_scale) * _s0_rnn_const)
+        self.s0_rnn = 2.0 * T.tanh(0.5 * ((rnn_scale * _s0_rnn_model) + \
+                ((1.0 - rnn_scale) * _s0_rnn_const)))
+        self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
         # _s0_rnn_model = T.dot(self.z, self.W_rnn) + self.b_rnn
         # _s0_rnn_const = (0.0 * T.dot(self.z, self.W_rnn)) + self.b_rnn
         # self.s0_rnn = T.tanh( (rnn_scale * _s0_rnn_model) + \
         #         ((1.0 - rnn_scale) * _s0_rnn_const) )
-        self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
+        # self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
 
         ###############################################################
         # Setup the iterative refinement loop, starting from self.s0. #
@@ -181,6 +188,12 @@ class MultiStageModel(object):
             grad_ll = self.x_out - si_obs_trans
             clock_vals = T.alloc(0.0, si_rnn.shape[0], self.ir_steps) + \
                     self.iter_clock[i]
+
+            # get a drop mask that drops things with probability p
+            drop_scale = 1. / (1. - self.drop_rate[0])
+            drop_rnd = self.rng.uniform(size=self.x_out.shape, \
+                    low=0.0, high=1.0, dtype=theano.config.floatX)
+            drop_mask = drop_scale * (drop_rnd > self.drop_rate[0])
 
             # get droppy versions of
             drop_obs = drop_mask * si_obs_trans
@@ -203,12 +216,12 @@ class MultiStageModel(object):
             self.kldi_glob.append(gaussian_kld( \
                 hi_p_mean, hi_p_logvar, 0.0, 0.0))
 
+
             # MOD TAG 1
             # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
             si_obs_step, _ = self.p_sip1_given_si_hi.apply( \
                     T.horizontal_stack(self.hi[i], clock_vals), do_samples=False)
                     #self.hi[i], do_samples=False)
-                    
                     
                     
             # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
@@ -249,9 +262,9 @@ class MultiStageModel(object):
         self.group_1_params.extend(self.q_hi_given_x_si.mlp_params)
         # Grab all of the "optimizable" parameters in "group 2"
         self.group_2_params = [self.W_rnn, self.b_rnn, self.b_obs]
-        for i in range(self.ir_steps):
-            self.group_2_params.extend(self.p_hi_given_si.mlp_params)
-            self.group_2_params.extend(self.p_sip1_given_si_hi.mlp_params)
+        self.group_2_params.extend(self.p_hi_given_si.mlp_params)
+        self.group_2_params.extend(self.p_s0_given_z.mlp_params)
+
         # Make a joint list of parameters group 1/2
         self.joint_params = self.group_1_params + self.group_2_params
 
