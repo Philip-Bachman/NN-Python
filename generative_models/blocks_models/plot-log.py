@@ -46,6 +46,7 @@ if __name__ == "__main__":
     ################################
     nll_bound_types = [k for k in df_keys if (k.find('nll_bound') > -1)]
     nll_bound_idx = df[nll_bound_types[0]].keys()[1:-5]
+    nll_bound_idx = [i for i in nll_bound_idx if i < 40000]
     nll_bound_map = {}
     for k in nll_bound_types:
         idx = np.asarray(nll_bound_idx)

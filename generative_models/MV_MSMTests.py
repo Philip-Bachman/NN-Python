@@ -53,7 +53,7 @@ def test_with_model_init():
     z_dim = 20
     h_dim = 100
     rnn_dim = z_dim
-    ir_steps = 4
+    ir_steps = 6
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -186,7 +186,7 @@ def test_with_model_init():
     ################################################################
     out_file = open("MW_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0002
+    learn_rate = 0.0003
     momentum = 0.5
     fresh_idx = np.arange(batch_size) + tr_samples
     carry_idx = np.arange(carry_size)
@@ -221,8 +221,8 @@ def test_with_model_init():
         MSM.set_lam_l2w(1e-4)
         MSM.set_kzg_weight(0.1)
         MSM.set_drop_rate(0.3)
-        MSM.p_hi_given_si.set_bias_noise(0.0)
-        MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
+        MSM.p_hi_given_si.set_bias_noise(0.1)
+        MSM.p_sip1_given_si_hi.set_bias_noise(0.1)
         # perform a minibatch update and record the cost for this batch
         Xb_tr = to_fX( Xtr.take(batch_idx, axis=0) )
         result = MSM.train_joint(Xb_tr, Xb_tr, batch_reps)
@@ -249,7 +249,7 @@ def test_with_model_init():
             MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
             # Get some validation samples for computing diagnostics
             Xva = row_shuffle(Xva)
-            Xb_va = to_fX( Xva[0:5000] )
+            Xb_va = to_fX( Xva[0:2500] )
             # draw some independent random samples from the model
             samp_count = 200
             model_samps = MSM.sample_from_prior(samp_count)
@@ -324,7 +324,7 @@ def test_with_model_init():
             file_name = "MW_B_STEP_VFES_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(step_kld.shape[0]).ravel(), \
                     (np.cumsum(step_kld.ravel())+step_nll.ravel()), file_name)
-            Xb_tr = to_fX( Xtr[0:5000] )
+            Xb_tr = to_fX( Xtr[0:2500] )
             fe_terms = MSM.compute_fe_terms(Xb_tr, Xb_tr, 30)
             fe_nll = np.mean(fe_terms[0])
             fe_kld = np.mean(fe_terms[1])

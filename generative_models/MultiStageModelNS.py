@@ -155,15 +155,16 @@ class MultiStageModel(object):
         self.z_mean, self.z_logvar, self.z = \
                 self.q_z_given_x.apply(drop_x, do_samples=True)
 
-        # self.s0_jnt, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
-        # self.s0_rnn = self.s0_jnt[:,:self.rnn_dim]
-        # self.s0_obs = self.s0_jnt[:,self.rnn_dim:]
+        self.s0_jnt, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
+        self.s0_rnn = self.s0_jnt[:,:self.rnn_dim]
+        self.s0_obs = self.s0_jnt[:,self.rnn_dim:]
 
-        _s0_rnn_model = self.z + self.b_rnn
-        _s0_rnn_const = (0.0 * self.z) + self.b_rnn
-        self.s0_rnn = 2.0 * T.tanh(0.5 * ((rnn_scale * _s0_rnn_model) + \
-                ((1.0 - rnn_scale) * _s0_rnn_const)))
-        self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
+        # _s0_rnn_model = self.z + self.b_rnn
+        # _s0_rnn_const = (0.0 * self.z) + self.b_rnn
+        # self.s0_rnn = 2.0 * T.tanh(0.5 * ((rnn_scale * _s0_rnn_model) + \
+        #         ((1.0 - rnn_scale) * _s0_rnn_const)))
+        # self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
+        
         # _s0_rnn_model = T.dot(self.z, self.W_rnn) + self.b_rnn
         # _s0_rnn_const = (0.0 * T.dot(self.z, self.W_rnn)) + self.b_rnn
         # self.s0_rnn = T.tanh( (rnn_scale * _s0_rnn_model) + \
@@ -197,7 +198,7 @@ class MultiStageModel(object):
 
             # get droppy versions of
             drop_obs = drop_mask * si_obs_trans
-            drop_grad = drop_mask * self.x_out #grad_ll
+            drop_grad = self.x_out #grad_ll
 
             # get samples of next hi, conditioned on current si
             hi_p_mean, hi_p_logvar, hi_p = self.p_hi_given_si.apply( \
@@ -216,13 +217,11 @@ class MultiStageModel(object):
             self.kldi_glob.append(gaussian_kld( \
                 hi_p_mean, hi_p_logvar, 0.0, 0.0))
 
-
             # MOD TAG 1
             # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
             si_obs_step, _ = self.p_sip1_given_si_hi.apply( \
                     T.horizontal_stack(self.hi[i], clock_vals), do_samples=False)
                     #self.hi[i], do_samples=False)
-                    
                     
             # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
             sip1_obs = si_obs + si_obs_step
@@ -263,6 +262,7 @@ class MultiStageModel(object):
         # Grab all of the "optimizable" parameters in "group 2"
         self.group_2_params = [self.W_rnn, self.b_rnn, self.b_obs]
         self.group_2_params.extend(self.p_hi_given_si.mlp_params)
+        self.group_2_params.extend(self.p_sip1_given_si_hi.mlp_params)
         self.group_2_params.extend(self.p_s0_given_z.mlp_params)
 
         # Make a joint list of parameters group 1/2
