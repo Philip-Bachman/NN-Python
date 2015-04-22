@@ -164,7 +164,7 @@ class MultiStageModel(object):
         # self.s0_rnn = 2.0 * T.tanh(0.5 * ((rnn_scale * _s0_rnn_model) + \
         #         ((1.0 - rnn_scale) * _s0_rnn_const)))
         # self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
-        
+
         # _s0_rnn_model = T.dot(self.z, self.W_rnn) + self.b_rnn
         # _s0_rnn_const = (0.0 * T.dot(self.z, self.W_rnn)) + self.b_rnn
         # self.s0_rnn = T.tanh( (rnn_scale * _s0_rnn_model) + \
@@ -198,7 +198,7 @@ class MultiStageModel(object):
 
             # get droppy versions of
             drop_obs = drop_mask * si_obs_trans
-            drop_grad = self.x_out #grad_ll
+            drop_grad = drop_mask * self.x_out #grad_ll
 
             # get samples of next hi, conditioned on current si
             hi_p_mean, hi_p_logvar, hi_p = self.p_hi_given_si.apply( \
@@ -230,7 +230,6 @@ class MultiStageModel(object):
             self.si_obs.append(sip1_obs)
             self.si_rnn.append(sip1_rnn)
 
-        #self._check_model_shapes()
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
         ######################################################################
@@ -279,8 +278,10 @@ class MultiStageModel(object):
         #################################
         # CONSTRUCT THE NLL-BASED COSTS #
         #################################
-        self.nll_costs = self._construct_nll_costs(self.x_out, step_num=-1)
-        self.nll_cost = self.lam_nll[0] * T.mean(self.nll_costs)
+        self.nll_costs = []
+        for i in range(len(self.si_obs)):
+            self.nll_costs.append(T.mean(self._construct_nll_costs(self.x_out, step_num=i)))
+        self.nll_cost = self.lam_nll[0] * T.mean(self.nll_costs[-1])
         ########################################
         # CONSTRUCT THE REST OF THE JOINT COST #
         ########################################
@@ -407,32 +408,6 @@ class MultiStageModel(object):
         zero_ary = np.zeros((1,))
         new_val = zero_ary + drop_rate
         self.drop_rate.set_value(to_fX(new_val))
-        return     
-
-    def _check_model_shapes(self):
-        """
-        Check that inputs/outputs of the various models will pipe together.
-        """
-        obs_dim = self.obs_dim
-        rnn_dim = self.rnn_dim
-        jnt_dim = obs_dim + rnn_dim
-        z_dim = self.z_dim
-        h_dim = self.h_dim
-        # check shape of initialization model
-        assert(self.q_z_given_x.mu_layers[-1].out_dim == z_dim)
-        assert(self.q_z_given_x.shared_layers[0].in_dim == obs_dim)
-        # check shape of the forward conditionals over h_i
-        assert(self.p_hi_given_si.mu_layers[-1].out_dim == h_dim)
-        assert(self.p_hi_given_si.shared_layers[0].in_dim == jnt_dim)
-        assert(self.q_hi_given_x_si.mu_layers[-1].out_dim == h_dim)
-        assert(self.q_hi_given_x_si.shared_layers[0].in_dim == (obs_dim + jnt_dim))
-        # check shape of the forward conditionals over s_{i+1}
-        assert(self.p_sip1_given_si_hi.mu_layers[-1].out_dim == obs_dim)
-
-        # MOD TAG 2
-        assert(self.p_sip1_given_si_hi.shared_layers[0].in_dim == (h_dim + rnn_dim))
-        #assert(self.p_sip1_given_si_hi.shared_layers.in_dim == h_dim)
-
         return
 
     def _construct_nll_costs(self, xo, step_num=-1):

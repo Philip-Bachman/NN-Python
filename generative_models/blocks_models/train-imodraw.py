@@ -45,7 +45,7 @@ fuel.config.floatX = theano.config.floatX
 
 #----------------------------------------------------------------------------
 def main(name, epochs, batch_size, learning_rate, attention,
-         n_iter, mix_dim, enc_dim, dec_dim, z_dim, oldmodel):
+         n_iter, mix_dim, write_dim, enc_dim, dec_dim, z_dim, oldmodel):
 
     datasource = name
     if datasource == 'mnist':
@@ -106,7 +106,8 @@ def main(name, epochs, batch_size, learning_rate, attention,
         return "%s%d" % (leading, -exp)
 
     lr_str = lr_tag(learning_rate)
-    name = "%s-%s-t%d-enc%d-dec%d-z%d-lr%s" % (name, attention_tag, n_iter, enc_dim, dec_dim, z_dim, lr_str)
+    name = "IMOD-%s-%s-t%d-enc%d-dec%d-z%d-md%d-wd%d-lr%s" % \
+            (name, attention_tag, n_iter, enc_dim, dec_dim, z_dim, mix_dim, write_dim, lr_str)
 
     print("\nRunning experiment %s" % name)
     print("         learning rate: %5.5f" % learning_rate)
@@ -122,7 +123,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
     # setup the reader and writer
     read_dim = 2*x_dim
     reader_mlp = Reader(x_dim=x_dim, dec_dim=dec_dim, **inits)
-    writer_mlp = MLP([None], [dec_dim, x_dim], \
+    writer_mlp = MLP([Tanh(), None], [dec_dim, write_dim, x_dim], \
                      name="writer_mlp", **inits)
     attention_tag = "full"
     
@@ -284,6 +285,8 @@ if __name__ == "__main__":
                 default=10, help="No. of iterations")
     parser.add_argument("--mix-dim", type=int, dest="mix_dim",
                 default=20, help="Continuous mixture dimension")
+    parser.add_argument("--write-dim", type=int, dest="write_dim",
+                default=256, help="Continuous mixture dimension")
     parser.add_argument("--enc-dim", type=int, dest="enc_dim",
                 default=256, help="Encoder RNN state dimension")
     parser.add_argument("--dec-dim", type=int, dest="dec_dim",
