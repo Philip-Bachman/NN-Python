@@ -106,7 +106,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
         return "%s%d" % (leading, -exp)
 
     lr_str = lr_tag(learning_rate)
-    name = "IMOD-%s-%s-t%d-enc%d-dec%d-z%d-md%d-wd%d-lr%s" % \
+    name = "%s-%s-t%d-enc%d-dec%d-z%d-md%d-wd%d-lr%s" % \
             (name, attention_tag, n_iter, enc_dim, dec_dim, z_dim, mix_dim, write_dim, lr_str)
 
     print("\nRunning experiment %s" % name)
@@ -128,10 +128,10 @@ def main(name, epochs, batch_size, learning_rate, attention,
     attention_tag = "full"
     
     # setup the mixture weight sampler
-    mix_enc_mlp = CondNet([Tanh()], [x_dim, 500, mix_dim], \
+    mix_enc_mlp = CondNet([Tanh()], [x_dim, 250, mix_dim], \
                           name="mix_enc_mlp", **inits)
     mix_dec_mlp = MLP([Tanh(), Tanh()], \
-                      [mix_dim, 500, (2*enc_dim + 2*dec_dim + mix_dim)], \
+                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + mix_dim)], \
                       name="mix_dec_mlp", **inits)
     # setup the components of the generative DRAW model
     enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
@@ -183,7 +183,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
     params = VariableFilter(roles=[PARAMETER])(cg.variables)
 
     # apply some l2 regularization to the model parameters
-    reg_term = (1e-5 * sum([tensor.sum(p**2.0) for p in params])) + (0.2 * kld_term)
+    reg_term = (1e-5 * sum([tensor.sum(p**2.0) for p in params]))
     reg_term.name = "reg_term"
 
     # compute the final cost of VFE + regularization
@@ -256,7 +256,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
             #     test_stream,
             #     prefix="test"),
             Checkpoint(name+".pkl", after_epoch=True, save_separately=['log', 'model']),
-            Plot(name, channels=plot_channels),
+            # Plot(name, channels=plot_channels),
             ProgressBar(),
             Printing()])
     if oldmodel is not None:

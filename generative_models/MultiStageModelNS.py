@@ -34,6 +34,7 @@ class MultiStageModel(object):
         rng: numpy.random.RandomState (for reproducibility)
         x_in: the input data to encode
         x_out: the target output to decode
+        p_s0_given_z: InfNet for initializing "canvas" state
         p_hi_given_si: InfNet for hi given si
         p_sip1_given_si_hi: InfNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
@@ -54,16 +55,12 @@ class MultiStageModel(object):
             p_sip1_given_si_hi=None, \
             q_z_given_x=None, \
             q_hi_given_x_si=None, \
-            model_init_rnn=True, \
             obs_dim=None, rnn_dim=None, \
             z_dim=None, h_dim=None, \
             ir_steps=4, params=None, \
             shared_param_dicts=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
-
-        # decide whether to initialize from a model or from a "constant"
-        self.model_init_rnn = model_init_rnn
 
         # grab the user-provided parameters
         self.params = params
@@ -110,10 +107,13 @@ class MultiStageModel(object):
         # setup a weight for pulling priors over hi given si towards a
         # shared global prior -- e.g. zero mean and unit variance.
         self.kzg_weight = theano.shared(value=zero_ary, name='msm_kzg_weight')
-        self.set_kzg_weight(0.1)
+        self.set_kzg_weight(0.0)
         # setup a variable for controlling dropout noise
         self.drop_rate = theano.shared(value=zero_ary, name='msm_drop_rate')
         self.set_drop_rate(0.0)
+        # this weight balances l1 vs. l2 penalty on posterior KLds
+        self.lam_kld_l1l2 = theano.shared(value=zero_ary, name='msm_lam_kld_l1l2')
+        self.set_lam_kld_l1l2(1.0)
 
         if self.shared_param_dicts is None:
             # initialize weights and biases for the z -> s0_rnn transform
@@ -148,27 +148,18 @@ class MultiStageModel(object):
         # Setup self.z and self.s0. #
         #############################
         print("Building MSM step 0...")
-        rnn_scale = 0.0
-        if self.model_init_rnn: # initialize rnn state from generative model
-            rnn_scale = 1.0
         drop_x = drop_mask * self.x_in
-        self.z_mean, self.z_logvar, self.z = \
+        self.z_mean, self.z_logvar, self.z_jnt = \
                 self.q_z_given_x.apply(drop_x, do_samples=True)
+        self.z = self.z_jnt[:,:self.z_dim]
+        # get initial rnn/mixture and observation state
+        self.s0_rnn = self.z_jnt[:,self.z_dim:]
+        self.s0_obs, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
 
-        self.s0_jnt, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
-        self.s0_rnn = self.s0_jnt[:,:self.rnn_dim]
-        self.s0_obs = self.s0_jnt[:,self.rnn_dim:]
-
-        # _s0_rnn_model = self.z + self.b_rnn
-        # _s0_rnn_const = (0.0 * self.z) + self.b_rnn
-        # self.s0_rnn = 2.0 * T.tanh(0.5 * ((rnn_scale * _s0_rnn_model) + \
-        #         ((1.0 - rnn_scale) * _s0_rnn_const)))
+        # self.s0_rnn = self.z + self.b_rnn
         # self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
 
-        # _s0_rnn_model = T.dot(self.z, self.W_rnn) + self.b_rnn
-        # _s0_rnn_const = (0.0 * T.dot(self.z, self.W_rnn)) + self.b_rnn
-        # self.s0_rnn = T.tanh( (rnn_scale * _s0_rnn_model) + \
-        #         ((1.0 - rnn_scale) * _s0_rnn_const) )
+        # self.s0_rnn = T.dot(self.z, self.W_rnn) + self.b_rnn
         # self.s0_obs = T.zeros_like(self.x_in) + self.b_obs
 
         ###############################################################
@@ -180,6 +171,12 @@ class MultiStageModel(object):
         self.kldi_cond = []           # holds conditional KLd for each i
         self.kldi_glob = []           # holds global KLd for each i
 
+        # get a drop mask that drops things with probability p
+        drop_scale = 1. / (1. - self.drop_rate[0])
+        drop_rnd = self.rng.uniform(size=self.x_out.shape, \
+                low=0.0, high=1.0, dtype=theano.config.floatX)
+        drop_mask = drop_scale * (drop_rnd > self.drop_rate[0])
+
         for i in range(self.ir_steps):
             print("Building MSM step {0:d}...".format(i+1))
             # get variables used throughout this refinement step
@@ -190,23 +187,17 @@ class MultiStageModel(object):
             clock_vals = T.alloc(0.0, si_rnn.shape[0], self.ir_steps) + \
                     self.iter_clock[i]
 
-            # get a drop mask that drops things with probability p
-            drop_scale = 1. / (1. - self.drop_rate[0])
-            drop_rnd = self.rng.uniform(size=self.x_out.shape, \
-                    low=0.0, high=1.0, dtype=theano.config.floatX)
-            drop_mask = drop_scale * (drop_rnd > self.drop_rate[0])
-
             # get droppy versions of
             drop_obs = drop_mask * si_obs_trans
-            drop_grad = drop_mask * self.x_out #grad_ll
+            drop_grad = drop_mask * grad_ll
 
             # get samples of next hi, conditioned on current si
             hi_p_mean, hi_p_logvar, hi_p = self.p_hi_given_si.apply( \
-                    T.horizontal_stack(drop_obs, si_rnn, clock_vals), \
+                    T.horizontal_stack(drop_obs, si_rnn), \
                     do_samples=True)
             # now we build the model for variational hi given si
             hi_q_mean, hi_q_logvar, hi_q = self.q_hi_given_x_si.apply( \
-                    T.horizontal_stack(drop_grad, drop_obs, si_rnn, clock_vals), \
+                    T.horizontal_stack(drop_grad, drop_obs, si_rnn), \
                     do_samples=True)
             # make hi samples that can be switched between hi_p and hi_q
             self.hi.append( ((self.train_switch[0] * hi_q) + \
@@ -220,8 +211,7 @@ class MultiStageModel(object):
             # MOD TAG 1
             # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
             si_obs_step, _ = self.p_sip1_given_si_hi.apply( \
-                    T.horizontal_stack(self.hi[i], clock_vals), do_samples=False)
-                    #self.hi[i], do_samples=False)
+                    self.hi[i], do_samples=False)
                     
             # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
             sip1_obs = si_obs + si_obs_step
@@ -271,23 +261,32 @@ class MultiStageModel(object):
         # CONSTRUCT THE KLD-BASED COSTS #
         #################################
         self.kld_z, self.kld_hi_cond, self.kld_hi_glob = \
-                self._construct_kld_costs()
+                self._construct_kld_costs(p=1.0)
         self.kld_cost = (self.lam_kld_1[0] * T.mean(self.kld_z)) + \
-                (self.lam_kld_2[0] * (T.mean(self.kld_hi_cond) + \
-                (self.kzg_weight[0] * T.mean(self.kld_hi_glob))))
+                (self.lam_kld_2[0] * T.mean(self.kld_hi_cond)) + \
+                (self.kzg_weight[0] * T.mean(self.kld_hi_glob))
+        self.kld2_z, self.kld2_hi_cond, self.kld2_hi_glob = \
+                self._construct_kld_costs(p=2.0)
+        self.kld2_cost = (self.lam_kld_1[0] * T.mean(self.kld2_z)) + \
+                (self.lam_kld_2[0] * T.mean(self.kld2_hi_cond)) + \
+                (self.kzg_weight[0] * T.mean(self.kld2_hi_glob))
+        self.kld_l1l2_cost = (self.lam_kld_l1l2[0] * self.kld_cost) + \
+                ((1.0 - self.lam_kld_l1l2[0]) * self.kld2_cost)
         #################################
         # CONSTRUCT THE NLL-BASED COSTS #
         #################################
-        self.nll_costs = []
+        self.seq_nll_costs = []
         for i in range(len(self.si_obs)):
-            self.nll_costs.append(T.mean(self._construct_nll_costs(self.x_out, step_num=i)))
-        self.nll_cost = self.lam_nll[0] * T.mean(self.nll_costs[-1])
+            nll_i = self._construct_nll_costs(self.x_out, step_num=i)
+            self.seq_nll_costs.append(nll_i)
+        self.nll_costs = self.seq_nll_costs[-1]
+        self.nll_cost = self.lam_nll[0] * T.mean(self.nll_costs)
         ########################################
         # CONSTRUCT THE REST OF THE JOINT COST #
         ########################################
         param_reg_cost = self._construct_reg_costs()
         self.reg_cost = self.lam_l2w[0] * param_reg_cost
-        self.joint_cost = self.nll_cost + self.kld_cost + self.reg_cost
+        self.joint_cost = self.nll_cost + self.kld_l1l2_cost + self.reg_cost
         ##############################
         # CONSTRUCT A PER-INPUT COST #
         ##############################
@@ -329,6 +328,7 @@ class MultiStageModel(object):
         self.sample_from_input = self._construct_sample_from_input()
         # make easy access points for some interesting parameters
         self.gen_inf_weights = self.p_hi_given_si.shared_layers[0].W
+        self.gen_gen_weights = self.p_sip1_given_si_hi.mu_layers[-1].W
         return
 
     def set_sgd_params(self, lr_1=0.01, lr_2=0.01, \
@@ -401,6 +401,15 @@ class MultiStageModel(object):
         self.kzg_weight.set_value(to_fX(new_val))
         return
 
+    def set_lam_kld_l1l2(self, lam_kld_l1l2=1.0):
+        """
+        Set the weight for shaping penalty on conditional priors over zt.
+        """
+        zero_ary = np.zeros((1,))
+        new_val = zero_ary + lam_kld_l1l2
+        self.lam_kld_l1l2.set_value(to_fX(new_val))
+        return
+
     def set_drop_rate(self, drop_rate=0.0):
         """
         Set the weight for shaping penalty on conditional priors over zt.
@@ -425,7 +434,7 @@ class MultiStageModel(object):
         nll_costs = -ll_costs
         return nll_costs
 
-    def _construct_kld_costs(self):
+    def _construct_kld_costs(self, p=1.0):
         """
         Construct the posterior KL-divergence part of cost to minimize.
         """
@@ -434,16 +443,16 @@ class MultiStageModel(object):
         for i in range(self.ir_steps):
             kld_hi_cond = self.kldi_cond[i]
             kld_hi_glob = self.kldi_glob[i]
-            kld_hi_conds.append(T.sum(kld_hi_cond, \
+            kld_hi_conds.append(T.sum(kld_hi_cond**p, \
                     axis=1, keepdims=True))
-            kld_hi_globs.append(T.sum(kld_hi_glob, \
+            kld_hi_globs.append(T.sum(kld_hi_glob**p, \
                     axis=1, keepdims=True))
         # compute the batch-wise costs
         kld_hi_cond = sum(kld_hi_conds)
         kld_hi_glob = sum(kld_hi_globs)
         # construct KLd cost for the distributions over z
         kld_z_all = gaussian_kld(self.z_mean, self.z_logvar, 0.0, 0.0)
-        kld_z = T.sum(kld_z_all, \
+        kld_z = T.sum(kld_z_all**p, \
                 axis=1, keepdims=True)
         return [kld_z, kld_hi_cond, kld_hi_glob]
 

@@ -50,10 +50,10 @@ def test_with_model_init():
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
     obs_dim = Xtr.shape[1]
-    z_dim = 20
+    z_dim = 10
     h_dim = 100
-    rnn_dim = z_dim
-    ir_steps = 6
+    rnn_dim = 10
+    ir_steps = 3
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -66,12 +66,12 @@ def test_with_model_init():
     # p_hi_given_si #
     #################
     params = {}
-    shared_config = [(obs_dim + rnn_dim + ir_steps), 500, 500]
+    shared_config = [(obs_dim + rnn_dim), 500, 500]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
+    params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -81,17 +81,17 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     p_hi_given_si = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    p_hi_given_si.init_biases(0.0)
+    p_hi_given_si.init_biases(0.2)
     ######################
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [(h_dim + ir_steps), 500, 500]
+    shared_config = [h_dim, 500, 500]
     top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
+    params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -101,17 +101,17 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     p_sip1_given_si_hi = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    p_sip1_given_si_hi.init_biases(0.0)
+    p_sip1_given_si_hi.init_biases(0.2)
     ################
     # p_s0_given_z #
     ################
     params = {}
-    shared_config = [z_dim, 500, 500]
-    top_config = [shared_config[-1], (obs_dim + rnn_dim)]
+    shared_config = [z_dim, 250]
+    top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
+    params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -121,17 +121,17 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     p_s0_given_z = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    p_s0_given_z.init_biases(0.0)
+    p_s0_given_z.init_biases(0.2)
     ###############
     # q_z_given_x #
     ###############
     params = {}
     shared_config = [obs_dim, 500, 500]
-    top_config = [shared_config[-1], z_dim]
+    top_config = [shared_config[-1], (z_dim + rnn_dim)]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
+    params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -141,17 +141,17 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     q_z_given_x = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    q_z_given_x.init_biases(0.0)
+    q_z_given_x.init_biases(0.2)
     ###################
     # q_hi_given_x_si #
     ###################
     params = {}
-    shared_config = [(obs_dim + obs_dim + rnn_dim + ir_steps), 500, 500]
+    shared_config = [(obs_dim + obs_dim + rnn_dim), 500, 500]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
-    params['activation'] = softplus_actfun
+    params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
@@ -161,7 +161,7 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     q_hi_given_x_si = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
-    q_hi_given_x_si.init_biases(0.0)
+    q_hi_given_x_si.init_biases(0.2)
 
 
     ################################################################
@@ -178,7 +178,7 @@ def test_with_model_init():
             q_z_given_x=q_z_given_x, \
             q_hi_given_x_si=q_hi_given_x_si, \
             obs_dim=obs_dim, rnn_dim=rnn_dim, z_dim=z_dim, h_dim=h_dim, \
-            model_init_rnn=True, ir_steps=ir_steps, params=msm_params)
+            ir_steps=ir_steps, params=msm_params)
     MSM_VA = None
 
     ################################################################
@@ -191,7 +191,7 @@ def test_with_model_init():
     fresh_idx = np.arange(batch_size) + tr_samples
     carry_idx = np.arange(carry_size)
     for i in range(500000):
-        scale = min(1.0, ((i+1) / 2500.0))
+        scale = min(1.0, ((i+1) / 5000.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.95
         if (i > 50000):
@@ -218,12 +218,13 @@ def test_with_model_init():
         MSM.set_train_switch(1.0)
         MSM.set_lam_nll(lam_nll=1.0)
         MSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
+        MSM.set_lam_kld_l1l2(lam_kld_l1l2=scale)
         MSM.set_lam_l2w(1e-4)
-        MSM.set_kzg_weight(0.1)
-        MSM.set_drop_rate(0.3)
-        MSM.q_hi_given_x_si.set_bias_noise(0.1)
-        MSM.p_hi_given_si.set_bias_noise(0.1)
-        MSM.p_sip1_given_si_hi.set_bias_noise(0.1)
+        MSM.set_kzg_weight(0.01)
+        MSM.set_drop_rate(0.0)
+        MSM.q_hi_given_x_si.set_bias_noise(0.0)
+        MSM.p_hi_given_si.set_bias_noise(0.0)
+        MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
         # perform a minibatch update and record the cost for this batch
         Xb_tr = to_fX( Xtr.take(batch_idx, axis=0) )
         result = MSM.train_joint(Xb_tr, Xb_tr, batch_reps)
@@ -298,9 +299,9 @@ def test_with_model_init():
             # file_name = "MV_A_INF_2_WEIGHTS_b{0:d}.png".format(i)
             # W = MSM.inf_2_weights.get_value(borrow=False).T
             # utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            # file_name = "MV_A_GEN_GEN_WEIGHTS_b{0:d}.png".format(i)
-            # W = MSM.gen_gen_weights.get_value(borrow=False)
-            # utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
+            file_name = "MV_A_GEN_GEN_WEIGHTS_b{0:d}.png".format(i)
+            W = MSM.gen_gen_weights.get_value(borrow=False)
+            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             file_name = "MV_A_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.gen_inf_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)

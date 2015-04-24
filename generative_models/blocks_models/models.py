@@ -602,7 +602,7 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         # grab handles for mixture stuff
         self.mix_enc_mlp = mix_enc_mlp
         self.mix_dec_mlp = mix_dec_mlp
-        # grab handles for DRAW model stuff
+        # grab handles for IMoDRAW model stuff
         self.reader_mlp = reader_mlp
         self.enc_mlp_in = enc_mlp_in
         self.enc_rnn = enc_rnn
@@ -702,7 +702,7 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         # sample z from p(z | h_dec)
         p_gen_mean, p_gen_logvar, p_z_gen = \
                 self.dec_mlp_out.apply(h_dec, u)
-        z_gen = p_z_gen
+        z_gen = u #p_z_gen
         # update the decoder RNN state
         i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
         h_dec, c_dec = self.dec_rnn.apply(
@@ -738,7 +738,7 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
         he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):(cd_dim+hd_dim+ce_dim+he_dim)]
         sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
-        c0 = T.zeros_like(features) + self.c_0
+        c0 = tensor.zeros_like(features) + self.c_0
 
         # get zero-mean, unit-std. Gaussian samples for use in scan op
         u_draw = self.theano_rng.normal(
