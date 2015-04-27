@@ -50,10 +50,10 @@ def test_with_model_init():
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
     obs_dim = Xtr.shape[1]
-    z_dim = 10
+    z_dim = 15
     h_dim = 100
-    rnn_dim = 10
-    ir_steps = 3
+    rnn_dim = 2
+    ir_steps = 4
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -190,8 +190,8 @@ def test_with_model_init():
     momentum = 0.5
     fresh_idx = np.arange(batch_size) + tr_samples
     carry_idx = np.arange(carry_size)
-    for i in range(500000):
-        scale = min(1.0, ((i+1) / 5000.0))
+    for i in range(250000):
+        scale = min(1.0, ((i+1) / 3000.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.95
         if (i > 50000):
@@ -214,17 +214,17 @@ def test_with_model_init():
         lam_kld = 1.0
         # set sgd and objective function hyperparams for this update
         MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
-                mom_1=scale*momentum, mom_2=0.98)
+                mom_1=scale*momentum, mom_2=0.99)
         MSM.set_train_switch(1.0)
         MSM.set_lam_nll(lam_nll=1.0)
-        MSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=1.0)
+        MSM.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.8, lam_kld_p2q=0.2)
         MSM.set_lam_kld_l1l2(lam_kld_l1l2=scale)
+        MSM.set_lam_ent(lam_ent_p=0.0, lam_ent_q=0.01)
         MSM.set_lam_l2w(1e-4)
-        MSM.set_kzg_weight(0.01)
-        MSM.set_drop_rate(0.0)
-        MSM.q_hi_given_x_si.set_bias_noise(0.0)
-        MSM.p_hi_given_si.set_bias_noise(0.0)
-        MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
+        MSM.set_drop_rate(0.1)
+        MSM.q_hi_given_x_si.set_bias_noise(0.1)
+        MSM.p_hi_given_si.set_bias_noise(0.1)
+        MSM.p_sip1_given_si_hi.set_bias_noise(0.1)
         # perform a minibatch update and record the cost for this batch
         Xb_tr = to_fX( Xtr.take(batch_idx, axis=0) )
         result = MSM.train_joint(Xb_tr, Xb_tr, batch_reps)
@@ -239,8 +239,9 @@ def test_with_model_init():
             str2 = "    joint_cost: {0:.4f}".format(costs[0])
             str3 = "    nll_cost  : {0:.4f}".format(costs[1])
             str4 = "    kld_cost  : {0:.4f}".format(costs[2])
-            str5 = "    reg_cost  : {0:.4f}".format(costs[3])
-            joint_str = "\n".join([str1, str2, str3, str4, str5])
+            str5 = "    ent_cost  : {0:.4f}".format(costs[3])
+            str6 = "    reg_cost  : {0:.4f}".format(costs[4])
+            joint_str = "\n".join([str1, str2, str3, str4, str5, str6])
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
@@ -307,17 +308,17 @@ def test_with_model_init():
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             raw_costs = MSM.compute_raw_costs(Xb_va, Xb_va)
-            init_nll, init_kld, cond_kld, glob_kld, step_nll, step_kld = raw_costs
+            init_nll, init_kld, q2p_kld, p2q_kld, step_nll, step_kld = raw_costs
             step_nll[0] = step_nll[1] # scale of first NLL is overwhemling
             file_name = "MV_B_H0_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(init_kld.shape[1]), \
                     np.mean(init_kld, axis=0), file_name)
-            file_name = "MV_B_HI_COND_KLDS_b{0:d}.png".format(i)
-            utils.plot_stem(np.arange(cond_kld.shape[1]), \
-                    np.mean(cond_kld, axis=0), file_name)
-            file_name = "MV_B_HI_GLOB_KLDS_b{0:d}.png".format(i)
-            utils.plot_stem(np.arange(glob_kld.shape[1]), \
-                    np.mean(glob_kld, axis=0), file_name)
+            file_name = "MV_B_HI_Q2P_KLDS_b{0:d}.png".format(i)
+            utils.plot_stem(np.arange(q2p_kld.shape[1]), \
+                    np.mean(q2p_kld, axis=0), file_name)
+            file_name = "MV_B_HI_P2Q_KLDS_b{0:d}.png".format(i)
+            utils.plot_stem(np.arange(p2q_kld.shape[1]), \
+                    np.mean(p2q_kld, axis=0), file_name)
             file_name = "MV_B_STEP_NLLS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(step_nll.shape[0]), \
                     step_nll, file_name)

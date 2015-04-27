@@ -15,7 +15,7 @@ from blocks.initialization import Constant, IsotropicGaussian, Orthogonal
 from blocks.bricks import Random, MLP, Linear, Tanh, Softmax, Sigmoid, Initializable
 from blocks.bricks import Tanh, Identity, Activation, Feedforward
 from blocks.utils import shared_floatx_nans
-from blocks.roles import add_role, WEIGHT, BIAS, PARAMETER
+from blocks.roles import add_role, WEIGHT, BIAS, PARAMETER, AUXILIARY
 
 from attention import ZoomableAttentionWindow
 from prob_layers import replicate_batch
@@ -120,115 +120,6 @@ class CondNet(Initializable, Feedforward):
         z_logvar = self.logvar_linear.apply(f[-1])
         z = z_mean + (u * tensor.exp(0.5 * z_logvar))
         return z_mean, z_logvar, z
-
-
-###################################################
-# More standard LSTM implementation, no peepholes #
-###################################################
-
-class BasicLSTM(BaseRecurrent, Initializable):
-    u"""
-    Basic LSTM, no peepholes and linear part of input transform is built in.
-
-    ----------
-    dim : int
-        The dimension of the hidden state.
-    activation : :class:`.Brick`, optional
-        The activation function. The default and by far the most popular
-        is :class:`.Tanh`.
-    Notes
-    -----
-    See :class:`.Initializable` for initialization parameters.
-    """
-    @lazy(allocation=['dim'])
-    def __init__(self, dim, activation=None, **kwargs):
-        super(LSTM, self).__init__(**kwargs)
-        self.dim = dim
-
-        if not activation:
-            activation = Tanh()
-        self.children = [activation]
-
-    def get_dim(self, name):
-        if name == 'inputs':
-            return self.dim * 4
-        if name in ['states', 'cells']:
-            return self.dim
-        if name == 'mask':
-            return 0
-        return super(LSTM, self).get_dim(name)
-
-    def _allocate(self):
-        self.W_state = shared_floatx_nans((self.dim, 4*self.dim),
-                                          name='W_state')
-        self.W_cell_to_in = shared_floatx_nans((self.dim,),
-                                               name='W_cell_to_in')
-        self.W_cell_to_forget = shared_floatx_nans((self.dim,),
-                                                   name='W_cell_to_forget')
-        self.W_cell_to_out = shared_floatx_nans((self.dim,),
-                                                name='W_cell_to_out')
-        self.biases = shared_floatx_nans((4*self.dim,), name='biases')
-        add_role(self.W_state, WEIGHT)
-        add_role(self.W_cell_to_in, WEIGHT)
-        add_role(self.W_cell_to_forget, WEIGHT)
-        add_role(self.W_cell_to_out, WEIGHT)
-        add_role(self.biases, BIAS)
-
-        self.params = [self.W_state, self.W_cell_to_in, self.W_cell_to_forget,
-                       self.W_cell_to_out, self.biases]
-
-    def _initialize(self):
-        self.biases_init.initialize(self.biases, self.rng)
-        for w in self.params[:-1]:
-            self.weights_init.initialize(w, self.rng)
-
-    @recurrent(sequences=['inputs', 'mask'], states=['states', 'cells'],
-               contexts=[], outputs=['states', 'cells'])
-    def apply(self, inputs, states, cells, mask=None):
-        """Apply the Long Short Term Memory transition.
-        Parameters
-        ----------
-        states : :class:`~tensor.TensorVariable`
-            The 2 dimensional matrix of current states in the shape
-            (batch_size, features). Required for `one_step` usage.
-        cells : :class:`~tensor.TensorVariable`
-            The 2 dimensional matrix of current cells in the shape
-            (batch_size, features). Required for `one_step` usage.
-        inputs : :class:`~tensor.TensorVariable`
-            The 2 dimensional matrix of inputs in the shape (batch_size,
-            features * 4).
-        mask : :class:`~tensor.TensorVariable`
-            A 1D binary array in the shape (batch,) which is 1 if there is
-            data available, 0 if not. Assumed to be 1-s only if not given.
-        Returns
-        -------
-        states : :class:`~tensor.TensorVariable`
-            Next states of the network.
-        cells : :class:`~tensor.TensorVariable`
-            Next cell activations of the network.
-        """
-        def slice_last(x, no):
-            return x.T[no*self.dim: (no+1)*self.dim].T
-        nonlinearity = self.children[0].apply
-
-        activation = tensor.dot(states, self.W_state) + inputs + self.biases
-        in_gate = tensor.nnet.sigmoid(slice_last(activation, 0) +
-                                      cells * self.W_cell_to_in)
-        forget_gate = tensor.nnet.sigmoid(slice_last(activation, 1) +
-                                          cells * self.W_cell_to_forget)
-        next_cells = (forget_gate * cells +
-                      in_gate * nonlinearity(slice_last(activation, 2)))
-        out_gate = tensor.nnet.sigmoid(slice_last(activation, 3) +
-                                       next_cells * self.W_cell_to_out)
-        next_states = out_gate * nonlinearity(next_cells)
-
-        if mask:
-            next_states = (mask[:, None] * next_states +
-                           (1 - mask[:, None]) * states)
-            next_cells = (mask[:, None] * next_cells +
-                          (1 - mask[:, None]) * cells)
-
-        return next_states, next_cells
 
 ###########################################
 # QSampler for a single diagonal Gaussian #
@@ -621,14 +512,22 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
 
     def _allocate(self):
         c_dim = self.get_dim('c')
+        zm_dim = self.get_dim('z_mix')
+        # self.c_0 provides the initial state of the canvas
         self.c_0 = shared_floatx_nans((c_dim,), name='c_0')
+        # self.zm_mean provides the mean of z_mix
+        self.zm_mean = shared_floatx_nans((zm_dim,), name='zm_mean')
+        # self.zm_logvar provides the logvar of z_mix
+        self.zm_logvar = shared_floatx_nans((zm_dim,), name='zm_logvar')
         add_role(self.c_0, PARAMETER)
+        add_role(self.zm_mean, PARAMETER)
+        add_role(self.zm_logvar, PARAMETER)
         # add the theano shared variables to our parameter lists
-        self.params.extend([ self.c_0 ])
+        self.params.extend([ self.c_0, self.zm_mean, self.zm_logvar ])
         return
 
     def _initialize(self):
-        # initialize to zeros...
+        # initialize to all parameters zeros...
         for p in self.params:
             p_nan = p.get_value(borrow=False)
             p_zeros = numpy.zeros(p_nan.shape)
@@ -644,13 +543,13 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
             return self.enc_rnn.get_dim('states')
         elif name == 'c_enc':
             return self.enc_rnn.get_dim('cells')
-        elif name in ['z_gen', 'z_mean', 'z_log_sigma']:
+        elif name == 'z_gen':
             return self.enc_mlp_out.get_dim('output')
         elif name == 'h_dec':
             return self.dec_rnn.get_dim('states')
         elif name == 'c_dec':
             return self.dec_rnn.get_dim('cells')
-        elif name == 'kl':
+        elif name in ['kl', 'kl_q2p', 'kl_p2q']:
             return 0
         elif name == 'center_y':
             return 0
@@ -665,9 +564,9 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
     #------------------------------------------------------------------------
 
     @recurrent(sequences=['u'], contexts=['x', 's_mix'],
-               states=['c', 'h_enc', 'c_enc', 'z_gen', 'kl', 'h_dec', 'c_dec'],
-               outputs=['c', 'h_enc', 'c_enc', 'z_gen', 'kl', 'h_dec', 'c_dec'])
-    def iterate(self, u, c, h_enc, c_enc, z_gen, kl, h_dec, c_dec, x, s_mix):
+               states=['c', 'h_enc', 'c_enc', 'z_gen', 'kl_q2p', 'kl_p2q', 'h_dec', 'c_dec'],
+               outputs=['c', 'h_enc', 'c_enc', 'z_gen', 'kl_q2p', 'kl_p2q', 'h_dec', 'c_dec'])
+    def iterate(self, u, c, h_enc, c_enc, z_gen, kl_q2p, kl_p2q, h_dec, c_dec, x, s_mix):
         # get the current "reconstruction error"
         x_hat = x - tensor.nnet.sigmoid(c)
         r = self.reader_mlp.apply(x, x_hat, h_dec)
@@ -681,28 +580,29 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         # estimate decoder conditional over z given h_dec
         p_gen_mean, p_gen_logvar, p_z_gen = \
                 self.dec_mlp_out.apply(h_dec, u)
-        p_gen_mean, p_gen_logvar, p_z_gen = 0.0, 0.0, u
-        # compute KL(q(z | h_enc) || p(z | h_dec))
-        akl = gaussian_kld(q_gen_mean, q_gen_logvar, p_gen_mean, p_gen_logvar)
-        kl = tensor.sum(akl, axis=1)
-        z_gen = q_z_gen
+        # compute KL(q || p) and KL(p || q)
+        akl_q2p = gaussian_kld(q_gen_mean, q_gen_logvar, p_gen_mean, p_gen_logvar)
+        kl_q2p = tensor.sum(akl_q2p, axis=1)
+        akl_p2q = gaussian_kld(p_gen_mean, p_gen_logvar, q_gen_mean, q_gen_logvar)
+        kl_p2q = tensor.sum(akl_p2q, axis=1)
         # update the decoder RNN state
+        z_gen = q_z_gen # use samples from q while training
         i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
         h_dec, c_dec = self.dec_rnn.apply(states=h_dec, cells=c_dec, \
                                           inputs=i_dec, iterate=False)
         # apply a stochastic update to the canvas
         c = c + self.writer_mlp.apply(h_dec)
-        return c, h_enc, c_enc, z_gen, kl, h_dec, c_dec
+        return c, h_enc, c_enc, z_gen, kl_q2p, kl_p2q, h_dec, c_dec
 
     @recurrent(sequences=['u'], contexts=['s_mix'], 
                states=['c', 'h_dec', 'c_dec'],
                outputs=['c', 'h_dec', 'c_dec'])
     def decode(self, u, c, h_dec, c_dec, s_mix):
         batch_size = c.shape[0]
-        # sample z from p(z | h_dec)
+        # sample z from p(z | h_dec) -- we used q(z | h_enc) during training
         p_gen_mean, p_gen_logvar, p_z_gen = \
                 self.dec_mlp_out.apply(h_dec, u)
-        z_gen = u #p_z_gen
+        z_gen = p_z_gen
         # update the decoder RNN state
         i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
         h_dec, c_dec = self.dec_rnn.apply(
@@ -714,10 +614,11 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
 
     #------------------------------------------------------------------------
 
-    @application(inputs=['features'], outputs=['recons', 'kl'])
-    def reconstruct(self, features):
+    @application(inputs=['x_in', 'x_out'], 
+                 outputs=['recons', 'kl_q2p', 'kl_p2q'])
+    def reconstruct(self, x_in, x_out):
         # get important size and shape information
-        batch_size = features.shape[0]
+        batch_size = x_in.shape[0]
         z_mix_dim = self.get_dim('z_mix')
         z_gen_dim = self.get_dim('z_gen')
         ce_dim = self.get_dim('c_enc')
@@ -725,39 +626,51 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         he_dim = self.get_dim('h_enc')
         hd_dim = self.get_dim('h_dec')
 
-        # deal with the infinite mixture intialization
+        # sample zero-mean, unit std. Gaussian noise for mixture init
         u_mix = self.theano_rng.normal(
                     size=(batch_size, z_mix_dim),
                     avg=0., std=1.)
+        # transform ZMUV noise based on q(z_mix | x_in)
         z_mix_mean, z_mix_logvar, z_mix = \
-                self.mix_enc_mlp.apply(features, u_mix)
-        akl_mix = gaussian_kld(z_mix_mean, z_mix_logvar, 0.0, 0.0)
+                self.mix_enc_mlp.apply(x_in, u_mix)
+        # transform samples from q(z_mix | x_in) into initial generator state
         mix_init = self.mix_dec_mlp.apply(z_mix)
         cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
         ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
         he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):(cd_dim+hd_dim+ce_dim+he_dim)]
         sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
-        c0 = tensor.zeros_like(features) + self.c_0
+        c0 = tensor.zeros_like(x_out) + self.c_0
 
-        # get zero-mean, unit-std. Gaussian samples for use in scan op
-        u_draw = self.theano_rng.normal(
+        # compute KL-divergence information for the mixture init step
+        akl_q2p_mix = gaussian_kld(z_mix_mean, z_mix_logvar, \
+                                   self.zm_mean, self.zm_logvar)
+        akl_p2q_mix = gaussian_kld(self.zm_mean, self.zm_logvar, \
+                                   z_mix_mean, z_mix_logvar)
+        kl_q2p_mix_np = tensor.sum(akl_q2p_mix, axis=1)
+        kl_p2q_mix_np = tensor.sum(akl_p2q_mix, axis=1)
+        kl_q2p_mix = kl_q2p_mix_np.reshape((1, batch_size))
+        kl_p2q_mix = kl_p2q_mix_np.reshape((1, batch_size))
+
+        # get zero-mean, unit-std. Gaussian noise for use in scan op
+        u_gen = self.theano_rng.normal(
                     size=(self.n_iter, batch_size, z_gen_dim),
                     avg=0., std=1.)
+
         # run the multi-stage guided generative process
-        c, h_enc, c_enc, z, kl_draw, h_dec, c_dec = \
-            rvals = self.iterate(u=u_draw, c=c0, h_enc=he0, c_enc=ce0, \
-                                 h_dec=hd0, c_dec=cd0, x=features, s_mix=sm0)
+        c, h_enc, c_enc, z, kl_q2p_gen, kl_p2q_gen, h_dec, c_dec = \
+                self.iterate(u=u_gen, c=c0, h_enc=he0, c_enc=ce0, \
+                             h_dec=hd0, c_dec=cd0, x=x_out, s_mix=sm0)
 
         # grab the observations generated by the multi-stage process
         x_recons = tensor.nnet.sigmoid(c[-1,:,:])
         x_recons.name = "reconstruction"
         # group up the klds from mixture init and multi-stage generation
-        kl_mix = tensor.sum(akl_mix, axis=1)
-        klm_row = kl_mix.reshape((1, batch_size), ndim=2)
-        kl = tensor.vertical_stack(klm_row, kl_draw)
-        kl.name = "kl"
-        return x_recons, kl
+        kl_q2p = tensor.vertical_stack(kl_q2p_mix, kl_q2p_gen)
+        kl_q2p.name = "kl_q2p"
+        kl_p2q = tensor.vertical_stack(kl_p2q_mix, kl_p2q_gen)
+        kl_p2q.name = "kl_p2q"
+        return x_recons, kl_q2p, kl_p2q
 
     @application(inputs=['n_samples'], outputs=['samples'])
     def sample(self, n_samples):
@@ -772,192 +685,30 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
         z_gen_dim = self.get_dim('z_gen')
         cd_dim = self.get_dim('c_dec')
         hd_dim = self.get_dim('h_dec')
+        ce_dim = self.get_dim('c_enc')
+        he_dim = self.get_dim('h_enc')
         c_dim = self.get_dim('c')
 
-        # deal with the infinite mixture intialization
-        sm0 = self.theano_rng.normal(
+        # sample zero-mean, unit-std. Gaussian noise for the mixture init
+        u_mix = self.theano_rng.normal(
                     size=(n_samples, z_mix_dim),
                     avg=0., std=1.)
-
-        mix_init = self.mix_dec_mlp.apply(sm0)
+        # transform noise based on learned mean and logvar
+        z_mix = self.zm_mean + (u_mix * tensor.exp(0.5 * self.zm_logvar))
+        # transform the sample from p(z_mix) into an initial generator state
+        mix_init = self.mix_dec_mlp.apply(z_mix)
         cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
+        sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
         c0 = tensor.alloc(0.0, n_samples, c_dim) + self.c_0
 
-        # sample from zero-mean unit-std. Gaussian
-        u = self.theano_rng.normal(
+        # sample from zero-mean unit-std. Gaussian for use in scan op
+        u_gen = self.theano_rng.normal(
                     size=(self.n_iter, n_samples, z_gen_dim),
                     avg=0., std=1.)
 
-        c, _, _, = self.decode(u=u, c=c0, h_dec=hd0, c_dec=cd0, s_mix=sm0)
+        c, _, _, = self.decode(u=u_gen, c=c0, h_dec=hd0, c_dec=cd0, s_mix=sm0)
         #c, _, _, center_y, center_x, delta = self.decode(u)
-        return tensor.nnet.sigmoid(c)
-
-
-############################################
-# Multi-stage infinite mixture of mixtures #
-############################################
-
-class MultiStageModel(BaseRecurrent, Initializable, Random):
-    """The underlying models should all be CondNets.
-    """
-    def __init__(self, p_hi_given_si, p_sip1_given_si_hi,
-                 q_z_given_x, q_hi_given_x_si, \
-                 n_iter, **kwargs):
-        super(MultiStageModel, self).__init__(**kwargs)
-        # record the desired step count
-        self.n_iter = n_iter
-        # grab handles for models in the generator
-        self.p_hi_given_si = p_hi_given_si
-        self.p_sip1_given_si_hi = p_sip1_given_si_hi
-        # grab handles for models in the guide function
-        self.q_z_given_x = q_z_given_x
-        self.q_hi_given_x_si = q_hi_given_x_si
-
-        # all of these should be CondNets
-
-        # record the sub-models that underlie this model
-        self.children = [self.p_hi_given_si, self.p_sip1_given_si_hi,
-                         self.q_z_given_x, self.q_hi_given_x_si]
-        return
-
-    def _allocate(self):
-        # we only have the output/canvas bias
-        c_dim = self.get_dim('c')
-        self.c_0 = shared_floatx_nans((c_dim,), name='c_0')
-        add_role(self.c_0, PARAMETER)
-        # add the theano shared variables to our parameter lists
-        self.params.extend([ self.c_0 ])
-        return
-
-    def _initialize(self):
-        # initialize to zeros...
-        for p in self.params:
-            p_nan = p.get_value(borrow=False)
-            p_zeros = numpy.zeros(p_nan.shape)
-            p.set_value(p_zeros.astype(theano.config.floatX))
-        return
- 
-    def get_dim(self, name):
-        if name == 'c':
-            return self.q_z_given_x.get_dim('input')
-        elif name in ['z_mix', 'u_mix']:
-            return self.q_z_given_x.get_dim('output')
-        elif name in ['z_gen', 'u_gen']:
-            return self.p_hi_given_si.get_dim('output')
-        elif name == 'kl':
-            return 0
-        else:
-            super(MultiStageModel, self).get_dim(name)
-        return
-
-    #------------------------------------------------------------------------
-
-    @recurrent(sequences=['u_gen'], contexts=['x_out', 's_mix'],
-               states=['c', 'kl'],
-               outputs=['c', 'kl'])
-    def iterate(self, u_gen, c, kl, x_out, s_mix):
-        # get gradient of log-likelihood w.r.t. x_out given c
-        c_obs = tensor.nnet.sigmoid(c)
-        x_hat = x_out - c_obs
-        # compute distribution over next step from the guide
-        q_in = tensor.concatenate([x_hat, c_obs, s_mix], axis=1)
-        z_q_mean, z_q_logvar, z_q = self.q_hi_given_x_si.apply(q_in, u_gen)
-        # compute distribution over next step from the generator
-        p_in = tensor.concatenate([c_obs, s_mix], axis=1)
-        z_p_mean, z_p_logvar, z_p = self.p_hi_given_si.apply(p_in, u_gen)
-        # get KL(guide || generator)
-        akl = gaussian_kld(z_q_mean, z_q_logvar, z_p_mean, z_p_logvar)
-        kl = tensor.sum(akl, axis=1)
-        # get additive update from the generator
-        s_in = tensor.concatenate([s_mix, z_q], axis=1)
-        c_step = self.p_sip1_given_si_hi.apply(s_in)
-        c = c + c_step
-        return c, kl
-
-    @recurrent(sequences=['u_gen'], contexts=['s_mix'], 
-               states=['c'],
-               outputs=['c'])
-    def decode(self, u_gen, c, s_mix):
-        # get the information on which to condition the step distribution
-        c_obs = tensor.nnet.sigmoid(c)
-        p_in = tensor.concatenate([c_obs, s_mix], axis=1)
-        # scale and shift the ZMUV Gaussian samples in z
-        z_p_mean, z_p_logvar, z_p = self.p_hi_given_si.apply(p_in, u_gen)
-        # get steps sampled from the conditional step distribution
-        s_in = tensor.concatenate([s_mix, z_p], axis=1)
-        c_step = self.p_sip1_given_si_hi.apply(s_in)
-        c = c + c_step
-        return c
-
-    #------------------------------------------------------------------------
-
-    @application(inputs=['x_in', 'x_out'], outputs=['recons', 'kl'])
-    def reconstruct(self, x_in, x_out):
-        batch_size = x_in.shape[0]
-        u_mix_dim = self.get_dim('u_mix')
-        u_gen_dim = self.get_dim('u_gen')
-
-        # deal with the infinite mixture intialization
-        u_mix = self.theano_rng.normal(
-                    size=(batch_size, u_mix_dim),
-                    avg=0., std=1.)
-        z_mix_mean, z_mix_logvar, z_mix = self.q_z_given_x.apply(x_in, u_mix)
-        akl_mix = gaussian_kld(z_mix_mean, z_mix_logvar, 0.0, 0.0)
-        kl_mix = tensor.sum(akl_mix, axis=1).reshape((1, batch_size), ndim=2)
-        s_mix = 2.0 * tensor.tanh(0.5 * z_mix)
-
-        # get some zero-mean, unit-std. Gaussian noise for the loop
-        u_gen = self.theano_rng.normal(
-                    size=(self.n_iter, batch_size, u_gen_dim),
-                    avg=0., std=1.)
-
-        # run the iterative refinement loop
-        c0 = tensor.zeros_like(x_out) + self.c_0
-        ci, kl_gen = self.iterate(u_gen=u_gen, x_out=x_out, \
-                                 s_mix=s_mix)
-
-        # grab the observations generated by the refinement model
-        x_recons = tensor.nnet.sigmoid(ci[-1,:,:])
-        #x_recons = tensor.nnet.sigmoid(tensor.vertical_stack(c0[0], ci))
-        x_recons.name = "reconstruction"
-        # group up the klds from mixture and refinement models
-        kl = tensor.vertical_stack(kl_mix, kl_gen)
-        kl.name = "kl"
-        return x_recons, kl
-
-    @application(inputs=['n_samples'], outputs=['samples'])
-    def sample(self, n_samples):
-        """Sample from model.
-
-        Returns 
-        -------
-
-        samples : tensor3 (n_samples, n_iter, x_dim)
-        """
-        u_mix_dim = self.get_dim('u_mix')
-        u_gen_dim = self.get_dim('u_gen')
-        c_dim = self.get_dim('c')
-
-        # deal with the infinite mixture intialization
-        u_mix = self.theano_rng.normal(
-                    size=(n_samples, u_mix_dim),
-                    avg=0., std=1.)
-        z_mix = u_mix
-        s_mix = 2.0 * tensor.tanh(0.5 * z_mix)
-
-        # get some zero-mean, unit-std. Gaussian noise for the loop
-        u_gen = self.theano_rng.normal(
-                    size=(self.n_iter, n_samples, u_gen_dim),
-                    avg=0., std=1.)
-
-        # get initial sate of "canvas"
-        #c0 = tensor.alloc(0.0, n_samples, c_dim) + self.c_0
-        # sample the multi-stage generative process
-        ci = self.decode(u_gen=u_gen, s_mix=s_mix)
-        # include the initial canvas state with the samples
-        c = ci
-        #c = tensor.vertical_stack(c0[0].reshape(1,c_dim), ci)
         return tensor.nnet.sigmoid(c)
 
 
@@ -1100,6 +851,8 @@ class DotMatrix(BaseRecurrent, Initializable, Random):
         z_mix_dim = self.get_dim('z_mix')
         cd_dim = self.get_dim('c_dec')
         hd_dim = self.get_dim('h_dec')
+        ce_dim = self.get_dim('c_enc')
+        he_dim = self.get_dim('h_enc')
         im_rows = self.im_shape[0]
         im_cols = self.im_shape[1]
 

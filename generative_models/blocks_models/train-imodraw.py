@@ -106,7 +106,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
         return "%s%d" % (leading, -exp)
 
     lr_str = lr_tag(learning_rate)
-    name = "%s-%s-t%d-enc%d-dec%d-z%d-md%d-wd%d-lr%s" % \
+    name = "BIKLD-%s-%s-t%d-enc%d-dec%d-z%d-md%d-wd%d-lr%s" % \
             (name, attention_tag, n_iter, enc_dim, dec_dim, z_dim, mix_dim, write_dim, lr_str)
 
     print("\nRunning experiment %s" % name)
@@ -123,7 +123,7 @@ def main(name, epochs, batch_size, learning_rate, attention,
     # setup the reader and writer
     read_dim = 2*x_dim
     reader_mlp = Reader(x_dim=x_dim, dec_dim=dec_dim, **inits)
-    writer_mlp = MLP([Tanh(), None], [dec_dim, write_dim, x_dim], \
+    writer_mlp = MLP([None, None], [dec_dim, write_dim, x_dim], \
                      name="writer_mlp", **inits)
     attention_tag = "full"
     
@@ -160,25 +160,24 @@ def main(name, epochs, batch_size, learning_rate, attention,
     #------------------------------------------------------------------------
     x = tensor.matrix('features')
     
-    #x_recons = 1. + x
-    x_recons, kl_terms = draw.reconstruct(x)
-    #x_recons, _, _, _, _ = draw.silly(x, n_steps=10, batch_size=100)
-    #x_recons = x_recons[-1,:,:]
+    # collect reconstructions of x produced by the IMoDRAW model
+    x_recons, kl_q2p, kl_p2q = draw.reconstruct(x, x)
 
-    #samples = draw.sample(100) 
-    #x_recons = samples[-1, :, :]
-    #x_recons = samples[-1, :, :]
-
+    # get the expected NLL part of the VFE bound
     nll_term = BinaryCrossEntropy().apply(x, x_recons)
     nll_term.name = "nll_term"
 
-    kld_term = kl_terms.sum(axis=0).mean()
-    kld_term.name = "kld_term"
+    # get KL(q || p) and KL(p || q)
+    kld_q2p_term = kl_q2p.sum(axis=0).mean()
+    kld_q2p_term.name = "kld_q2p_term"
+    kld_p2q_term = kl_p2q.sum(axis=0).mean()
+    kld_p2q_term.name = "kld_p2q_term"
 
-    nll_bound = nll_term + kld_term
+    # get the proper VFE bound on NLL
+    nll_bound = nll_term + kld_q2p_term
     nll_bound.name = "nll_bound"
 
-    # grab the computation graph for the VFE bound on NLL
+    # grab handles for all the optimizable parameters in our cost
     cg = ComputationGraph([nll_bound])
     params = VariableFilter(roles=[PARAMETER])(cg.variables)
 
@@ -186,8 +185,10 @@ def main(name, epochs, batch_size, learning_rate, attention,
     reg_term = (1e-5 * sum([tensor.sum(p**2.0) for p in params]))
     reg_term.name = "reg_term"
 
-    # compute the final cost of VFE + regularization
-    total_cost = nll_bound + reg_term
+    # compute the full cost w.r.t. which we will optimize
+    total_cost = nll_term + (0.8 * kld_q2p_term) + \
+                 (0.2 * kld_p2q_term) + reg_term
+    total_cost.name = "total_cost"
 
     algorithm = GradientDescent(
         cost=total_cost, 
@@ -200,17 +201,13 @@ def main(name, epochs, batch_size, learning_rate, attention,
 
     #------------------------------------------------------------------------
     # Setup monitors
-    monitors = [nll_bound, nll_term, kld_term, reg_term]
+    monitors = [total_cost, nll_bound, nll_term, kld_q2p_term, kld_p2q_term, reg_term]
     for t in range(n_iter+1):
-        kl_term_t = kl_terms[t,:].mean()
-        kl_term_t.name = "kl_term_%d" % t
-
-        #x_recons_t = T.nnet.sigmoid(c[t,:,:])
-        #recons_term_t = BinaryCrossEntropy().apply(x, x_recons_t)
-        #recons_term_t = recons_term_t.mean()
-        #recons_term_t.name = "recons_term_%d" % t
-
-        monitors += [kl_term_t]
+        kl_q2p_t = kl_q2p[t,:].mean()
+        kl_q2p_t.name = "kl_q2p_%d" % t
+        kl_p2q_t = kl_p2q[t,:].mean()
+        kl_p2q_t.name = "kl_p2q_%d" % t
+        monitors += [kl_q2p_t, kl_p2q_t]
 
     train_monitors = monitors[:]
     train_monitors += [aggregation.mean(algorithm.total_gradient_norm)]
@@ -218,8 +215,8 @@ def main(name, epochs, batch_size, learning_rate, attention,
     # Live plotting...
     plot_channels = [
         ["train_nll_bound", "valid_nll_bound"],
-        ["train_kl_term_%d" % t for t in range(n_iter+1)],
-        #["train_recons_term_%d" % t for t in range(n_iter)],
+        ["train_kl_q2p_%d" % t for t in range(n_iter+1)],
+        ["train_kl_p2q_%d" % t for t in range(n_iter+1)],
         ["train_total_gradient_norm", "train_total_step_norm"]
     ]
 
@@ -234,7 +231,6 @@ def main(name, epochs, batch_size, learning_rate, attention,
         #test_stream  = DataStream(mnist_test,  iteration_scheme=SequentialScheme(mnist_test.num_examples, batch_size))
     else:
         raise Exception('Unknown name %s'%datasource)
-
 
     main_loop = MainLoop(
         model=Model(total_cost),
