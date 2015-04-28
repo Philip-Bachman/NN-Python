@@ -180,7 +180,7 @@ def test_mnist(lam_q2p=0.5,
     log_name = "{}_train_log.txt".format(result_tag)
     out_file = open(log_name, 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0002
+    learn_rate = 0.0003
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
     train_result_dict = {'step_nll': [], 'step_kld': [], \
@@ -188,7 +188,7 @@ def test_mnist(lam_q2p=0.5,
     valid_result_dict = {'step_nll': [], 'step_kld': [], \
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
-        scale = min(1.0, ((i+1) / 2000.0))
+        scale = min(1.0, ((i+1) / 5000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -363,7 +363,7 @@ def test_tfd(lam_q2p=0.5,
     # p_zi_given_xi #
     #################
     params = {}
-    shared_config = [obs_dim, 1500, 1500]
+    shared_config = [obs_dim, 1000, 1000]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -383,7 +383,7 @@ def test_tfd(lam_q2p=0.5,
     # p_xip1_zi #
     #############
     params = {}
-    shared_config = [z_dim, 1500, 1500]
+    shared_config = [z_dim, 1000, 1000]
     top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -403,7 +403,7 @@ def test_tfd(lam_q2p=0.5,
     # q_zi_given_x_xi #
     ###################
     params = {}
-    shared_config = [(obs_dim + obs_dim), 1500, 1500]
+    shared_config = [(obs_dim + obs_dim), 1000, 1000]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -445,7 +445,7 @@ def test_tfd(lam_q2p=0.5,
     log_name = "{}_train_log.txt".format(result_tag)
     out_file = open(log_name, 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0002
+    learn_rate = 0.0003
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
     train_result_dict = {'step_nll': [], 'step_kld': [], \
@@ -453,7 +453,7 @@ def test_tfd(lam_q2p=0.5,
     valid_result_dict = {'step_nll': [], 'step_kld': [], \
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
-        scale = min(1.0, ((i+1) / 2000.0))
+        scale = min(1.0, ((i+1) / 5000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -627,7 +627,7 @@ def test_svhn(lam_q2p=0.5,
     # p_zi_given_xi #
     #################
     params = {}
-    shared_config = [obs_dim, 1500, 1500]
+    shared_config = [obs_dim, 1000, 1000]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -647,7 +647,7 @@ def test_svhn(lam_q2p=0.5,
     # p_xip1_zi #
     #############
     params = {}
-    shared_config = [z_dim, 1500, 1500]
+    shared_config = [z_dim, 1000, 1000]
     top_config = [shared_config[-1], obs_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -667,7 +667,7 @@ def test_svhn(lam_q2p=0.5,
     # q_zi_given_x_xi #
     ###################
     params = {}
-    shared_config = [(obs_dim + obs_dim), 1500, 1500]
+    shared_config = [(obs_dim + obs_dim), 1000, 1000]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -709,7 +709,7 @@ def test_svhn(lam_q2p=0.5,
     log_name = "{}_train_log.txt".format(result_tag)
     out_file = open(log_name, 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0002
+    learn_rate = 0.0003
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
     train_result_dict = {'step_nll': [], 'step_kld': [], \
@@ -717,7 +717,7 @@ def test_svhn(lam_q2p=0.5,
     valid_result_dict = {'step_nll': [], 'step_kld': [], \
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
-        scale = min(1.0, ((i+1) / 2000.0))
+        scale = min(1.0, ((i+1) / 5000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -850,13 +850,13 @@ if __name__=="__main__":
     #######
     # TFD #
     #######
-    # test_tfd(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_tfd')
-    # test_tfd(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
-    # test_tfd(lam_q2p=0.0, lam_p2q=1.0, prob_type='bernoulli', result_tag='gpsi_tfd')
+    test_tfd(lam_q2p=0.4, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=0.8, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=0.0, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_tfd')
 
     ########
     # SVHN #
     ########
-    test_svhn(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_svhn')
-    # test_svhn(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_svhn')
-    # test_svhn(lam_q2p=0.0, lam_p2q=1.0, prob_type='bernoulli', result_tag='gpsi_svhn')
+    # test_svhn(lam_q2p=0.4, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_svhn')
+    # test_svhn(lam_q2p=0.8, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_svhn')
+    # test_svhn(lam_q2p=0.0, lam_p2q=0.8, prob_type='bernoulli', result_tag='gpsi_svhn')
