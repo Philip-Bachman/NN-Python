@@ -243,10 +243,15 @@ class GPSImputer(object):
                 mom2_init=1e-3, smoothing=1e-4, max_grad_norm=10.0)
 
         # Construct a function for jointly training the generator/inferencer
+        print("Compiling cost computer...")
+        self.compute_raw_costs = self._construct_raw_costs()
         print("Compiling training function...")
         self.train_joint = self._construct_train_joint()
         print("Compiling data-guided imputer sampler...")
         self.sample_imputer = self._construct_sample_imputer()
+        # make easy access points for some interesting parameters
+        self.gen_inf_weights = self.p_zi_given_xi.shared_layers[0].W
+        self.gen_gen_weights = self.p_xip1_given_zi.mu_layers[-1].W
         return
 
     def set_sgd_params(self, lr=0.01, mom_1=0.9, mom_2=0.999):
@@ -327,7 +332,7 @@ class GPSImputer(object):
         if self.x_type == 'bernoulli':
             ll_costs = log_prob_bernoulli(xo, xh, mask=xm_inv)
         else:
-            ll_costs = log_prob_gaussian2_masked(xo, xh, \
+            ll_costs = log_prob_gaussian2(xo, xh, \
                     log_vars=self.bounded_logvar, mask=xm_inv)
         nll_costs = -ll_costs
         return nll_costs
@@ -371,6 +376,36 @@ class GPSImputer(object):
         """
         param_reg_cost = sum([T.sum(p**2.0) for p in self.joint_params])
         return param_reg_cost
+
+    def _construct_raw_costs(self):
+        """
+        Construct all the raw, i.e. not weighted by any lambdas, costs.
+        """
+        # get NLL for all steps (per-obs, per-step, but pre-summed over dims)
+        step_nlls = []
+        for i in range(self.imp_steps):
+            step_nlls.append(self._construct_nll_costs(self.x_out, \
+                             self.x_mask, step_num=i))
+        nlli = T.stack(*step_nlls)
+        # get KLd for all steps (per-obs, per-step, and per-dim)
+        kldi_q2p = T.stack(*self.kldi_q2p)
+        kldi_p2q = T.stack(*self.kldi_p2q)
+        # gather step-wise costs into a single list
+        all_step_costs = [nlli, kldi_q2p, kldi_p2q]
+        # compile theano function for computing the costs
+        inputs = [self.x_in, self.x_out, self.x_mask]
+        cost_func = theano.function(inputs=inputs, outputs=all_step_costs)
+        def raw_cost_computer(XI, XO, XM):
+            _all_costs = cost_func(to_fX(XI), to_fX(XO), to_fX(XM))
+            _kld_q2p = np.sum(np.mean(_all_costs[1], axis=1, keepdims=True), axis=0)
+            _kld_p2q = np.sum(np.mean(_all_costs[2], axis=1, keepdims=True), axis=0)
+            _step_klds = np.mean(np.sum(_all_costs[1], axis=2, keepdims=True), axis=1)
+            _step_klds = to_fX( np.asarray([k for k in _step_klds]) )
+            _step_nlls = np.mean(_all_costs[0], axis=1)
+            _step_nlls = to_fX( np.asarray([k for k in _step_nlls]) )
+            results = [_step_nlls, _step_klds, _kld_q2p, _kld_p2q]
+            return results
+        return raw_cost_computer
 
     def _construct_train_joint(self):
         """

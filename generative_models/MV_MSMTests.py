@@ -221,10 +221,10 @@ def test_with_model_init():
         MSM.set_lam_kld_l1l2(lam_kld_l1l2=scale)
         MSM.set_lam_ent(lam_ent_p=0.0, lam_ent_q=0.01)
         MSM.set_lam_l2w(1e-4)
-        MSM.set_drop_rate(0.1)
-        MSM.q_hi_given_x_si.set_bias_noise(0.1)
-        MSM.p_hi_given_si.set_bias_noise(0.1)
-        MSM.p_sip1_given_si_hi.set_bias_noise(0.1)
+        MSM.set_drop_rate(0.2)
+        MSM.q_hi_given_x_si.set_bias_noise(0.0)
+        MSM.p_hi_given_si.set_bias_noise(0.0)
+        MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
         # perform a minibatch update and record the cost for this batch
         Xb_tr = to_fX( Xtr.take(batch_idx, axis=0) )
         result = MSM.train_joint(Xb_tr, Xb_tr, batch_reps)
@@ -247,7 +247,7 @@ def test_with_model_init():
             out_file.flush()
             costs = [0.0 for v in costs]
         if (((i % 2000) == 0) or ((i < 10000) and ((i % 1000) == 0))):
-            MSM.set_drop_rate(0.0)
+            MSM.set_drop_rate(0.2)
             MSM.q_hi_given_x_si.set_bias_noise(0.0)
             MSM.p_hi_given_si.set_bias_noise(0.0)
             MSM.p_sip1_given_si_hi.set_bias_noise(0.0)

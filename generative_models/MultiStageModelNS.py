@@ -328,11 +328,11 @@ class MultiStageModel(object):
         self.group_1_updates = get_adam_updates(params=self.group_1_params, \
                 grads=self.joint_grads, alpha=self.lr_1, \
                 beta1=self.mom_1, beta2=self.mom_2, \
-                mom2_init=1e-3, smoothing=5e-4, max_grad_norm=10.0)
+                mom2_init=1e-3, smoothing=1e-4, max_grad_norm=10.0)
         self.group_2_updates = get_adam_updates(params=self.group_2_params, \
                 grads=self.joint_grads, alpha=self.lr_2, \
                 beta1=self.mom_1, beta2=self.mom_2, \
-                mom2_init=1e-3, smoothing=5e-4, max_grad_norm=10.0)
+                mom2_init=1e-3, smoothing=1e-4, max_grad_norm=10.0)
         self.joint_updates = OrderedDict()
         for k in self.group_1_updates:
             self.joint_updates[k] = self.group_1_updates[k]

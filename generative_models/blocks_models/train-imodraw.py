@@ -186,8 +186,8 @@ def main(name, epochs, batch_size, learning_rate, attention,
     reg_term.name = "reg_term"
 
     # compute the full cost w.r.t. which we will optimize
-    total_cost = nll_term + (0.8 * kld_q2p_term) + \
-                 (0.2 * kld_p2q_term) + reg_term
+    total_cost = nll_term + (0.9 * kld_q2p_term) + \
+                 (0.1 * kld_p2q_term) + reg_term
     total_cost.name = "total_cost"
 
     algorithm = GradientDescent(
