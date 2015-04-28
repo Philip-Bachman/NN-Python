@@ -454,6 +454,7 @@ def test_tfd(lam_q2p=0.5,
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
         scale = min(1.0, ((i+1) / 5000.0))
+        kld_scale = min(1.0, ((i+1) / 15000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -471,8 +472,9 @@ def test_tfd(lam_q2p=0.5,
                             mom_1=scale*momentum, mom_2=0.99)
         GPSI.set_train_switch(1.0)
         GPSI.set_lam_nll(lam_nll=1.0)
-        GPSI.set_lam_kld(lam_kld_p=(scale*lam_p2q), lam_kld_q=(scale*lam_q2p))
-        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.01)
+        GPSI.set_lam_kld(lam_kld_p=(kld_scale*lam_p2q), \
+                         lam_kld_q=(kld_scale*lam_q2p))
+        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.00)
         GPSI.set_lam_l2w(1e-5)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
@@ -718,6 +720,7 @@ def test_svhn(lam_q2p=0.5,
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
         scale = min(1.0, ((i+1) / 5000.0))
+        kld_scale = min(1.0, ((i+1) / 15000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -735,8 +738,9 @@ def test_svhn(lam_q2p=0.5,
                             mom_1=scale*momentum, mom_2=0.99)
         GPSI.set_train_switch(1.0)
         GPSI.set_lam_nll(lam_nll=1.0)
-        GPSI.set_lam_kld(lam_kld_p=(scale*lam_p2q), lam_kld_q=(scale*lam_q2p))
-        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.01)
+        GPSI.set_lam_kld(lam_kld_p=(kld_scale*lam_p2q), \
+                         lam_kld_q=(kld_scale*lam_q2p))
+        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.00)
         GPSI.set_lam_l2w(1e-5)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
