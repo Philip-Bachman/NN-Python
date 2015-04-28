@@ -75,7 +75,7 @@ def log_prob_gaussian2(mu_true, mu_approx, log_vars=1.0, mask=None):
     ind_log_probs = C - (0.5 * log_vars)  - \
             ((mu_true - mu_approx)**2.0 / (2.0 * T.exp(log_vars)))
     row_log_probs = T.sum((ind_log_probs * mask), axis=1, keepdims=True)
-    return row_log_probs
+    return T.cast(row_log_probs, 'floatX')
 
 def gaussian_kld(mu_left, logvar_left, mu_right, logvar_right):
     """

@@ -54,7 +54,16 @@ def shift_and_scale_into_01(X):
 ###############################
 ###############################
 
-def test_mnist(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_mnist"):
+def test_mnist(lam_q2p=0.5, 
+               lam_p2q=0.5, \
+               prob_type='bernoulli', 
+               result_tag='gpsi_mnist'):
+    #########################################
+    # Format the result tag more thoroughly #
+    #########################################
+    result_tag = "{0:s}_q2p{1:02d}_p2q{2:02d}_{3:s}".format( \
+            result_tag, int(10 * lam_q2p), int(10 * lam_q2p), prob_type[0:4])
+
     ##########################
     # Get some training data #
     ##########################
@@ -79,7 +88,7 @@ def test_mnist(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_mnist"):
     z_dim = 100
     imp_steps = 5
     init_scale = 1.0
-    x_type = 'gaussian'
+    x_type = prob_type
 
     x_in_sym = T.matrix('x_in_sym')
     x_out_sym = T.matrix('x_out_sym')
@@ -171,17 +180,17 @@ def test_mnist(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_mnist"):
     log_name = "{}_train_log.txt".format(result_tag)
     out_file = open(log_name, 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0003
+    learn_rate = 0.0002
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
     train_result_dict = {'step_nll': [], 'step_kld': [], \
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     valid_result_dict = {'step_nll': [], 'step_kld': [], \
                          'step_kld_q2p': [], 'step_kld_p2q': []}
-    for i in range(150000):
+    for i in range(200000):
         scale = min(1.0, ((i+1) / 2000.0))
         if (((i + 1) % 15000) == 0):
-            learn_rate = learn_rate * 0.9
+            learn_rate = learn_rate * 0.92
         if (i > 10000):
             momentum = 0.90
         else:
@@ -307,7 +316,15 @@ def test_mnist(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_mnist"):
 #############################
 #############################
 
-def test_tfd(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_tfd"):
+def test_tfd(lam_q2p=0.5, 
+             lam_p2q=0.5, \
+             prob_type='bernoulli', 
+             result_tag='gpsi_tfd'):
+    #########################################
+    # Format the result tag more thoroughly #
+    #########################################
+    result_tag = "{0:s}_q2p{1:02d}_p2q{2:02d}_{3:s}".format( \
+            result_tag, int(10 * lam_q2p), int(10 * lam_q2p), prob_type[0:4])
     ##########################
     # Get some training data #
     ##########################
@@ -336,7 +353,7 @@ def test_tfd(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_tfd"):
     z_dim = 200
     imp_steps = 5
     init_scale = 1.0
-    x_type = 'bernoulli'
+    x_type = prob_type
 
     x_in_sym = T.matrix('x_in_sym')
     x_out_sym = T.matrix('x_out_sym')
@@ -428,7 +445,7 @@ def test_tfd(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_tfd"):
     log_name = "{}_train_log.txt".format(result_tag)
     out_file = open(log_name, 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0003
+    learn_rate = 0.0002
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
     train_result_dict = {'step_nll': [], 'step_kld': [], \
@@ -438,7 +455,7 @@ def test_tfd(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_tfd"):
     for i in range(200000):
         scale = min(1.0, ((i+1) / 2000.0))
         if (((i + 1) % 15000) == 0):
-            learn_rate = learn_rate * 0.9
+            learn_rate = learn_rate * 0.92
         if (i > 10000):
             momentum = 0.90
         else:
@@ -454,9 +471,9 @@ def test_tfd(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_tfd"):
                             mom_1=scale*momentum, mom_2=0.99)
         GPSI.set_train_switch(1.0)
         GPSI.set_lam_nll(lam_nll=1.0)
-        GPSI.set_lam_kld(lam_kld_p=lam_p2q, lam_kld_q=lam_q2p)
+        GPSI.set_lam_kld(lam_kld_p=(scale*lam_p2q), lam_kld_q=(scale*lam_q2p))
         GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.01)
-        GPSI.set_lam_l2w(1e-4)
+        GPSI.set_lam_l2w(1e-5)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
         xi, xo, xm = construct_masked_data(xb, data_mean)
@@ -564,7 +581,15 @@ def test_tfd(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_tfd"):
 ##############################
 ##############################
 
-def test_svhn(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_svhn"):
+def test_svhn(lam_q2p=0.5, 
+              lam_p2q=0.5, \
+              prob_type='bernoulli', 
+              result_tag='gpsi_svhn'):
+    #########################################
+    # Format the result tag more thoroughly #
+    #########################################
+    result_tag = "{0:s}_q2p{1:02d}_p2q{2:02d}_{3:s}".format( \
+            result_tag, int(10 * lam_q2p), int(10 * lam_q2p), prob_type[0:4])
     ##########################
     # Get some training data #
     ##########################
@@ -592,7 +617,7 @@ def test_svhn(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_svhn"):
     z_dim = 200
     imp_steps = 5
     init_scale = 1.0
-    x_type = 'bernoulli'
+    x_type = prob_type
 
     x_in_sym = T.matrix('x_in_sym')
     x_out_sym = T.matrix('x_out_sym')
@@ -684,7 +709,7 @@ def test_svhn(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_svhn"):
     log_name = "{}_train_log.txt".format(result_tag)
     out_file = open(log_name, 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0003
+    learn_rate = 0.0002
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
     train_result_dict = {'step_nll': [], 'step_kld': [], \
@@ -694,7 +719,7 @@ def test_svhn(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_svhn"):
     for i in range(200000):
         scale = min(1.0, ((i+1) / 2000.0))
         if (((i + 1) % 15000) == 0):
-            learn_rate = learn_rate * 0.9
+            learn_rate = learn_rate * 0.92
         if (i > 10000):
             momentum = 0.90
         else:
@@ -710,9 +735,9 @@ def test_svhn(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_svhn"):
                             mom_1=scale*momentum, mom_2=0.99)
         GPSI.set_train_switch(1.0)
         GPSI.set_lam_nll(lam_nll=1.0)
-        GPSI.set_lam_kld(lam_kld_p=lam_p2q, lam_kld_q=lam_q2p)
+        GPSI.set_lam_kld(lam_kld_p=(scale*lam_p2q), lam_kld_q=(scale*lam_q2p))
         GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.01)
-        GPSI.set_lam_l2w(1e-4)
+        GPSI.set_lam_l2w(1e-5)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
         xi, xo, xm = construct_masked_data(xb, data_mean)
@@ -818,20 +843,20 @@ if __name__=="__main__":
     #########
     # MNIST #
     #########
-    # test_mnist(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_mnist_q2p05_p2q05")
-    # test_mnist(lam_q2p=1.0, lam_p2q=0.0, result_tag="gpsi_mnist_q2p10_p2q00")
-    # test_mnist(lam_q2p=0.0, lam_p2q=1.0, result_tag="gpsi_mnist_q2p00_p2q10")
+    # test_mnist(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_mnist')
+    # test_mnist(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_mnist')
+    # test_mnist(lam_q2p=0.0, lam_p2q=1.0, prob_type='bernoulli', result_tag='gpsi_mnist')
 
     #######
     # TFD #
     #######
-    # test_tfd(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_tfd_q2p05_p2q05")
-    # test_tfd(lam_q2p=1.0, lam_p2q=0.0, result_tag="gpsi_tfd_q2p10_p2q00")
-    # test_tfd(lam_q2p=0.0, lam_p2q=1.0, result_tag="gpsi_tfd_q2p00_p2q10")
+    test_tfd(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=0.0, lam_p2q=1.0, prob_type='bernoulli', result_tag='gpsi_tfd')
 
     ########
     # SVHN #
     ########
-    # test_svhn(lam_q2p=0.5, lam_p2q=0.5, result_tag="gpsi_svhn_q2p05_p2q05")
-    # test_svhn(lam_q2p=1.0, lam_p2q=0.0, result_tag="gpsi_svhn_q2p10_p2q00")
-    # test_svhn(lam_q2p=0.0, lam_p2q=1.0, result_tag="gpsi_svhn_q2p00_p2q10")
+    # test_svhn(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_svhn')
+    # test_svhn(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_svhn')
+    # test_svhn(lam_q2p=0.0, lam_p2q=1.0, prob_type='bernoulli', result_tag='gpsi_svhn')

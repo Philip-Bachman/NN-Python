@@ -99,12 +99,12 @@ class GPSImputer(object):
         if self.shared_param_dicts is None:
             # initialize misc. parameters
             self.obs_logvar = theano.shared(value=zero_ary, name='msm_obs_logvar')
-            self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar)
+            self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar[0])
             self.shared_param_dicts = {}
             self.shared_param_dicts['obs_logvar'] = self.obs_logvar
         else:
             self.obs_logvar = self.shared_param_dicts['obs_logvar']
-            self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar)
+            self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar[0])
 
         ##########################################
         # Setup the multi-stage imputation loop. #
