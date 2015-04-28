@@ -245,7 +245,13 @@ def test_mnist(lam_q2p=0.5,
             valid_result_dict['step_kld'].append((i, step_kld))
             valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-        if ((i % 2000) == 0):
+	    # save results to a pickle file
+	    result_dicts = {'train_results': train_result_dict, \
+			    'valid_results': valid_result_dict}
+	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
+	    cPickle.dump(result_dicts, f_handle, protocol=-1)
+	    f_handle.close()
+        if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
             xb = to_fX( Xva[0:50] )
@@ -303,12 +309,6 @@ def test_mnist(lam_q2p=0.5,
             file_name = "{0:s}_step_vfes_b{1:d}.png".format(result_tag, i)
             utils.plot_stem(np.arange(step_kld.shape[0]).ravel(), \
                     (np.cumsum(step_kld.ravel())+step_nll.ravel()), file_name)
-            # save results to a pickle file
-            result_dicts = {'train_results': train_result_dict, \
-                            'valid_results': valid_result_dict}
-            f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-            cPickle.dump(result_dicts, f_handle, protocol=-1)
-            f_handle.close()
 
 #############################
 #############################
@@ -510,7 +510,13 @@ def test_tfd(lam_q2p=0.5,
             valid_result_dict['step_kld'].append((i, step_kld))
             valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-        if ((i % 2000) == 0):
+	    # save results to a pickle file
+	    result_dicts = {'train_results': train_result_dict, \
+			    'valid_results': valid_result_dict}
+	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
+	    cPickle.dump(result_dicts, f_handle, protocol=-1)
+	    f_handle.close()
+        if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
             xb = to_fX( Xva[0:50] )
@@ -568,12 +574,6 @@ def test_tfd(lam_q2p=0.5,
             file_name = "{0:s}_step_vfes_b{1:d}.png".format(result_tag, i)
             utils.plot_stem(np.arange(step_kld.shape[0]).ravel(), \
                     (np.cumsum(step_kld.ravel())+step_nll.ravel()), file_name)
-            # save results to a pickle file
-            result_dicts = {'train_results': train_result_dict, \
-                            'valid_results': valid_result_dict}
-            f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-            cPickle.dump(result_dicts, f_handle, protocol=-1)
-            f_handle.close()
 
 ##############################
 ##############################
@@ -774,7 +774,13 @@ def test_svhn(lam_q2p=0.5,
             valid_result_dict['step_kld'].append((i, step_kld))
             valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-        if ((i % 2000) == 0):
+	    # save results to a pickle file
+	    result_dicts = {'train_results': train_result_dict, \
+			    'valid_results': valid_result_dict}
+	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
+	    cPickle.dump(result_dicts, f_handle, protocol=-1)
+	    f_handle.close()
+        if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
             xb = to_fX( Xva[0:50] )
@@ -832,12 +838,6 @@ def test_svhn(lam_q2p=0.5,
             file_name = "{0:s}_step_vfes_b{1:d}.png".format(result_tag, i)
             utils.plot_stem(np.arange(step_kld.shape[0]).ravel(), \
                     (np.cumsum(step_kld.ravel())+step_nll.ravel()), file_name)
-            # save results to a pickle file
-            result_dicts = {'train_results': train_result_dict, \
-                            'valid_results': valid_result_dict}
-            f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-            cPickle.dump(result_dicts, f_handle, protocol=-1)
-            f_handle.close()
 
 if __name__=="__main__":
     #########
@@ -850,13 +850,13 @@ if __name__=="__main__":
     #######
     # TFD #
     #######
-    test_tfd(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_tfd')
     # test_tfd(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
     # test_tfd(lam_q2p=0.0, lam_p2q=1.0, prob_type='bernoulli', result_tag='gpsi_tfd')
 
     ########
     # SVHN #
     ########
-    # test_svhn(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_svhn')
+    test_svhn(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_svhn')
     # test_svhn(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_svhn')
     # test_svhn(lam_q2p=0.0, lam_p2q=1.0, prob_type='bernoulli', result_tag='gpsi_svhn')
