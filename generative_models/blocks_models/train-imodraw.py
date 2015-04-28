@@ -272,7 +272,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, dest="epochs",
                 default=1000, help="Number of training epochs to do")
     parser.add_argument("--bs", "--batch-size", type=int, dest="batch_size",
-                default=400, help="Size of each mini-batch")
+                default=250, help="Size of each mini-batch")
     parser.add_argument("--lr", "--learning-rate", type=float, dest="learning_rate",
                 default=1e-3, help="Learning rate")
     parser.add_argument("--attention", "-a", type=str, default="",
