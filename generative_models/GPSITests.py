@@ -454,7 +454,7 @@ def test_tfd(lam_q2p=0.5,
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
         scale = min(1.0, ((i+1) / 5000.0))
-        kld_scale = min(1.0, ((i+1) / 15000.0))
+        kld_scale = min(1.0, ((i+1) / 20000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -474,7 +474,7 @@ def test_tfd(lam_q2p=0.5,
         GPSI.set_lam_nll(lam_nll=1.0)
         GPSI.set_lam_kld(lam_kld_p=(kld_scale*lam_p2q), \
                          lam_kld_q=(kld_scale*lam_q2p))
-        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.00)
+        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.01)
         GPSI.set_lam_l2w(1e-5)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
@@ -720,7 +720,7 @@ def test_svhn(lam_q2p=0.5,
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
         scale = min(1.0, ((i+1) / 5000.0))
-        kld_scale = min(1.0, ((i+1) / 15000.0))
+        kld_scale = min(1.0, ((i+1) / 20000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -740,7 +740,7 @@ def test_svhn(lam_q2p=0.5,
         GPSI.set_lam_nll(lam_nll=1.0)
         GPSI.set_lam_kld(lam_kld_p=(kld_scale*lam_p2q), \
                          lam_kld_q=(kld_scale*lam_q2p))
-        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.00)
+        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.01)
         GPSI.set_lam_l2w(1e-5)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
@@ -856,7 +856,7 @@ if __name__=="__main__":
     #######
     test_tfd(lam_q2p=0.4, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_tfd')
     # test_tfd(lam_q2p=0.8, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
-    # test_tfd(lam_q2p=0.0, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=0.0, lam_p2q=0.8, prob_type='bernoulli', result_tag='gpsi_tfd')
 
     ########
     # SVHN #
