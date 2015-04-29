@@ -41,6 +41,7 @@ class GPSImputer(object):
         obs_dim: dimension of the observations to generate
         z_dim: dimension of the stochastic component of p policies
         imp_steps: number of steps to run imputation procedure
+        step_type: whether to use "add" steps or "swap" steps
         params: REQUIRED PARAMS SHOWN BELOW
                 x_type: can be "bernoulli" or "gaussian"
                 obs_transform: can be 'none' or 'sigmoid'
@@ -52,7 +53,9 @@ class GPSImputer(object):
             q_zi_given_x_xi=None, \
             obs_dim=None, \
             z_dim=None, \
-            imp_steps=4, params=None, \
+            imp_steps=4, \
+            step_type='add', \
+            params=None, \
             shared_param_dicts=None):
         # setup a rng for this GIPair
         self.rng = RandStream(rng.randint(100000))
@@ -78,6 +81,8 @@ class GPSImputer(object):
         self.obs_dim = obs_dim
         self.z_dim = z_dim
         self.imp_steps = imp_steps
+        assert((step_type == 'add') or (step_type == 'swap'))
+        self.step_type = step_type
 
         # grab handles to the relevant InfNets
         self.p_zi_given_xi = p_zi_given_xi
@@ -98,6 +103,8 @@ class GPSImputer(object):
 
         if self.shared_param_dicts is None:
             # initialize misc. parameters
+            b_init = to_fX( np.zeros((self.obs_dim,)) )
+            self.b_obs = theano.shared(value=b_init, name='msm_b_obs')
             self.obs_logvar = theano.shared(value=zero_ary, name='msm_obs_logvar')
             self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar[0])
             self.shared_param_dicts = {}
@@ -154,10 +161,17 @@ class GPSImputer(object):
 
             # compute the next xi, given the sampled zi
             xi_step, _ = self.p_xip1_given_zi.apply(self.zi[i], do_samples=False)
-            if (i == 0):
+            if (self.step_type == 'swap'):
+                # swap steps always do a full swap (like standard VAE)
                 xip1 = xi_step
             else:
-                xip1 = self.xi[i-1] + xi_step
+                # we're here because we're using additive steps...
+                if (i == 0):
+                    # first additive step will also receive a bias
+                    xip1 = xi_step + self.b_obs
+                else:
+                    # subsequent additive steps just add
+                    xip1 = self.xi[i-1] + xi_step
             self.xi.append( xip1 )
 
         ######################################################################
@@ -188,7 +202,7 @@ class GPSImputer(object):
         self.set_lam_l2w(1e-5)
 
         # Grab all of the "optimizable" parameters in "group 1"
-        self.joint_params = [self.obs_logvar]
+        self.joint_params = [self.b_obs, self.obs_logvar]
         self.joint_params.extend(self.p_zi_given_xi.mlp_params)
         self.joint_params.extend(self.p_xip1_given_zi.mlp_params)
         self.joint_params.extend(self.q_zi_given_x_xi.mlp_params)
