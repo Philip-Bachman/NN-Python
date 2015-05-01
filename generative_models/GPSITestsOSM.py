@@ -73,7 +73,7 @@ def test_mnist(lam_q2p=0.5,
     #########################################
     # Format the result tag more thoroughly #
     #########################################
-    result_tag = "{0:s}_osm_q2p{2:02d}_p2q{3:02d}_{4:s}".format(result_tag, \
+    result_tag = "{0:s}_osm_q2p{1:02d}_p2q{2:02d}_{3:s}".format(result_tag, \
             int(10 * lam_q2p), int(10 * lam_p2q), prob_type[0:4])
 
     ##########################
