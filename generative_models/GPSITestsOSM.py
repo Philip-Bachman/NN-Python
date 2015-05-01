@@ -244,7 +244,7 @@ def test_mnist(lam_q2p=0.5,
             str3 = "    nll_cost  : {0:.4f}".format(costs[1])
             str4 = "    kld_cost  : {0:.4f}".format(costs[2])
             str5 = "    reg_cost  : {0:.4f}".format(costs[3])
-            joint_str = "\n".join([str1, str2, str3, str4, str5, str6])
+            joint_str = "\n".join([str1, str2, str3, str4, str5])
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
