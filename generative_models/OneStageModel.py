@@ -133,7 +133,7 @@ class OneStageModel(object):
 
         # shared var learning rate for generator and inferencer
         zero_ary = np.zeros((1,)).astype(theano.config.floatX)
-        self.lr_1 = theano.shared(value=zero_ary, name='osm_lr_1')
+        self.lr = theano.shared(value=zero_ary, name='osm_lr')
         # shared var momentum parameters for generator and inferencer
         self.mom_1 = theano.shared(value=zero_ary, name='osm_mom_1')
         self.mom_2 = theano.shared(value=zero_ary, name='osm_mom_2')
@@ -171,20 +171,26 @@ class OneStageModel(object):
         self.joint_cost = self.nll_cost + self.kld_cost + self.reg_cost
 
         # Get the gradient of the joint cost for all optimizable parameters
+        print("Computing gradients of self.joint_cost...")
         self.joint_grads = OrderedDict()
-        for p in self.joint_params:
-            self.joint_grads[p] = T.grad(self.joint_cost, p)
+        grad_list = T.grad(self.joint_cost, self.joint_params)
+        for i, p in enumerate(self.joint_params):
+            self.joint_grads[p] = grad_list[i]
 
         # Construct the updates for the generator and inferencer networks
         self.joint_updates = get_adam_updates(params=self.joint_params, \
-                grads=self.joint_grads, alpha=self.lr_1, \
+                grads=self.joint_grads, alpha=self.lr, \
                 beta1=self.mom_1, beta2=self.mom_2, \
-                mom2_init=1e-3, smoothing=1e-8, max_grad_norm=10.0)
+                mom2_init=1e-3, smoothing=1e-6, max_grad_norm=10.0)
 
         # Construct a function for jointly training the generator/inferencer
+        print("Compiling self.train_joint...")
         self.train_joint = self._construct_train_joint()
+        print("Compiling self.compute_fe_terms...")
         self.compute_fe_terms = self._construct_compute_fe_terms()
+        print("Compiling self.compute_post_klds...")
         self.compute_post_klds = self._construct_compute_post_klds()
+        print("Compiling self.sample_from_prior...")
         self.sample_from_prior = self._construct_sample_from_prior()
         self.transform_x_to_z = theano.function([self.q_z_given_x.Xd], \
                 outputs=self.q_z_given_x.output_mean)
@@ -194,14 +200,14 @@ class OneStageModel(object):
         self.gen_weights = self.p_x_given_z.mu_layers[-1].W
         return
 
-    def set_sgd_params(self, lr_1=0.01, mom_1=0.9, mom_2=0.999):
+    def set_sgd_params(self, lr=0.01, mom_1=0.9, mom_2=0.999):
         """
         Set learning rate and momentum parameter for all updates.
         """
         zero_ary = np.zeros((1,))
         # set learning rates
-        new_lr_1 = zero_ary + lr_1
-        self.lr_1.set_value(new_lr_1.astype(theano.config.floatX))
+        new_lr = zero_ary + lr
+        self.lr.set_value(new_lr.astype(theano.config.floatX))
         # set momentums
         new_mom_1 = zero_ary + mom_1
         self.mom_1.set_value(new_mom_1.astype(theano.config.floatX))
@@ -541,7 +547,7 @@ if __name__=="__main__":
             fresh_idx = npr.randint(low=0,high=tr_samples,size=(batch_size-carry_size,))
             batch_idx = np.concatenate((fresh_idx.ravel(), carry_idx.ravel()))
         # set model parameters for this update
-        OSM.set_sgd_params(lr_1=scale*learn_rate, mom_1=0.8, mom_2=0.99)
+        OSM.set_sgd_params(lr=scale*learn_rate, mom_1=0.8, mom_2=0.99)
         OSM.set_lam_nll(lam_nll=1.0)
         OSM.set_lam_kld(lam_kld_1=(scale * 1.0), \
                 lam_kld_2=((1.0 - scale) * 1.0))
