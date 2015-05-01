@@ -884,7 +884,7 @@ if __name__=="__main__":
     # MNIST #
     #########
     # test_mnist(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_mnist')
-    # test_mnist(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_mnist')
+    test_mnist(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_mnist')
 
     #######
     # TFD #
