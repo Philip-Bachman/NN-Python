@@ -452,6 +452,7 @@ def test_tfd(lam_q2p=0.5,
     gpsi_params = {}
     gpsi_params['x_type'] = x_type
     gpsi_params['obs_transform'] = 'sigmoid'
+    gpsi_params['use_osm_mode'] = True
     GPSI = GPSImputer(rng=rng, 
             x_in=x_in_sym, x_out=x_out_sym, x_mask=x_mask_sym, \
             p_zi_given_xi=p_zi_given_xi, \
@@ -463,6 +464,17 @@ def test_tfd(lam_q2p=0.5,
             step_type='swap', \
             params=gpsi_params, \
             shared_param_dicts=None)
+    #########################################################################
+    # Define parameters for the underlying OneStageModel, and initialize it #
+    #########################################################################
+    print("Building the OneStageModel...")
+    osm_params = {}
+    osm_params['x_type'] = x_type
+    OSM = OneStageModel(rng=rng, \
+            Xd=x_in_sym, Xc=x_out_sym, Xm=x_mask_sym, \
+            p_x_given_z=p_xip1_given_zi, q_z_given_x=p_zi_given_xi, \
+            x_dim=obs_dim, z_dim=z_dim, \
+            params=osm_params)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -479,7 +491,6 @@ def test_tfd(lam_q2p=0.5,
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
         scale = min(1.0, ((i+1) / 5000.0))
-        kld_scale = min(1.0, ((i+1) / 40000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -493,21 +504,14 @@ def test_tfd(lam_q2p=0.5,
             Xtr = row_shuffle(Xtr)
             batch_idx = np.arange(batch_size)
         # set sgd and objective function hyperparams for this update
-        GPSI.set_sgd_params(lr=scale*learn_rate, \
-                            mom_1=scale*momentum, mom_2=0.99)
-        GPSI.set_train_switch(1.0)
-        GPSI.set_lam_nll(lam_nll=1.0)
-        GPSI.set_lam_kld(lam_kld_p=(kld_scale*lam_p2q), \
-                         lam_kld_q=(kld_scale*lam_q2p))
-        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.01)
-        GPSI.set_lam_l2w(1e-5)
+        OSM.set_sgd_params(lr=scale*learn_rate, \
+                           mom_1=scale*momentum, mom_2=0.99)
+        OSM.set_lam_nll(lam_nll=1.0)
+        OSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=0.0)
+        OSM.set_lam_l2w(1e-4)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
-        xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=26, \
-                                           data_mean=data_mean)
-        result = GPSI.train_joint(xi, xo, xm, batch_reps)
-        batch_costs = result[-1] # get the per-input costs
-        obs_costs = collect_obs_costs(batch_costs, batch_reps)
+        result = OSM.train_joint(xb, 0.0*xb, 0.0*xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result)-1)]
         if ((i % 250) == 0):
             costs = [(v / 250.0) for v in costs]
@@ -515,16 +519,15 @@ def test_tfd(lam_q2p=0.5,
             str2 = "    joint_cost: {0:.4f}".format(costs[0])
             str3 = "    nll_cost  : {0:.4f}".format(costs[1])
             str4 = "    kld_cost  : {0:.4f}".format(costs[2])
-            str5 = "    ent_cost  : {0:.4f}".format(costs[3])
-            str6 = "    reg_cost  : {0:.4f}".format(costs[4])
-            joint_str = "\n".join([str1, str2, str3, str4, str5, str6])
+            str5 = "    reg_cost  : {0:.4f}".format(costs[3])
+            joint_str = "\n".join([str1, str2, str3, str4, str5])
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
             costs = [0.0 for v in costs]
             # record some scores for the test set
-            xi, xo, xm = construct_masked_data(Xtr[0:2000], drop_prob=0.0,
-                                               occ_dim=26, data_mean=data_mean)
+            xi, xo, xm = construct_masked_data(Xtr[0:2000], drop_prob=0.0, \
+                                               occ_dim=15, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             train_result_dict['step_nll'].append((i, step_nll))
@@ -532,8 +535,8 @@ def test_tfd(lam_q2p=0.5,
             train_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             train_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
             # record some scores for the validation set
-            xi, xo, xm = construct_masked_data(Xva[0:2000], drop_prob=0.0,
-                                               occ_dim=26, data_mean=data_mean)
+            xi, xo, xm = construct_masked_data(Xva[0:2000], drop_prob=0.0, \
+                                               occ_dim=15, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             valid_result_dict['step_nll'].append((i, step_nll))
@@ -550,7 +553,7 @@ def test_tfd(lam_q2p=0.5,
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
             xb = to_fX( Xva[0:100] )
-            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=26, \
+            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=15, \
                                                data_mean=data_mean)
             xi = np.repeat(xi, 2, axis=0)
             xo = np.repeat(xo, 2, axis=0)
@@ -587,8 +590,8 @@ def test_tfd(lam_q2p=0.5,
             W = GPSI.gen_inf_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # check some useful information about usage of model capacity
-            xi, xo, xm = construct_masked_data(Xva[0:2500], drop_prob=0.0, \
-                                               occ_dim=26, data_mean=data_mean)
+            xi, xo, xm = construct_masked_data(Xva[0:2500], drop_prob=0.0, 
+                                               occ_dim=15, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             file_name = "{0:s}_klds_q2p_b{1:d}.png".format(result_tag, i)
@@ -724,6 +727,7 @@ def test_svhn(lam_q2p=0.5,
     gpsi_params = {}
     gpsi_params['x_type'] = x_type
     gpsi_params['obs_transform'] = 'sigmoid'
+    gpsi_params['use_osm_mode'] = True
     GPSI = GPSImputer(rng=rng, 
             x_in=x_in_sym, x_out=x_out_sym, x_mask=x_mask_sym, \
             p_zi_given_xi=p_zi_given_xi, \
@@ -735,6 +739,17 @@ def test_svhn(lam_q2p=0.5,
             step_type='swap', \
             params=gpsi_params, \
             shared_param_dicts=None)
+    #########################################################################
+    # Define parameters for the underlying OneStageModel, and initialize it #
+    #########################################################################
+    print("Building the OneStageModel...")
+    osm_params = {}
+    osm_params['x_type'] = x_type
+    OSM = OneStageModel(rng=rng, \
+            Xd=x_in_sym, Xc=x_out_sym, Xm=x_mask_sym, \
+            p_x_given_z=p_xip1_given_zi, q_z_given_x=p_zi_given_xi, \
+            x_dim=obs_dim, z_dim=z_dim, \
+            params=osm_params)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -751,7 +766,6 @@ def test_svhn(lam_q2p=0.5,
                          'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
         scale = min(1.0, ((i+1) / 5000.0))
-        kld_scale = min(1.0, ((i+1) / 40000.0))
         if (((i + 1) % 15000) == 0):
             learn_rate = learn_rate * 0.92
         if (i > 10000):
@@ -765,21 +779,14 @@ def test_svhn(lam_q2p=0.5,
             Xtr = row_shuffle(Xtr)
             batch_idx = np.arange(batch_size)
         # set sgd and objective function hyperparams for this update
-        GPSI.set_sgd_params(lr=scale*learn_rate, \
-                            mom_1=scale*momentum, mom_2=0.99)
-        GPSI.set_train_switch(1.0)
-        GPSI.set_lam_nll(lam_nll=1.0)
-        GPSI.set_lam_kld(lam_kld_p=(kld_scale*lam_p2q), \
-                         lam_kld_q=(kld_scale*lam_q2p))
-        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.01)
-        GPSI.set_lam_l2w(1e-5)
+        OSM.set_sgd_params(lr=scale*learn_rate, \
+                           mom_1=scale*momentum, mom_2=0.99)
+        OSM.set_lam_nll(lam_nll=1.0)
+        OSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=0.0)
+        OSM.set_lam_l2w(1e-4)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
-        xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=18, \
-                                           data_mean=data_mean)
-        result = GPSI.train_joint(xi, xo, xm, batch_reps)
-        batch_costs = result[-1] # get the per-input costs
-        obs_costs = collect_obs_costs(batch_costs, batch_reps)
+        result = OSM.train_joint(xb, 0.0*xb, 0.0*xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result)-1)]
         if ((i % 250) == 0):
             costs = [(v / 250.0) for v in costs]
@@ -787,16 +794,15 @@ def test_svhn(lam_q2p=0.5,
             str2 = "    joint_cost: {0:.4f}".format(costs[0])
             str3 = "    nll_cost  : {0:.4f}".format(costs[1])
             str4 = "    kld_cost  : {0:.4f}".format(costs[2])
-            str5 = "    ent_cost  : {0:.4f}".format(costs[3])
-            str6 = "    reg_cost  : {0:.4f}".format(costs[4])
-            joint_str = "\n".join([str1, str2, str3, str4, str5, str6])
+            str5 = "    reg_cost  : {0:.4f}".format(costs[3])
+            joint_str = "\n".join([str1, str2, str3, str4, str5])
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
             costs = [0.0 for v in costs]
             # record some scores for the test set
             xi, xo, xm = construct_masked_data(Xtr[0:2000], drop_prob=0.0, \
-                                               occ_dim=18, data_mean=data_mean)
+                                               occ_dim=15, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             train_result_dict['step_nll'].append((i, step_nll))
@@ -805,7 +811,7 @@ def test_svhn(lam_q2p=0.5,
             train_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
             # record some scores for the validation set
             xi, xo, xm = construct_masked_data(Xva[0:2000], drop_prob=0.0, \
-                                               occ_dim=18, data_mean=data_mean)
+                                               occ_dim=15, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             valid_result_dict['step_nll'].append((i, step_nll))
@@ -822,7 +828,7 @@ def test_svhn(lam_q2p=0.5,
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
             xb = to_fX( Xva[0:100] )
-            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=18, \
+            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=15, \
                                                data_mean=data_mean)
             xi = np.repeat(xi, 2, axis=0)
             xo = np.repeat(xo, 2, axis=0)
@@ -859,8 +865,8 @@ def test_svhn(lam_q2p=0.5,
             W = GPSI.gen_inf_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # check some useful information about usage of model capacity
-            xi, xo, xm = construct_masked_data(Xva[0:2500], drop_prob=0.0, \
-                                               occ_dim=18, data_mean=data_mean)
+            xi, xo, xm = construct_masked_data(Xva[0:2500], drop_prob=0.0, 
+                                               occ_dim=15, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             file_name = "{0:s}_klds_q2p_b{1:d}.png".format(result_tag, i)
@@ -883,17 +889,14 @@ if __name__=="__main__":
     #########
     # MNIST #
     #########
-    # test_mnist(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_mnist')
-    test_mnist(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_mnist')
+    # test_mnist(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_mnist')
 
     #######
     # TFD #
     #######
-    # test_tfd(lam_q2p=0.4, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_tfd')
-    # test_tfd(lam_q2p=0.8, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
 
     ########
     # SVHN #
     ########
-    # test_svhn(lam_q2p=0.4, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_svhn')
-    # test_svhn(lam_q2p=0.8, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_svhn')
+    # test_svhn(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_svhn')
