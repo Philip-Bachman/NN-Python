@@ -69,13 +69,12 @@ def shift_and_scale_into_01(X):
 def test_mnist(lam_q2p=0.5, 
                lam_p2q=0.5, \
                prob_type='bernoulli',
-               step_type='add',
                result_tag='gpsi_mnist'):
     #########################################
     # Format the result tag more thoroughly #
     #########################################
-    result_tag = "{0:s}_{1:s}_q2p{2:02d}_p2q{3:02d}_{4:s}".format(result_tag, \
-            step_type, int(10 * lam_q2p), int(10 * lam_q2p), prob_type[0:4])
+    result_tag = "{0:s}_osm_q2p{2:02d}_p2q{3:02d}_{4:s}".format(result_tag, \
+            int(10 * lam_q2p), int(10 * lam_p2q), prob_type[0:4])
 
     ##########################
     # Get some training data #
@@ -176,6 +175,7 @@ def test_mnist(lam_q2p=0.5,
     gpsi_params = {}
     gpsi_params['x_type'] = x_type
     gpsi_params['obs_transform'] = 'sigmoid'
+    gpsi_params['use_osm_mode'] = True
     GPSI = GPSImputer(rng=rng, 
             x_in=x_in_sym, x_out=x_out_sym, x_mask=x_mask_sym, \
             p_zi_given_xi=p_zi_given_xi, \
@@ -184,9 +184,20 @@ def test_mnist(lam_q2p=0.5,
             obs_dim=obs_dim, \
             z_dim=z_dim, \
             imp_steps=imp_steps, \
-            step_type=step_type, \
+            step_type='swap', \
             params=gpsi_params, \
             shared_param_dicts=None)
+    #########################################################################
+    # Define parameters for the underlying OneStageModel, and initialize it #
+    #########################################################################
+    print("Building the OneStageModel...")
+    osm_params = {}
+    osm_params['x_type'] = x_type
+    OSM = OneStageModel(rng=rng, \
+            Xd=x_in_sym, Xc=x_out_sym, Xm=x_mask_sym, \
+            p_x_given_z=p_xip1_given_zi, q_z_given_x=p_zi_given_xi, \
+            x_dim=obs_dim, z_dim=z_dim, \
+            params=osm_params)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -216,20 +227,15 @@ def test_mnist(lam_q2p=0.5,
             Xtr = row_shuffle(Xtr)
             batch_idx = np.arange(batch_size)
         # set sgd and objective function hyperparams for this update
-        GPSI.set_sgd_params(lr=scale*learn_rate, \
-                            mom_1=scale*momentum, mom_2=0.99)
-        GPSI.set_train_switch(1.0)
-        GPSI.set_lam_nll(lam_nll=1.0)
-        GPSI.set_lam_kld(lam_kld_p=lam_p2q, lam_kld_q=lam_q2p)
-        GPSI.set_lam_ent(lam_ent_p=0.00, lam_ent_q=0.00)
-        GPSI.set_lam_l2w(1e-4)
+        OSM.set_sgd_params(lr=scale*learn_rate, \
+                           mom_1=scale*momentum, mom_2=0.99)
+        OSM.set_train_switch(1.0)
+        OSM.set_lam_nll(lam_nll=1.0)
+        OSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=0.0)
+        OSM.set_lam_l2w(1e-4)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
-        xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=15, \
-                                           data_mean=data_mean)
-        result = GPSI.train_joint(xi, xo, xm, batch_reps)
-        batch_costs = result[-1] # get the per-input costs
-        obs_costs = collect_obs_costs(batch_costs, batch_reps)
+        result = OSM.train_joint(xb, 0.0*xb, 0.0*xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result)-1)]
         if ((i % 250) == 0):
             costs = [(v / 250.0) for v in costs]
@@ -237,8 +243,7 @@ def test_mnist(lam_q2p=0.5,
             str2 = "    joint_cost: {0:.4f}".format(costs[0])
             str3 = "    nll_cost  : {0:.4f}".format(costs[1])
             str4 = "    kld_cost  : {0:.4f}".format(costs[2])
-            str5 = "    ent_cost  : {0:.4f}".format(costs[3])
-            str6 = "    reg_cost  : {0:.4f}".format(costs[4])
+            str5 = "    reg_cost  : {0:.4f}".format(costs[3])
             joint_str = "\n".join([str1, str2, str3, str4, str5, str6])
             print(joint_str)
             out_file.write(joint_str+"\n")
@@ -262,12 +267,12 @@ def test_mnist(lam_q2p=0.5,
             valid_result_dict['step_kld'].append((i, step_kld))
             valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-	    # save results to a pickle file
-	    result_dicts = {'train_results': train_result_dict, \
-			    'valid_results': valid_result_dict}
-	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-	    cPickle.dump(result_dicts, f_handle, protocol=-1)
-	    f_handle.close()
+        # save results to a pickle file
+        result_dicts = {'train_results': train_result_dict, \
+                'valid_results': valid_result_dict}
+        f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
+        cPickle.dump(result_dicts, f_handle, protocol=-1)
+        f_handle.close()
         if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
@@ -338,13 +343,12 @@ def test_mnist(lam_q2p=0.5,
 def test_tfd(lam_q2p=0.5, 
              lam_p2q=0.5, \
              prob_type='bernoulli',
-             step_type='add',
              result_tag='gpsi_tfd'):
     #########################################
     # Format the result tag more thoroughly #
     #########################################
-    result_tag = "{0:s}_{1:s}_q2p{2:02d}_p2q{3:02d}_{4:s}".format(result_tag, \
-            step_type, int(10 * lam_q2p), int(10 * lam_q2p), prob_type[0:4])
+    result_tag = "{0:s}_osm_q2p{2:02d}_p2q{3:02d}_{4:s}".format(result_tag, \
+            int(10 * lam_q2p), int(10 * lam_p2q), prob_type[0:4])
     ##########################
     # Get some training data #
     ##########################
@@ -456,7 +460,7 @@ def test_tfd(lam_q2p=0.5,
             obs_dim=obs_dim, \
             z_dim=z_dim, \
             imp_steps=imp_steps, \
-            step_type=step_type, \
+            step_type='swap', \
             params=gpsi_params, \
             shared_param_dicts=None)
 
@@ -536,12 +540,12 @@ def test_tfd(lam_q2p=0.5,
             valid_result_dict['step_kld'].append((i, step_kld))
             valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-	    # save results to a pickle file
-	    result_dicts = {'train_results': train_result_dict, \
-			    'valid_results': valid_result_dict}
-	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-	    cPickle.dump(result_dicts, f_handle, protocol=-1)
-	    f_handle.close()
+        # save results to a pickle file
+        result_dicts = {'train_results': train_result_dict, \
+                'valid_results': valid_result_dict}
+        f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
+        cPickle.dump(result_dicts, f_handle, protocol=-1)
+        f_handle.close()
         if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
@@ -612,13 +616,12 @@ def test_tfd(lam_q2p=0.5,
 def test_svhn(lam_q2p=0.5, 
               lam_p2q=0.5, \
               prob_type='bernoulli',
-              step_type='add',
               result_tag='gpsi_svhn'):
     #########################################
     # Format the result tag more thoroughly #
     #########################################
-    result_tag = "{0:s}_{1:s}_q2p{2:02d}_p2q{3:02d}_{4:s}".format(result_tag, \
-            step_type, int(10 * lam_q2p), int(10 * lam_q2p), prob_type[0:4])
+    result_tag = "{0:s}_osm_q2p{2:02d}_p2q{3:02d}_{4:s}".format(result_tag, \
+            int(10 * lam_q2p), int(10 * lam_p2q), prob_type[0:4])
     ##########################
     # Get some training data #
     ##########################
@@ -729,7 +732,7 @@ def test_svhn(lam_q2p=0.5,
             obs_dim=obs_dim, \
             z_dim=z_dim, \
             imp_steps=imp_steps, \
-            step_type=step_type, \
+            step_type='swap', \
             params=gpsi_params, \
             shared_param_dicts=None)
 
@@ -809,12 +812,12 @@ def test_svhn(lam_q2p=0.5,
             valid_result_dict['step_kld'].append((i, step_kld))
             valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-	    # save results to a pickle file
-	    result_dicts = {'train_results': train_result_dict, \
-			    'valid_results': valid_result_dict}
-	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-	    cPickle.dump(result_dicts, f_handle, protocol=-1)
-	    f_handle.close()
+        # save results to a pickle file
+        result_dicts = {'train_results': train_result_dict, \
+                'valid_results': valid_result_dict}
+        f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
+        cPickle.dump(result_dicts, f_handle, protocol=-1)
+        f_handle.close()
         if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
@@ -880,23 +883,17 @@ if __name__=="__main__":
     #########
     # MNIST #
     #########
-    # test_mnist(lam_q2p=0.5, lam_p2q=0.5, step_type='add', prob_type='bernoulli', result_tag='gpsi_mnist')
-    # test_mnist(lam_q2p=1.0, lam_p2q=0.0, step_type='add', prob_type='bernoulli', result_tag='gpsi_mnist')
-    # test_mnist(lam_q2p=0.5, lam_p2q=0.5, step_type='swap', prob_type='bernoulli', result_tag='gpsi_mnist')
-    # test_mnist(lam_q2p=1.0, lam_p2q=0.0, step_type='swap', prob_type='bernoulli', result_tag='gpsi_mnist')
+    # test_mnist(lam_q2p=0.5, lam_p2q=0.5, prob_type='bernoulli', result_tag='gpsi_mnist')
+    # test_mnist(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_mnist')
 
     #######
     # TFD #
     #######
-    test_tfd(lam_q2p=0.4, lam_p2q=0.4, step_type='add', prob_type='bernoulli', result_tag='gpsi_tfd')
-    test_tfd(lam_q2p=0.4, lam_p2q=0.4, step_type='swap', prob_type='bernoulli', result_tag='gpsi_tfd')
-    test_tfd(lam_q2p=0.8, lam_p2q=0.0, step_type='add', prob_type='bernoulli', result_tag='gpsi_tfd')
-    test_tfd(lam_q2p=0.8, lam_p2q=0.0, step_type='swap', prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=0.4, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=0.8, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
 
     ########
     # SVHN #
     ########
-    # test_svhn(lam_q2p=0.4, lam_p2q=0.4, step_type='add', prob_type='bernoulli', result_tag='gpsi_svhn')
-    # test_svhn(lam_q2p=0.8, lam_p2q=0.0, step_type='add', prob_type='bernoulli', result_tag='gpsi_svhn')
-    # test_svhn(lam_q2p=0.4, lam_p2q=0.4, step_type='swap', prob_type='bernoulli', result_tag='gpsi_svhn')
-    # test_svhn(lam_q2p=0.8, lam_p2q=0.0, step_type='swap', prob_type='bernoulli', result_tag='gpsi_svhn')
+    # test_svhn(lam_q2p=0.4, lam_p2q=0.4, prob_type='bernoulli', result_tag='gpsi_svhn')
+    # test_svhn(lam_q2p=0.8, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_svhn')

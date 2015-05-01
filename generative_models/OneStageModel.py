@@ -44,9 +44,9 @@ class OneStageModel(object):
 
     Parameters:
         rng: numpy.random.RandomState (for reproducibility)
-        Xd: symbolic "data" input to this 2S-VAE
-        Xc: symbolic "control" input to this 2S-VAE
-        Xm: symbolic "mask" input to this 2S-VAE
+        Xd: symbolic "data" input to this VAE
+        Xc: symbolic "control" input to this VAE
+        Xm: symbolic "mask" input to this VAE
         p_x_given_z: InfNet for x given z
         q_z_given_x: InfNet for z given x
         x_dim: dimension of the "instances" variables
@@ -145,8 +145,7 @@ class OneStageModel(object):
         # init shared var for weighting prior kld against reconstruction
         self.lam_kld_1 = theano.shared(value=zero_ary, name='osm_lam_kld_1')
         self.lam_kld_2 = theano.shared(value=zero_ary, name='osm_lam_kld_2')
-        self.lam_kld_c = theano.shared(value=zero_ary, name='osm_lam_kld_c')
-        self.set_lam_kld(lam_kld_1=1.0, lam_kld_2=0.0, lam_kld_c=0.0)
+        self.set_lam_kld(lam_kld_1=1.0, lam_kld_2=0.0)
         # init shared var for controlling l2 regularization on params
         self.lam_l2w = theano.shared(value=zero_ary, name='osm_lam_l2w')
         self.set_lam_l2w(1e-4)
@@ -219,7 +218,7 @@ class OneStageModel(object):
         self.lam_nll.set_value(new_lam.astype(theano.config.floatX))
         return
 
-    def set_lam_kld(self, lam_kld_1=1.0, lam_kld_2=0.0, lam_kld_c=0.0):
+    def set_lam_kld(self, lam_kld_1=1.0, lam_kld_2=0.0):
         """
         Set the relative weight of prior KL-divergence vs. data likelihood.
         """
@@ -228,8 +227,6 @@ class OneStageModel(object):
         self.lam_kld_1.set_value(new_lam.astype(theano.config.floatX))
         new_lam = zero_ary + lam_kld_2
         self.lam_kld_2.set_value(new_lam.astype(theano.config.floatX))
-        new_lam = zero_ary + lam_kld_c
-        self.lam_kld_c.set_value(new_lam.astype(theano.config.floatX))
         return
 
     def set_lam_l2w(self, lam_l2w=1e-3):
@@ -264,9 +261,7 @@ class OneStageModel(object):
                 self.prior_mean, self.prior_logvar)
         # compute the batch-wise L1 and L2 penalties on per-dim KLds
         kld_l1_costs = T.sum(kld_z, axis=1, keepdims=True)
-        derp = kld_l1_costs > self.lam_kld_c[0]
-        mask = theano.gradient.consider_constant(derp)
-        kld_l2_costs = T.sum((kld_l1_costs * mask), axis=1, keepdims=True)
+        kld_l2_costs = T.sum(kld_z**2.0, axis=1, keepdims=True)
         return [kld_l1_costs, kld_l2_costs]
 
     def _construct_reg_costs(self):
@@ -526,8 +521,6 @@ if __name__=="__main__":
             x_dim=x_dim, z_dim=z_dim, \
             params=osm_params)
     obs_mean = np.mean(Xtr, axis=0)
-    OSM.set_output_bias(obs_mean)
-    OSM.set_input_bias(-obs_mean)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #

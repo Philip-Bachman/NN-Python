@@ -75,6 +75,10 @@ class GPSImputer(object):
             self.obs_transform = lambda x: T.nnet.sigmoid(x)
         if self.x_type == 'bernoulli':
             self.obs_transform = lambda x: T.nnet.sigmoid(x)
+        if 'use_osm_mode' in self.params:
+            self.use_osm_mode = self.params['use_osm_mode']
+        else:
+            self.use_osm_mode = False
         self.shared_param_dicts = shared_param_dicts
 
         # record the dimensions of various spaces relevant to this model
@@ -83,6 +87,8 @@ class GPSImputer(object):
         self.imp_steps = imp_steps
         assert((step_type == 'add') or (step_type == 'swap'))
         self.step_type = step_type
+        if self.use_osm_mode:
+            self.step_type = 'swap'
 
         # grab handles to the relevant InfNets
         self.p_zi_given_xi = p_zi_given_xi
@@ -141,23 +147,41 @@ class GPSImputer(object):
             zi_q_mean, zi_q_logvar, zi_q = self.q_zi_given_x_xi.apply( \
                     T.horizontal_stack(self.x_out, xi_masked), \
                     do_samples=True)
-            # make zi samples that can be switched between zi_p and zi_q
-            self.zi.append( ((self.train_switch[0] * zi_q) + \
-                    ((1.0 - self.train_switch[0]) * zi_p)) )
-            # compute relevant KLds for this step
-            self.kldi_q2p.append(gaussian_kld( \
-                zi_q_mean, zi_q_logvar, zi_p_mean, zi_p_logvar))
-            self.kldi_p2q.append(gaussian_kld( \
-                zi_p_mean, zi_p_logvar, zi_q_mean, zi_q_logvar))
-            # compute relevant "entropies" for this step
-            self.enti_q.append(( \
-                    (0.10 * zi_q_mean**2.0) - \
-                    (0.50 * zi_q_logvar) + \
-                    (0.05 * zi_q_logvar**2.0)) )
-            self.enti_p.append(( \
-                    (0.10 * zi_p_mean**2.0) - \
-                    (0.50 * zi_p_logvar) + \
-                    (0.05 * zi_p_logvar**2.0)) )
+
+            if self.use_osm_mode:
+                self.zi.append(zi_p)
+                # compute relevant KLds for this step
+                self.kldi_q2p.append(gaussian_kld( \
+                    zi_p_mean, zi_p_logvar, 0.0, 0.0))
+                self.kldi_p2q.append(gaussian_kld( \
+                    zi_p_mean, zi_p_logvar, 0.0, 0.0))
+                # compute relevant "entropies" for this step
+                self.enti_q.append(( \
+                        (0.10 * zi_p_mean**2.0) - \
+                        (0.50 * zi_p_logvar) + \
+                        (0.05 * zi_p_logvar**2.0)) )
+                self.enti_p.append(( \
+                        (0.10 * zi_p_mean**2.0) - \
+                        (0.50 * zi_p_logvar) + \
+                        (0.05 * zi_p_logvar**2.0)) )
+            else:
+                # make zi samples that can be switched between zi_p and zi_q
+                self.zi.append( ((self.train_switch[0] * zi_q) + \
+                        ((1.0 - self.train_switch[0]) * zi_p)) )
+                # compute relevant KLds for this step
+                self.kldi_q2p.append(gaussian_kld( \
+                    zi_q_mean, zi_q_logvar, zi_p_mean, zi_p_logvar))
+                self.kldi_p2q.append(gaussian_kld( \
+                    zi_p_mean, zi_p_logvar, zi_q_mean, zi_q_logvar))
+                # compute relevant "entropies" for this step
+                self.enti_q.append(( \
+                        (0.10 * zi_q_mean**2.0) - \
+                        (0.50 * zi_q_logvar) + \
+                        (0.05 * zi_q_logvar**2.0)) )
+                self.enti_p.append(( \
+                        (0.10 * zi_p_mean**2.0) - \
+                        (0.50 * zi_p_logvar) + \
+                        (0.05 * zi_p_logvar**2.0)) )
 
             # compute the next xi, given the sampled zi
             xi_step, _ = self.p_xip1_given_zi.apply(self.zi[i], do_samples=False)
@@ -196,7 +220,7 @@ class GPSImputer(object):
         # setup stuff for controlling entropy in the primary and guide policies
         self.lam_ent_q = theano.shared(value=zero_ary, name='msm_lam_ent_q')
         self.lam_ent_p = theano.shared(value=zero_ary, name='msm_lam_ent_p')
-        self.set_lam_ent(lam_ent_p=0.0, lam_ent_q=0.1)
+        self.set_lam_ent(lam_ent_p=0.0, lam_ent_q=0.01)
         # init shared var for controlling l2 regularization on params
         self.lam_l2w = theano.shared(value=zero_ary, name='msm_lam_l2w')
         self.set_lam_l2w(1e-5)
