@@ -432,7 +432,8 @@ class GPSImputer(object):
         all_step_costs = [nlli, kldi_q2p, kldi_p2q]
         # compile theano function for computing the costs
         inputs = [self.x_in, self.x_out, self.x_mask]
-        cost_func = theano.function(inputs=inputs, outputs=all_step_costs)
+        cost_func = theano.function(inputs=inputs, outputs=all_step_costs, \
+                                    on_unused_input='ignore')
         def raw_cost_computer(XI, XO, XM):
             _all_costs = cost_func(to_fX(XI), to_fX(XO), to_fX(XM))
             _kld_q2p = np.sum(np.mean(_all_costs[1], axis=1, keepdims=True), axis=0)
@@ -462,7 +463,8 @@ class GPSImputer(object):
                 givens={ self.x_in: xi.repeat(self.batch_reps, axis=0), \
                          self.x_out: xo.repeat(self.batch_reps, axis=0), \
                          self.x_mask: xm.repeat(self.batch_reps, axis=0) }, \
-                updates=self.joint_updates)
+                updates=self.joint_updates, \
+                on_unused_input='ignore')
         return func
 
     def _construct_sample_imputer(self):
@@ -477,7 +479,8 @@ class GPSImputer(object):
         sample_func = theano.function(inputs=[xi, xo, xm], outputs=oputs, \
                 givens={self.x_in: xi, \
                         self.x_out: xo, \
-                        self.x_mask: xm})
+                        self.x_mask: xm}, \
+                on_unused_input='ignore')
         def imputer_sampler(XI, XO, XM, use_guide_policy=False):
             XI = to_fX( XI )
             XO = to_fX( XO )
