@@ -230,7 +230,6 @@ def test_mnist(lam_q2p=0.5,
         # set sgd and objective function hyperparams for this update
         OSM.set_sgd_params(lr=scale*learn_rate, \
                            mom_1=scale*momentum, mom_2=0.99)
-        OSM.set_train_switch(1.0)
         OSM.set_lam_nll(lam_nll=1.0)
         OSM.set_lam_kld(lam_kld_1=1.0, lam_kld_2=0.0)
         OSM.set_lam_l2w(1e-4)
