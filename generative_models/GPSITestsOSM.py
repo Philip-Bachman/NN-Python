@@ -18,6 +18,7 @@ from NetLayers import relu_actfun, softplus_actfun, tanh_actfun, \
                       apply_mask, binarize_data, row_shuffle, to_fX
 from InfNet import InfNet
 from GPSImputer import GPSImputer
+from OneStageModel import OneStageModel
 from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist, \
                       load_tfd, load_svhn_gray
 from HelperFuncs import sample_masks, sample_patch_masks, posterior_klds, \
