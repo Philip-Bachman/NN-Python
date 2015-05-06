@@ -349,7 +349,7 @@ def test_tfd(lam_q2p=0.5, \
     #########################################
     result_tag = "{0:s}_osm_q2p{1:02d}_p2q{2:02d}_{3:s}".format(result_tag, \
             int(10 * lam_q2p), int(10 * lam_p2q), prob_type[0:4])
-    
+
     ##########################
     # Get some training data #
     ##########################
@@ -528,7 +528,7 @@ def test_tfd(lam_q2p=0.5, \
             costs = [0.0 for v in costs]
             # record some scores for the test set
             xi, xo, xm = construct_masked_data(Xtr[0:2000], drop_prob=0.0, \
-                                               occ_dim=15, data_mean=data_mean)
+                                               occ_dim=26, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             train_result_dict['step_nll'].append((i, step_nll))
@@ -537,7 +537,7 @@ def test_tfd(lam_q2p=0.5, \
             train_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
             # record some scores for the validation set
             xi, xo, xm = construct_masked_data(Xva[0:2000], drop_prob=0.0, \
-                                               occ_dim=15, data_mean=data_mean)
+                                               occ_dim=26, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             valid_result_dict['step_nll'].append((i, step_nll))
@@ -554,7 +554,7 @@ def test_tfd(lam_q2p=0.5, \
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
             xb = to_fX( Xva[0:100] )
-            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=15, \
+            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=26, \
                                                data_mean=data_mean)
             xi = np.repeat(xi, 2, axis=0)
             xo = np.repeat(xo, 2, axis=0)
@@ -592,7 +592,7 @@ def test_tfd(lam_q2p=0.5, \
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # check some useful information about usage of model capacity
             xi, xo, xm = construct_masked_data(Xva[0:2500], drop_prob=0.0, 
-                                               occ_dim=15, data_mean=data_mean)
+                                               occ_dim=26, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             file_name = "{0:s}_klds_q2p_b{1:d}.png".format(result_tag, i)
@@ -803,7 +803,7 @@ def test_svhn(lam_q2p=0.5, \
             costs = [0.0 for v in costs]
             # record some scores for the test set
             xi, xo, xm = construct_masked_data(Xtr[0:2000], drop_prob=0.0, \
-                                               occ_dim=15, data_mean=data_mean)
+                                               occ_dim=18, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             train_result_dict['step_nll'].append((i, step_nll))
@@ -812,7 +812,7 @@ def test_svhn(lam_q2p=0.5, \
             train_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
             # record some scores for the validation set
             xi, xo, xm = construct_masked_data(Xva[0:2000], drop_prob=0.0, \
-                                               occ_dim=15, data_mean=data_mean)
+                                               occ_dim=18, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             valid_result_dict['step_nll'].append((i, step_nll))
@@ -829,7 +829,7 @@ def test_svhn(lam_q2p=0.5, \
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
             xb = to_fX( Xva[0:100] )
-            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=15, \
+            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=18, \
                                                data_mean=data_mean)
             xi = np.repeat(xi, 2, axis=0)
             xo = np.repeat(xo, 2, axis=0)
@@ -867,7 +867,7 @@ def test_svhn(lam_q2p=0.5, \
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # check some useful information about usage of model capacity
             xi, xo, xm = construct_masked_data(Xva[0:2500], drop_prob=0.0, 
-                                               occ_dim=15, data_mean=data_mean)
+                                               occ_dim=18, data_mean=data_mean)
             raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
             step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
             file_name = "{0:s}_klds_q2p_b{1:d}.png".format(result_tag, i)
@@ -895,7 +895,7 @@ if __name__=="__main__":
     #######
     # TFD #
     #######
-    # test_tfd(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
+    test_tfd(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
 
     ########
     # SVHN #

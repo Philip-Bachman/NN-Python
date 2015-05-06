@@ -23,7 +23,7 @@ from fuel.schemes import SequentialScheme
 from fuel.datasets.binarized_mnist import BinarizedMNIST
 
 from blocks.algorithms import GradientDescent, CompositeRule, StepClipping, RMSProp, Adam
-from blocks.initialization import Constant, IsotropicGaussian, Orthogonal 
+from blocks.initialization import Constant, IsotropicGaussian, Orthogonal
 from blocks.filter import VariableFilter
 from blocks.graph import ComputationGraph
 from blocks.roles import PARAMETER

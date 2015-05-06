@@ -176,9 +176,9 @@ def load_udm(dataset, as_shared=True, zero_mean=True):
         valid_set_x, valid_set_y = _shared_dataset((valid_set[0],valid_set[1]+1))
         train_set_x, train_set_y = _shared_dataset((train_set[0],train_set[1]+1))
     else:
-        test_set_x, test_set_y = test_set
-        valid_set_x, valid_set_y = valid_set
-        train_set_x, train_set_y = train_set
+        test_set_x, test_set_y = (test_set[0], test_set[1]+1)
+        valid_set_x, valid_set_y = (valid_set[0], valid_set[1]+1)
+        train_set_x, train_set_y = (train_set[0], train_set[1]+1)
 
     rval = [(train_set_x, train_set_y), (valid_set_x, valid_set_y),
             (test_set_x, test_set_y)]

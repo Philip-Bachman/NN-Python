@@ -148,14 +148,19 @@ def binarize_data(X):
     X_binary = 1.0 * (probs < X)
     return X_binary.astype(theano.config.floatX)
 
-def row_shuffle(X):
+def row_shuffle(X, Y=None):
     """
     Return a copy of X with shuffled rows.
     """
     shuf_idx = np.arange(X.shape[0])
     npr.shuffle(shuf_idx)
     X_shuf = X[shuf_idx]
-    return X_shuf
+    if Y is None:
+        result = X_shuf
+    else:
+        Y_shuf = Y[shuf_idx]
+        result = [X_shuf, Y_shuf]
+    return result
 
 # code from the lasagne library
 def ortho_matrix(shape=None, gain=1.0):
