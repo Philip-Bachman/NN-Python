@@ -80,7 +80,7 @@ def test_with_model_init():
 
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 500
+    batch_size = 300
 
     BD = lambda ary: binarize_data(ary)
 
@@ -88,10 +88,10 @@ def test_with_model_init():
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
     obs_dim = Xtr.shape[1]
-    z_dim = 20
+    z_dim = 30
     h_dim = 100
-    rnn_dim = 10
-    ir_steps = 4
+    rnn_dim = 2
+    ir_steps = 3
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -218,20 +218,26 @@ def test_with_model_init():
             p_sip1_given_si_hi=p_sip1_given_si_hi, \
             q_z_given_x=q_z_given_x, \
             q_hi_given_x_si=q_hi_given_x_si, \
-            class_count=10, \
+            class_count=10, use_rnn=False, \
             obs_dim=obs_dim, rnn_dim=rnn_dim, z_dim=z_dim, h_dim=h_dim, \
             ir_steps=ir_steps, params=msm_params)
+    MSM.set_vfe_margin(vfe_margin=10.0)
+    MSM.set_lam_class(lam_class=10.0)
+    MSM.set_lam_nll(lam_nll=1.0)
+    MSM.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.9, \
+                    lam_kld_p2q=0.1)
+    MSM.set_lam_l2w(1e-4)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
-    out_file = open("MSS_RESULTS.txt", 'wb')
+    out_file = open("MST_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0003
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
     for i in range(250000):
-        scale = min(1.0, ((i+1) / 3000.0))
+        scale = min(1.0, ((i+1) / 4000.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.95
         if (i > 20000):
@@ -246,12 +252,8 @@ def test_with_model_init():
             batch_idx = np.arange(batch_size)
         # set sgd and objective function hyperparams for this update
         MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
-                mom_1=scale*momentum, mom_2=0.99)
+                           mom_1=scale*momentum, mom_2=0.99)
         MSM.set_train_switch(1.0)
-        MSM.set_vfe_margin(10.0)
-        MSM.set_lam_nll(lam_nll=1.0)
-        MSM.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.9, lam_kld_p2q=0.1)
-        MSM.set_lam_l2w(1e-4)
         MSM.set_drop_rate(0.0)
         MSM.q_hi_given_x_si.set_bias_noise(0.0)
         MSM.p_hi_given_si.set_bias_noise(0.0)
@@ -295,7 +297,7 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MSS_B_SAMPLES_IND_b{0:d}.png".format(i)
+            file_name = "MST_B_SAMPLES_IND_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # draw some conditional random samples from the model
             samp_count = 200
@@ -313,36 +315,27 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MSS_B_SAMPLES_CND_UD_b{0:d}.png".format(i)
+            file_name = "MST_B_SAMPLES_CND_UD_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
-            file_name = "MSS_A_GEN_GEN_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MST_A_GEN_GEN_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.gen_gen_weights.get_value(borrow=False)
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            file_name = "MSS_A_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
+            file_name = "MST_A_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
             W = MSM.gen_inf_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             raw_costs = MSM.compute_raw_costs(BD(Xb_va), BD(Xb_va))
             init_nll, init_kld, q2p_kld, p2q_kld, step_nll, step_kld = raw_costs
             step_nll[0] = step_nll[1] # scale of first NLL is overwhemling
-            file_name = "MSS_B_H0_KLDS_b{0:d}.png".format(i)
+            file_name = "MST_B_H0_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(init_kld.shape[1]), \
                     np.mean(init_kld, axis=0), file_name)
-            file_name = "MSS_B_HI_Q2P_KLDS_b{0:d}.png".format(i)
+            file_name = "MST_B_HI_Q2P_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(q2p_kld.shape[1]), \
                     np.mean(q2p_kld, axis=0), file_name)
-            file_name = "MSS_B_HI_P2Q_KLDS_b{0:d}.png".format(i)
+            file_name = "MST_B_HI_P2Q_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(p2q_kld.shape[1]), \
                     np.mean(p2q_kld, axis=0), file_name)
-            file_name = "MSS_B_STEP_NLLS_b{0:d}.png".format(i)
-            utils.plot_stem(np.arange(step_nll.shape[0]), \
-                    step_nll, file_name)
-            file_name = "MSS_B_STEP_KLDS_b{0:d}.png".format(i)
-            utils.plot_stem(np.arange(step_kld.shape[0]), \
-                    step_kld, file_name)
-            file_name = "MSS_B_STEP_VFES_b{0:d}.png".format(i)
-            utils.plot_stem(np.arange(step_kld.shape[0]).ravel(), \
-                    (np.cumsum(step_kld.ravel())+step_nll.ravel()), file_name)
             Xb_tr = to_fX( Xtr[0:2500] )
             fe_terms = MSM.compute_fe_terms(BD(Xb_tr), BD(Xb_tr), 30)
             fe_nll = np.mean(fe_terms[0])
@@ -364,7 +357,7 @@ def test_with_model_init():
             out_file.write(joint_str+"\n")
             out_file.flush()
             # compute multi-sample estimate of classification error
-            va_error, va_preds = MSM.class_error(Xva[:1000], Yva[:1000], samples=30)
+            va_error, va_preds = MSM.class_error(Xva[:2000], Yva[:2000], samples=30)
             joint_str = "    va-class-error: {0:.4f}".format(va_error)
             print(joint_str)
             out_file.write(joint_str+"\n")

@@ -243,6 +243,7 @@ class HiddenLayer(object):
             #W_init = W_scale * npr.normal(0.0, 1.0, W_shape)
             W_init = ortho_matrix(shape=(self.in_dim, self.filt_count), \
                     gain=W_scale)
+            #W_init = 0.01 * npr.normal(0.0, 1.0, W_shape)
             W_init = W_init.astype(theano.config.floatX)
             W = theano.shared(value=W_init, name="{0:s}_W".format(name))
         if b is None:
@@ -274,7 +275,7 @@ class HiddenLayer(object):
         # Layer construction complete...
         return
 
-    def apply(self, input, use_in=False, use_bn=False, use_drop=False):
+    def apply(self, input, use_in=False, use_bn=False, use_drop=True):
         """
         Apply feedforward to this input, returning several partial results.
         """
@@ -289,8 +290,7 @@ class HiddenLayer(object):
             fuzzy_input = fancy_input
         # Apply masking noise to the input (if desired)
         if use_drop:
-            noisy_input = self._drop_from_input(fuzzy_input, \
-                    self.drop_rate[0])
+            noisy_input = self._drop_from_input(fuzzy_input, self.drop_rate[0])
         else:
             noisy_input = fuzzy_input
         self.noisy_input = noisy_input

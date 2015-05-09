@@ -408,6 +408,18 @@ class InfNet(object):
             result.append(output_samples)
         return result
 
+    def apply_shared(self, X):
+        """
+        Pass input X through this InfNet's shared layers.
+        """
+        # pass activations through the shared layers
+        shared_acts = [X]
+        for layer in self.shared_layers:
+            r0, r1, layer_acts = layer.apply(shared_acts[-1])
+            shared_acts.append(layer_acts)
+        result = shared_acts[-1]
+        return result
+
     def train_rica(self, X, lr, lam):
         """
         CONSTRUCT FUNCTIONS FOR RICA PRETRAINING INPUT LAYER

@@ -42,6 +42,7 @@ class MultiStageModelSS(object):
         p_sip1_given_si_hi: InfNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
+        use_rnn: whether or not to use the added "RNN state"
         class_count: number of classes to classify into
         obs_dim: dimension of the observations to generate
         rnn_dim: dimension of the latent "RNN state"
@@ -59,6 +60,7 @@ class MultiStageModelSS(object):
             p_sip1_given_si_hi=None, \
             q_z_given_x=None, \
             q_hi_given_x_si=None, \
+            use_rnn=None, \
             class_count=None, \
             obs_dim=None, rnn_dim=None, \
             z_dim=None, h_dim=None, \
@@ -83,6 +85,7 @@ class MultiStageModelSS(object):
         if self.x_type == 'bernoulli':
             self.obs_transform = lambda x: T.nnet.sigmoid(x)
         self.shared_param_dicts = shared_param_dicts
+        self.use_rnn = use_rnn
 
         # record the dimensions of various spaces relevant to this model
         self.class_count = class_count
@@ -146,7 +149,7 @@ class MultiStageModelSS(object):
 
         # get a drop mask that drops things with probability p
         drop_scale = 1. / (1. - self.drop_rate[0])
-        drop_rnd = self.rng.uniform(size=self.x_pos.shape, \
+        drop_rnd = self.rng.uniform(size=self.x_in.shape, \
                 low=0.0, high=1.0, dtype=theano.config.floatX)
         drop_mask = drop_scale * (drop_rnd > self.drop_rate[0])
 
@@ -161,7 +164,10 @@ class MultiStageModelSS(object):
         # compute predictions for classes
         self.y = T.dot(self.z_jnt, self.W_class) + self.b_class
         # get initial rnn/mixture and observation state
-        self.s0_rnn = T.tanh(self.z_jnt[:,self.z_dim:])
+        if self.use_rnn:
+            self.s0_rnn = T.tanh(self.z_jnt[:,self.z_dim:])
+        else:
+            self.s0_rnn = 0.0 * T.tanh(self.z_jnt[:,self.z_dim:])
         self.s0_obs, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
 
         ###################################################################
@@ -211,7 +217,8 @@ class MultiStageModelSS(object):
                     self.hi_pos[i], do_samples=False)
                     
             # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
-            sip1_obs = si_obs + si_obs_step
+            #sip1_obs = si_obs + si_obs_step
+            sip1_obs = si_obs_step
             sip1_rnn = si_rnn
             # record the updated state of the generative process
             self.si_obs_pos.append(sip1_obs)
@@ -264,7 +271,8 @@ class MultiStageModelSS(object):
                     self.hi_neg[i], do_samples=False)
                     
             # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
-            sip1_obs = si_obs + si_obs_step
+            #sip1_obs = si_obs + si_obs_step
+            sip1_obs = si_obs_step
             sip1_rnn = si_rnn
             # record the updated state of the generative process
             self.si_obs_neg.append(sip1_obs)
