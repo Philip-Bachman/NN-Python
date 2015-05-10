@@ -319,7 +319,7 @@ def test_dropout_ala_original():
 if __name__ == '__main__':
 
     # Run standard dropout with parameters to reproduce Hinton et. al
-    #test_dropout_ala_original()
+    test_dropout_ala_original()
 
     # Run tests for measuring semisupervised performance with varying numbers
     # of labeled/unlabeled observations
@@ -327,7 +327,7 @@ if __name__ == '__main__':
     #batch_test_ss_mlp(test_count=10, su_count=600)
     #batch_test_ss_mlp(test_count=10, su_count=1000)
     #batch_test_ss_mlp(test_count=10, su_count=3000)
-    batch_test_ss_mlp_gentle(test_count=25, su_count=100)
+    #batch_test_ss_mlp_gentle(test_count=25, su_count=100)
 
 
     # Run multiple tests of semisupervised learning with DAE pretraining

@@ -39,9 +39,9 @@ def sample_class_groups(Y, class_groups):
     """
     class_labels = np.unique(np.asarray(class_groups.keys()))
     sample_count = Y.shape[0]
-    obs_dim = class_groups[Y[0]].shape[1]
-    Xp = np.zeros((sample_count, obs_dim))
-    Xn = np.zeros((sample_count, obs_dim))
+    x_dim = class_groups[Y[0]].shape[1]
+    Xp = np.zeros((sample_count, x_dim))
+    Xn = np.zeros((sample_count, x_dim))
     for i in range(sample_count):
         # sample in-group example
         xp = class_groups[Y[i]]
@@ -87,26 +87,25 @@ def test_with_model_init():
     ############################################################
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
-    obs_dim = Xtr.shape[1]
-    z_dim = 30
+    x_dim = Xtr.shape[1]
+    z_dim = 50
+    s_dim = 300
     h_dim = 100
-    rnn_dim = 2
-    ir_steps = 3
+    ir_steps = 4
     init_scale = 1.0
     
     x_type = 'bernoulli'
 
     # some InfNet instances to build the TwoStageModel from
     x_in = T.matrix('x_in')
-    x_pos = T.matrix('x_pos')
-    x_neg = T.matrix('x_neg')
+    x_out = T.matrix('x_out')
     y_in = T.lvector('y_in')
 
     #################
     # p_hi_given_si #
     #################
     params = {}
-    shared_config = [(obs_dim + rnn_dim), 500, 500]
+    shared_config = [s_dim, 500, 500]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -126,8 +125,8 @@ def test_with_model_init():
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [h_dim, 500, 500]
-    top_config = [shared_config[-1], obs_dim]
+    shared_config = [(h_dim + s_dim), 500, 500]
+    top_config = [shared_config[-1], s_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
@@ -147,7 +146,7 @@ def test_with_model_init():
     ################
     params = {}
     shared_config = [z_dim, 500, 500]
-    top_config = [shared_config[-1], obs_dim]
+    top_config = [shared_config[-1], s_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
@@ -166,8 +165,8 @@ def test_with_model_init():
     # q_z_given_x #
     ###############
     params = {}
-    shared_config = [obs_dim, (400, 4), (400, 4)]
-    top_config = [shared_config[-1], (z_dim + rnn_dim)]
+    shared_config = [x_dim, (500, 4), (500, 4)]
+    top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
     params['sigma_config'] = top_config
@@ -186,7 +185,7 @@ def test_with_model_init():
     # q_hi_given_x_si #
     ###################
     params = {}
-    shared_config = [(obs_dim + obs_dim + rnn_dim), 800, 800]
+    shared_config = [(x_dim + s_dim + s_dim), 800, 800]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -212,32 +211,36 @@ def test_with_model_init():
     msm_params['x_type'] = x_type
     msm_params['obs_transform'] = 'sigmoid'
     MSM = MultiStageModelSS(rng=rng, \
-            x_in=x_in, x_pos=x_pos, x_neg=x_neg, y_in=y_in, \
+            x_in=x_in, x_out=x_out, y_in=y_in, \
             p_s0_given_z=p_s0_given_z, \
             p_hi_given_si=p_hi_given_si, \
             p_sip1_given_si_hi=p_sip1_given_si_hi, \
             q_z_given_x=q_z_given_x, \
             q_hi_given_x_si=q_hi_given_x_si, \
-            class_count=10, use_rnn=False, \
-            obs_dim=obs_dim, rnn_dim=rnn_dim, z_dim=z_dim, h_dim=h_dim, \
+            class_count=10, \
+            x_dim=x_dim, s_dim=s_dim, \
+            z_dim=z_dim, h_dim=h_dim, \
             ir_steps=ir_steps, params=msm_params)
-    MSM.set_vfe_margin(vfe_margin=10.0)
     MSM.set_lam_class(lam_class=10.0)
     MSM.set_lam_nll(lam_nll=1.0)
     MSM.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.9, \
                     lam_kld_p2q=0.1)
     MSM.set_lam_l2w(1e-4)
+    MSM.set_drop_rate(0.0)
+    MSM.q_hi_given_x_si.set_bias_noise(0.0)
+    MSM.p_hi_given_si.set_bias_noise(0.0)
+    MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
-    out_file = open("MST_RESULTS.txt", 'wb')
+    out_file = open("MSS_B_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0003
+    learn_rate = 0.0002
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
     for i in range(250000):
-        scale = min(1.0, ((i+1) / 4000.0))
+        scale = min(1.0, ((i+1) / 2000.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.95
         if (i > 20000):
@@ -254,15 +257,11 @@ def test_with_model_init():
         MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
                            mom_1=scale*momentum, mom_2=0.99)
         MSM.set_train_switch(1.0)
-        MSM.set_drop_rate(0.0)
-        MSM.q_hi_given_x_si.set_bias_noise(0.0)
-        MSM.p_hi_given_si.set_bias_noise(0.0)
-        MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
         # perform a minibatch update and record the cost for this batch
         Xi_tr = Xtr.take(batch_idx, axis=0)
         Yi_tr = Ytr.take(batch_idx, axis=0)
         Xp_tr, Xn_tr = sample_class_groups(Yi_tr, Xtr_class_groups)
-        result = MSM.train_joint(BD(Xi_tr), BD(Xp_tr), BD(Xn_tr), Yi_tr)
+        result = MSM.train_joint(BD(Xi_tr), BD(Xp_tr), Yi_tr)
         costs = [(costs[j] + result[j]) for j in range(len(result)-1)]
         # output useful information about training progress
         if ((i % 500) == 0):
@@ -270,23 +269,19 @@ def test_with_model_init():
             str1 = "-- batch {0:d} --".format(i)
             str2 = "    joint_cost  : {0:.4f}".format(costs[0])
             str3 = "    class_cost  : {0:.4f}".format(costs[1])
-            str4 = "    margin_cost : {0:.4f}".format(costs[2])
-            str5 = "    nll_cost    : {0:.4f}".format(costs[3])
-            str6 = "    kld_cost    : {0:.4f}".format(costs[4])
-            str7 = "    reg_cost    : {0:.4f}".format(costs[5])
-            joint_str = "\n".join([str1, str2, str3, str4, str5, str6, str7])
+            str4 = "    nll_cost    : {0:.4f}".format(costs[2])
+            str5 = "    kld_cost    : {0:.4f}".format(costs[3])
+            str6 = "    reg_cost    : {0:.4f}".format(costs[4])
+            joint_str = "\n".join([str1, str2, str3, str4, str5, str6])
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
             costs = [0.0 for v in costs]
         if (((i % 2000) == 0) or ((i < 10000) and ((i % 1000) == 0))):
-            MSM.set_drop_rate(0.0)
-            MSM.q_hi_given_x_si.set_bias_noise(0.0)
-            MSM.p_hi_given_si.set_bias_noise(0.0)
-            MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
             # Get some validation samples for computing diagnostics
             Xva, Yva = row_shuffle(Xva, Yva)
             Xb_va = Xva[0:2500]
+            Yb_va = Yva[0:2500]
             # draw some independent random samples from the model
             samp_count = 200
             model_samps = MSM.sample_from_prior(samp_count)
@@ -297,11 +292,10 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MST_B_SAMPLES_IND_b{0:d}.png".format(i)
+            file_name = "MSS_B_SAMPLES_IND_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # draw some conditional random samples from the model
             samp_count = 200
-            #Xs = np.vstack((Xi_tr[0:(samp_count/4)], Xb_va[0:(samp_count/4)]))
             Xs = Xb_va[0:(samp_count/4)] # only use validation set samples
             Xs = np.repeat(Xs, 4, axis=0)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
@@ -315,29 +309,27 @@ def test_with_model_init():
                 for s2 in range(seq_len):
                     seq_samps[idx] = model_samps[s2][s1]
                     idx += 1
-            file_name = "MST_B_SAMPLES_CND_UD_b{0:d}.png".format(i)
+            file_name = "MSS_B_SAMPLES_CND_UD_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
-            file_name = "MST_A_GEN_GEN_WEIGHTS_b{0:d}.png".format(i)
-            W = MSM.gen_gen_weights.get_value(borrow=False)
-            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            file_name = "MST_A_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
-            W = MSM.gen_inf_weights.get_value(borrow=False).T
-            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             raw_costs = MSM.compute_raw_costs(BD(Xb_va), BD(Xb_va))
             init_nll, init_kld, q2p_kld, p2q_kld, step_nll, step_kld = raw_costs
             step_nll[0] = step_nll[1] # scale of first NLL is overwhemling
-            file_name = "MST_B_H0_KLDS_b{0:d}.png".format(i)
+            file_name = "MSS_B_H0_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(init_kld.shape[1]), \
                     np.mean(init_kld, axis=0), file_name)
-            file_name = "MST_B_HI_Q2P_KLDS_b{0:d}.png".format(i)
+            file_name = "MSS_B_HI_Q2P_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(q2p_kld.shape[1]), \
                     np.mean(q2p_kld, axis=0), file_name)
-            file_name = "MST_B_HI_P2Q_KLDS_b{0:d}.png".format(i)
+            file_name = "MSS_B_HI_P2Q_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(p2q_kld.shape[1]), \
                     np.mean(p2q_kld, axis=0), file_name)
-            Xb_tr = to_fX( Xtr[0:2500] )
-            fe_terms = MSM.compute_fe_terms(BD(Xb_tr), BD(Xb_tr), 30)
+            # draw weights for the initial encoder/classifier
+            file_name = "MSS_B_QZX_WEIGHTS_b{0:d}.png".format(i)
+            W = q_z_given_x.shared_layers[0].W.get_value(borrow=False).T
+            utils.visualize_samples(W, file_name, num_rows=20)
+            # compute free-energy terms on training samples
+            fe_terms = MSM.compute_fe_terms(BD(Xtr[0:2500]), BD(Xtr[0:2500]), 30)
             fe_nll = np.mean(fe_terms[0])
             fe_kld = np.mean(fe_terms[1])
             fe_joint = fe_nll + fe_kld
@@ -357,11 +349,34 @@ def test_with_model_init():
             out_file.write(joint_str+"\n")
             out_file.flush()
             # compute multi-sample estimate of classification error
-            va_error, va_preds = MSM.class_error(Xva[:2000], Yva[:2000], samples=30)
-            joint_str = "    va-class-error: {0:.4f}".format(va_error)
+            err_rate, err_idx, y_preds = MSM.class_error(Xb_va, Yb_va, \
+                    samples=30, prep_func=BD)
+            joint_str = "    va-class-error: {0:.4f}".format(err_rate)
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
+            # draw some conditional random samples from the model
+            Xs = Xb_va[err_idx] # use validation samples with class errors
+            if (Xs.shape[0] > 50):
+                Xs = Xs[:50]
+            Xs = np.repeat(Xs, 4, axis=0)
+            if ((Xs.shape[0] % 20) != 0):
+                # round-off the number of error examples, for nice display
+                remainder = Xs.shape[0] % 20
+                Xs = Xs[:-remainder]
+            samp_count = Xs.shape[0]
+            # draw some conditional random samples from the model
+            model_samps = MSM.sample_from_input(BD(Xs), guided_decoding=False)
+            model_samps.append(Xs)
+            seq_len = len(model_samps)
+            seq_samps = np.zeros((seq_len*samp_count, model_samps[0].shape[1]))
+            idx = 0
+            for s1 in range(samp_count): 
+                for s2 in range(seq_len):
+                    seq_samps[idx] = model_samps[s2][s1]
+                    idx += 1
+            file_name = "MSS_B_SAMPLES_CND_ERR_b{0:d}.png".format(i)
+            utils.visualize_samples(seq_samps, file_name, num_rows=20)
 
 
 if __name__=="__main__":

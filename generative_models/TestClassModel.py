@@ -49,7 +49,7 @@ def test_with_model_init():
     #######################################
     obs_dim = Xtr.shape[1]
     z_dim = 64
-    init_scale = 1.0
+    init_scale = 0.2
 
     # some InfNet instances to build the TwoStageModel from
     x_in = T.matrix('x_in')
@@ -58,6 +58,7 @@ def test_with_model_init():
     ###############
     # q_z_given_x #
     ###############
+    print("Building q_z_given_x...")
     params = {}
     shared_config = [obs_dim, 1000, 1000]
     top_config = [shared_config[-1], z_dim]

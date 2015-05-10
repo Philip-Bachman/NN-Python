@@ -35,17 +35,14 @@ class MultiStageModelSS(object):
         rng: numpy.random.RandomState (for reproducibility)
         x_in: the input data to encode
         x_pos: the target output to decode
-        x_neg: the contrastive output to anticode
         y_in: int labels >= 1 for x_in when available, otherwise 0.
         p_s0_given_z: InfNet for initializing "canvas" state
         p_hi_given_si: InfNet for hi given si
         p_sip1_given_si_hi: InfNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
-        use_rnn: whether or not to use the added "RNN state"
         class_count: number of classes to classify into
         obs_dim: dimension of the observations to generate
-        rnn_dim: dimension of the latent "RNN state"
         z_dim: dimension of the "initial" latent space
         h_dim: dimension of the "primary" latent space
         ir_steps: number of "iterative refinement" steps to perform
@@ -54,15 +51,14 @@ class MultiStageModelSS(object):
                 obs_transform: can be 'none' or 'sigmoid'
     """
     def __init__(self, rng=None, \
-            x_in=None, x_pos=None, x_neg=None, y_in=None, \
+            x_in=None, x_pos=None, y_in=None, \
             p_s0_given_z = None, \
             p_hi_given_si=None, \
             p_sip1_given_si_hi=None, \
             q_z_given_x=None, \
             q_hi_given_x_si=None, \
-            use_rnn=None, \
             class_count=None, \
-            obs_dim=None, rnn_dim=None, \
+            obs_dim=None, \
             z_dim=None, h_dim=None, \
             ir_steps=4, params=None, \
             shared_param_dicts=None):
@@ -85,12 +81,10 @@ class MultiStageModelSS(object):
         if self.x_type == 'bernoulli':
             self.obs_transform = lambda x: T.nnet.sigmoid(x)
         self.shared_param_dicts = shared_param_dicts
-        self.use_rnn = use_rnn
 
         # record the dimensions of various spaces relevant to this model
         self.class_count = class_count
         self.obs_dim = obs_dim
-        self.rnn_dim = rnn_dim
         self.z_dim = z_dim
         self.h_dim = h_dim
         self.ir_steps = ir_steps
@@ -106,7 +100,6 @@ class MultiStageModelSS(object):
         # computation graph created to describe this MultiStageModel
         self.x_in = x_in
         self.x_pos = x_pos
-        self.x_neg = x_neg
         self.y_in = y_in
         self.iter_clock = T.eye(self.ir_steps)
 
@@ -119,12 +112,12 @@ class MultiStageModelSS(object):
         self.set_drop_rate(0.0)
 
         if self.shared_param_dicts is None:
-            init_mat = to_fX( 0.05 * npr.randn((self.z_dim+self.rnn_dim), self.class_count) )
+            init_mat = to_fX( 0.05 * npr.randn(self.z_dim, self.class_count) )
             init_vec = to_fX( np.zeros((self.class_count,)) )
             self.W_class = theano.shared(value=init_mat, name='msm_W_class')
             self.b_class = theano.shared(value=init_vec, name='msm_b_class')
             # initialize "optimizable" parameters specific to this MSM
-            init_vec = to_fX( np.zeros((self.z_dim+self.rnn_dim,)) )
+            init_vec = to_fX( np.zeros((self.z_dim,)) )
             self.p_z_mean = theano.shared(value=init_vec, name='msm_p_z_mean')
             self.p_z_logvar = theano.shared(value=init_vec, name='msm_p_z_logvar')
             init_vec = to_fX( np.zeros((self.obs_dim,)) )
@@ -158,23 +151,17 @@ class MultiStageModelSS(object):
         #############################
         print("Building MSM step 0...")
         drop_x = drop_mask * self.x_in
-        self.q_z_mean, self.q_z_logvar, self.z_jnt = \
+        self.q_z_mean, self.q_z_logvar, self.z = \
                 self.q_z_given_x.apply(drop_x, do_samples=True)
-        self.z = self.z_jnt[:,:self.z_dim]
         # compute predictions for classes
-        self.y = T.dot(self.z_jnt, self.W_class) + self.b_class
-        # get initial rnn/mixture and observation state
-        if self.use_rnn:
-            self.s0_rnn = T.tanh(self.z_jnt[:,self.z_dim:])
-        else:
-            self.s0_rnn = 0.0 * T.tanh(self.z_jnt[:,self.z_dim:])
+        self.y = T.dot(self.z, self.W_class) + self.b_class
+        # get initial generated observation state
         self.s0_obs, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
 
         ###################################################################
         # Setup the positive pass through the sequential generation loop. #
         ###################################################################
         self.si_obs_pos = [self.s0_obs] # holds si_obs for each i
-        self.si_rnn_pos = [self.s0_rnn] # holds si_rnn for each i
         self.hi_pos = []                # holds hi for each i
         self.kldi_q2p_pos = []          # holds KL(q || p) for each i
         self.kldi_p2q_pos = []          # holds KL(p || q) for each i
@@ -182,11 +169,10 @@ class MultiStageModelSS(object):
         for i in range(self.ir_steps):
             print("Building MSM positive pass {0:d}...".format(i+1))
             # get variables used throughout this refinement step
-            si_rnn = self.si_rnn_pos[i]
             si_obs = self.si_obs_pos[i]
             si_obs_trans = self.obs_transform(si_obs)
             grad_ll = self.x_pos - si_obs_trans
-            clock_vals = T.alloc(0.0, si_rnn.shape[0], self.ir_steps) + \
+            clock_vals = T.alloc(0.0, si_obs.shape[0], self.ir_steps) + \
                     self.iter_clock[i]
 
             # get droppy versions of things
@@ -195,11 +181,10 @@ class MultiStageModelSS(object):
 
             # get samples of next hi, conditioned on current si
             hi_p_mean, hi_p_logvar, hi_p = self.p_hi_given_si.apply( \
-                    T.horizontal_stack(drop_obs, si_rnn), \
-                    do_samples=True)
+                    drop_obs, do_samples=True)
             # now we build the model for variational hi given si
             hi_q_mean, hi_q_logvar, hi_q = self.q_hi_given_x_si.apply( \
-                    T.horizontal_stack(drop_grad, drop_obs, si_rnn), \
+                    T.horizontal_stack(drop_grad, drop_obs), \
                     do_samples=True)
 
             # make hi samples that can be switched between hi_p and hi_q
@@ -212,73 +197,16 @@ class MultiStageModelSS(object):
             self.kldi_p2q_pos.append(gaussian_kld( \
                 hi_p_mean, hi_p_logvar, hi_q_mean, hi_q_logvar))
 
-            # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
+            # p_sip1_given_si_hi is conditioned on hi and si.
             si_obs_step, _ = self.p_sip1_given_si_hi.apply( \
                     T.horizontal_stack(self.hi_pos[i], si_obs), \
                     do_samples=False)
                     
-            # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
+            # construct the update from si_obs to sip1_obs
             #sip1_obs = si_obs + si_obs_step
             sip1_obs = si_obs_step
-            sip1_rnn = si_rnn
             # record the updated state of the generative process
             self.si_obs_pos.append(sip1_obs)
-            self.si_rnn_pos.append(sip1_rnn)
-
-        ##################################################################
-        # Setup the iterative negative pass through the refinement loop. #
-        ##################################################################
-        self.si_obs_neg = [self.s0_obs] # holds si_obs for each i
-        self.si_rnn_neg = [self.s0_rnn] # holds si_rnn for each i
-        self.hi_neg = []                # holds hi for each i
-        self.kldi_q2p_neg = []          # holds KL(q || p) for each i
-        self.kldi_p2q_neg = []          # holds KL(p || q) for each i
-
-        for i in range(self.ir_steps):
-            print("Building MSM negative pass {0:d}...".format(i+1))
-            # get variables used throughout this refinement step
-            si_rnn = self.si_rnn_neg[i]
-            si_obs = self.si_obs_neg[i]
-            si_obs_trans = self.obs_transform(si_obs)
-            grad_ll = self.x_neg - si_obs_trans
-            clock_vals = T.alloc(0.0, si_rnn.shape[0], self.ir_steps) + \
-                    self.iter_clock[i]
-
-            # get droppy versions of
-            drop_obs = drop_mask * si_obs_trans
-            drop_grad = drop_mask * grad_ll
-
-            # get samples of next hi, conditioned on current si
-            hi_p_mean, hi_p_logvar, hi_p = self.p_hi_given_si.apply( \
-                    T.horizontal_stack(drop_obs, si_rnn), \
-                    do_samples=True)
-            # now we build the model for variational hi given si
-            hi_q_mean, hi_q_logvar, hi_q = self.q_hi_given_x_si.apply( \
-                    T.horizontal_stack(drop_grad, drop_obs, si_rnn), \
-                    do_samples=True)
-
-            # make hi samples that can be switched between hi_p and hi_q
-            self.hi_neg.append( ((self.train_switch[0] * hi_q) + \
-                    ((1.0 - self.train_switch[0]) * hi_p)) )
-
-            # compute relevant KLds for this step
-            self.kldi_q2p_neg.append(gaussian_kld( \
-                hi_q_mean, hi_q_logvar, hi_p_mean, hi_p_logvar))
-            self.kldi_p2q_neg.append(gaussian_kld( \
-                hi_p_mean, hi_p_logvar, hi_q_mean, hi_q_logvar))
-
-            # p_sip1_given_si_hi is conditioned on hi and the "rnn" part of si.
-            si_obs_step, _ = self.p_sip1_given_si_hi.apply( \
-                    T.horizontal_stack(self.hi_pos[i], si_obs), \
-                    do_samples=False)
-                    
-            # construct the update from si_obs/si_rnn to sip1_obs/sip1_rnn
-            #sip1_obs = si_obs + si_obs_step
-            sip1_obs = si_obs_step
-            sip1_rnn = si_rnn
-            # record the updated state of the generative process
-            self.si_obs_neg.append(sip1_obs)
-            self.si_rnn_neg.append(sip1_rnn)
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -293,9 +221,6 @@ class MultiStageModelSS(object):
         self.mom_2 = theano.shared(value=zero_ary, name='msm_mom_2')
         # init parameters for controlling learning dynamics
         self.set_sgd_params()
-        # init shared var for weighting nll of data given posterior sample
-        self.vfe_margin = theano.shared(value=zero_ary, name='msm_vfe_margin')
-        self.set_vfe_margin(vfe_margin=10.0)
         # init shared var for weighting class of data given posterior sample
         self.lam_class = theano.shared(value=zero_ary, name='msm_lam_class')
         self.set_lam_class(lam_class=1.0)
@@ -311,19 +236,19 @@ class MultiStageModelSS(object):
         self.lam_l2w = theano.shared(value=zero_ary, name='msm_lam_l2w')
         self.set_lam_l2w(1e-5)
 
-        # Grab all of the "optimizable" parameters in "group 1"
-        self.group_1_params = []
-        self.group_1_params.extend(self.q_z_given_x.mlp_params)
-        self.group_1_params.extend(self.q_hi_given_x_si.mlp_params)
-        # Grab all of the "optimizable" parameters in "group 2"
-        self.group_2_params = [self.p_z_mean, self.p_z_logvar, self.b_obs, \
-                               self.W_class, self.b_class]
-        self.group_2_params.extend(self.p_hi_given_si.mlp_params)
-        self.group_2_params.extend(self.p_sip1_given_si_hi.mlp_params)
-        self.group_2_params.extend(self.p_s0_given_z.mlp_params)
+        # Grab all of the "optimizable" parameters in the inference model
+        self.q_params = []
+        self.q_params.extend(self.q_z_given_x.mlp_params)
+        self.q_params.extend(self.q_hi_given_x_si.mlp_params)
+        # Grab all of the "optimizable" parameters in the generative model
+        self.p_params = [self.p_z_mean, self.p_z_logvar, self.b_obs, \
+                         self.W_class, self.b_class]
+        self.p_params.extend(self.p_hi_given_si.mlp_params)
+        self.p_params.extend(self.p_sip1_given_si_hi.mlp_params)
+        self.p_params.extend(self.p_s0_given_z.mlp_params)
 
-        # Make a joint list of parameters group 1/2
-        self.joint_params = self.group_1_params + self.group_2_params
+        # Make a joint list of parameters
+        self.joint_params = self.q_params + self.p_params
 
         #################################
         # CONSTRUCT THE KLD-BASED COSTS #
@@ -333,21 +258,14 @@ class MultiStageModelSS(object):
                 self._construct_kld_costs(q2p_source=self.kldi_q2p_pos, \
                                           p2q_source=self.kldi_p2q_pos, \
                                           p=1.0)
-        _, _, self.kld_hi_q2p_neg, self.kld_hi_p2q_neg = \
-                self._construct_kld_costs(q2p_source=self.kldi_q2p_neg, \
-                                          p2q_source=self.kldi_p2q_neg, \
-                                          p=1.0)
         # compute step-wise KLd costs in the decoder (different for pos & neg)
         self.kld_hi_pos = (self.lam_kld_q2p[0] * self.kld_hi_q2p_pos) + \
                           (self.lam_kld_p2q[0] * self.kld_hi_p2q_pos)
-        self.kld_hi_neg = (self.lam_kld_q2p[0] * self.kld_hi_q2p_neg) + \
-                          (self.lam_kld_p2q[0] * self.kld_hi_p2q_neg)
         # grab KLd cost at class-agnostic encoder (same for pos & neg)
         self.kld_z = (self.lam_kld_q2p[0] * self.kld_z_q2p) + \
                      (self.lam_kld_p2q[0] * self.kld_z_p2q)
         # compute full KLd cost for the positive pass and negative pass
         self.kld_costs_pos = (self.lam_kld_z[0] * self.kld_z) + self.kld_hi_pos
-        self.kld_costs_neg = (self.lam_kld_z[0] * self.kld_z) + self.kld_hi_neg
 
         ###################################
         # CONSTRUCT THE CLASS-BASED COSTS #
@@ -359,26 +277,11 @@ class MultiStageModelSS(object):
         #################################
         self.nll_costs_pos = self.lam_nll[0] * self._construct_nll_costs( \
                 self.x_pos, si_obs_source=self.si_obs_pos, step_num=-1)
-        self.nll_costs_neg = self.lam_nll[0] * self._construct_nll_costs( \
-                self.x_neg, si_obs_source=self.si_obs_neg, step_num=-1)
         ############################################
         # CONSTRUCT THE VFE AND MARGIN-BASED COSTS #
         ############################################
         self.vfe_costs_pos = self.nll_costs_pos + self.kld_costs_pos
-        self.vfe_costs_neg = self.nll_costs_neg + self.kld_costs_neg
-        #
-        # some notes on our contrastive/structured prediction loss...
-        #
-        # we want to make vfe_cost_gaps < self.vfe_margin, and we will thus
-        # linearly penalize any vfe_cost_gaps[i] > -self.vfe_margin.
-        #
-        # this forces the decoder to assign higher probability to x_pos than
-        # to x_neg, when the input to the encoder is x_in. we approximate the
-        # probability assigned to x_pos/x_neg using variational free-energy.
-        #
-        vfe_cost_gaps = self.vfe_costs_pos - self.vfe_costs_neg
-        self.margin_costs = T.maximum(0.0, (vfe_cost_gaps + self.vfe_margin[0]))
-        self.margin_cost = T.mean(self.margin_costs)
+        self.vfe_cost_pos = T.mean(self.vfe_costs_pos)
         self.nll_cost = T.mean(self.nll_costs_pos)
         self.kld_cost = T.mean(self.kld_costs_pos)
         ########################################
@@ -386,13 +289,12 @@ class MultiStageModelSS(object):
         ########################################
         param_reg_cost = self._construct_reg_costs()
         self.reg_cost = self.lam_l2w[0] * param_reg_cost
-        self.joint_cost = self.class_cost + self.nll_cost + \
-                          self.kld_cost + self.reg_cost # + self.margin_cost
+        self.joint_cost = self.vfe_cost_pos + self.class_cost + self.reg_cost
         ##############################
         # CONSTRUCT A PER-INPUT COST #
         ##############################
-        self.obs_costs = self.class_costs + self.margin_costs + \
-                         self.nll_costs_pos + self.kld_costs_pos
+        self.obs_costs = self.nll_costs_pos + self.kld_costs_pos + \
+                         self.class_costs
 
         # Get the gradient of the joint cost for all optimizable parameters
         print("Computing gradients of self.joint_cost...")
@@ -401,20 +303,21 @@ class MultiStageModelSS(object):
         for i, p in enumerate(self.joint_params):
             self.joint_grads[p] = grad_list[i]
 
+
         # Construct the updates for the generator and inferencer networks
-        self.group_1_updates = get_adam_updates(params=self.group_1_params, \
+        self.q_updates = get_adam_updates(params=self.q_params, \
                 grads=self.joint_grads, alpha=self.lr_1, \
                 beta1=self.mom_1, beta2=self.mom_2, \
-                mom2_init=1e-3, smoothing=1e-4, max_grad_norm=10.0)
-        self.group_2_updates = get_adam_updates(params=self.group_2_params, \
+                mom2_init=1e-3, smoothing=1e-5, max_grad_norm=10.0)
+        self.p_updates = get_adam_updates(params=self.p_params, \
                 grads=self.joint_grads, alpha=self.lr_2, \
                 beta1=self.mom_1, beta2=self.mom_2, \
-                mom2_init=1e-3, smoothing=1e-4, max_grad_norm=10.0)
+                mom2_init=1e-3, smoothing=1e-5, max_grad_norm=10.0)
         self.joint_updates = OrderedDict()
-        for k in self.group_1_updates:
-            self.joint_updates[k] = self.group_1_updates[k]
-        for k in self.group_2_updates:
-            self.joint_updates[k] = self.group_2_updates[k]
+        for k in self.q_updates:
+            self.joint_updates[k] = self.q_updates[k]
+        for k in self.p_updates:
+            self.joint_updates[k] = self.p_updates[k]
 
         # Construct a function for jointly training the generator/inferencer
         print("Compiling cost computer...")
@@ -450,15 +353,6 @@ class MultiStageModelSS(object):
         self.mom_1.set_value(to_fX(new_mom_1))
         new_mom_2 = zero_ary + mom_2
         self.mom_2.set_value(to_fX(new_mom_2))
-        return
-
-    def set_vfe_margin(self, vfe_margin=10.0):
-        """
-        Set the desired decoder VFE margin for pos/neg outputs.
-        """
-        zero_ary = np.zeros((1,))
-        new_margin = zero_ary + vfe_margin
-        self.vfe_margin.set_value(to_fX(new_margin))
         return
 
     def set_lam_class(self, lam_class=1.0):
@@ -589,10 +483,11 @@ class MultiStageModelSS(object):
         """
         Construct theano function to train all networks jointly.
         """
-        inputs = [self.x_in, self.x_pos, self.x_neg, self.y_in]
+        inputs = [self.x_in, self.x_pos, self.y_in]
         # collect the outputs to return from this function
-        outputs = [self.joint_cost, self.class_cost, self.margin_cost, \
-                   self.nll_cost, self.kld_cost, self.reg_cost, self.obs_costs]
+        outputs = [self.joint_cost, self.class_cost, \
+                   self.nll_cost, self.kld_cost, self.reg_cost, \
+                   self.obs_costs]
         # compile the theano function
         func = theano.function(inputs=inputs, outputs=outputs, \
                                updates=self.joint_updates)
@@ -678,11 +573,16 @@ class MultiStageModelSS(object):
         """
         # make a function for computing self.y
         y_func = theano.function([self.x_in], outputs=self.y)
-        def multi_sample_error(xi, yi, samples=20):
+        def multi_sample_error(xi, yi, samples=20, prep_func=None):
             # compute self.y for the observations in xi
-            yp = y_func(xi)
-            for i in range(samples-1):
-                yp += y_func(xi)
+            if prep_func is None:
+                yp = y_func(xi)
+                for i in range(samples-1):
+                    yp += y_func(xi)
+            else:
+                yp = y_func(prep_func(xi))
+                for i in range(samples-1):
+                    yp += y_func(prep_func(xi))
             yp = yp / float(samples)
             # get the implied class labels
             yc = np.argmax(yp, axis=1).flatten()
@@ -690,8 +590,9 @@ class MultiStageModelSS(object):
             mask = 1.0 * (yi != 0)
             yi = yi - 1
             # compute the classification error for points with valid labels
-            err_rate = np.sum(((yi != yc) * mask)) / np.sum(mask)
-            return err_rate, yp
+            err_idx = (yi != yc)
+            err_rate = np.sum((err_idx * mask)) / np.sum(mask)
+            return err_rate, err_idx, yp
         return multi_sample_error
 
     def _construct_sample_from_prior(self):
@@ -725,8 +626,6 @@ class MultiStageModelSS(object):
         generated by this MultiStageModel, conditioned on some inputs to the
         initial encoder stage (i.e. self.q_z_given_x). This returns the full 
         sequence of "partially completed" examples.
-
-        The 
         """
         xi = T.matrix()
         xo = T.matrix()

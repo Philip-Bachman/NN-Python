@@ -149,7 +149,7 @@ class HiddenLayer(object):
         else:
             # Pooling layers do max pooling over disjoint groups (aka maxout)
             self.activation = lambda x: \
-                    maxout_actfun(x, self.pool_size, self.filt_count)S
+                    maxout_actfun(x, self.pool_size, self.filt_count)
 
         # Get some random initial weights and biases, if not given
         if W is None:
