@@ -90,7 +90,7 @@ def test_with_model_init():
     obs_dim = Xtr.shape[1]
     z_dim = 32
     h_dim = 100
-    ir_steps = 4
+    ir_steps = 2
     init_scale = 1.0
     
     x_type = 'bernoulli'

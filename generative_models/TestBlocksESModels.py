@@ -138,20 +138,28 @@ def test_with_model_init():
     dec_mlp_out = CondNet([], [dec_dim, z_dim], name="dec_mlp_out", **inits)
     enc_rnn = LSTM(dim=enc_dim, name="enc_rnn", **rnninits)
     dec_rnn = LSTM(dim=dec_dim, name="dec_rnn", **rnninits)
+    enc_mlp_stop = MLP([Tanh(), Tanh()], \
+                       [mix_dim, 250, (2*enc_dim + 2*dec_dim + mix_dim)], \
+                       name="mix_dec_mlp", **inits)
+    dec_mlp_stop = MLP([Tanh(), Tanh()], \
+                       [mix_dim, 250, (2*enc_dim + 2*dec_dim + mix_dim)], \
+                       name="mix_dec_mlp", **inits)
 
-    draw = IMoDrawModels(
+    draw = IMoESDrawModels(
                 n_iter,
-                step_type='jump', # step_type can be 'add' or 'jump'
+                step_type='add', # step_type can be 'add' or 'jump'
                 mix_enc_mlp=mix_enc_mlp,
                 mix_dec_mlp=mix_dec_mlp,
                 reader_mlp=reader_mlp,
+                writer_mlp=writer_mlp,
                 enc_mlp_in=enc_mlp_in,
                 enc_mlp_out=enc_mlp_out,
                 enc_rnn=enc_rnn,
+                enc_mlp_stop=enc_mlp_stop,
                 dec_mlp_in=dec_mlp_in,
                 dec_mlp_out=dec_mlp_out,
                 dec_rnn=dec_rnn,
-                writer_mlp=writer_mlp)
+                dec_mlp_stop=dec_mlp_stop)
     draw.initialize()
 
     # some symbolic vars to represent various inputs/outputs

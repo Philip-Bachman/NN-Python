@@ -15,6 +15,7 @@ from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 from NetLayers import relu_actfun, softplus_actfun, tanh_actfun, \
                       apply_mask, binarize_data, row_shuffle, to_fX
 from InfNet import InfNet
+from HydraNet import HydraNet
 from MultiStageModel import MultiStageModel
 from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist
 from HelperFuncs import collect_obs_costs
@@ -32,10 +33,6 @@ def test_with_model_init():
     # Get some training data #
     ##########################
     rng = np.random.RandomState(1234)
-    #dataset = 'data/mnist.pkl.gz'
-    #datasets = load_udm(dataset, as_shared=False, zero_mean=False)
-    #Xtr = datasets[0][0]
-    #Xva = datasets[1][0]
     Xtr, Xva, Xte = load_binarized_mnist(data_path='./data/')
     del Xte
     tr_samples = Xtr.shape[0]
@@ -48,8 +45,8 @@ def test_with_model_init():
     ############################################################
     obs_dim = Xtr.shape[1]
     z_dim = 20
-    h_dim = 100
-    ir_steps = 3
+    h_dim = 200
+    ir_steps = 4
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -82,11 +79,10 @@ def test_with_model_init():
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [(h_dim + obs_dim), 500, 500]
-    top_config = [shared_config[-1], obs_dim]
+    shared_config = [h_dim, 500, 500]
+    output_config = [obs_dim, obs_dim, obs_dim]
     params['shared_config'] = shared_config
-    params['mu_config'] = top_config
-    params['sigma_config'] = top_config
+    params['output_config'] = output_config
     params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
@@ -95,7 +91,7 @@ def test_with_model_init():
     params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
-    p_sip1_given_si_hi = InfNet(rng=rng, Xd=x_in_sym, \
+    p_sip1_given_si_hi = HydraNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
     p_sip1_given_si_hi.init_biases(0.2)
     ################
@@ -167,7 +163,7 @@ def test_with_model_init():
     msm_params = {}
     msm_params['x_type'] = x_type
     msm_params['obs_transform'] = 'sigmoid'
-    MSM_TR = MultiStageModel(rng=rng, x_in=x_in_sym, x_out=x_out_sym, \
+    MSM = MultiStageModel(rng=rng, x_in=x_in_sym, x_out=x_out_sym, \
             p_s0_given_z=p_s0_given_z, \
             p_hi_given_si=p_hi_given_si, \
             p_sip1_given_si_hi=p_sip1_given_si_hi, \
@@ -175,7 +171,6 @@ def test_with_model_init():
             q_hi_given_x_si=q_hi_given_x_si, \
             obs_dim=obs_dim, z_dim=z_dim, h_dim=h_dim, \
             ir_steps=ir_steps, params=msm_params)
-    MSM_VA = None
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -183,34 +178,26 @@ def test_with_model_init():
     out_file = open("MSM_A_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0003
-    momentum = 0.5
+    momentum = 0.9
     batch_idx = np.arange(batch_size) + tr_samples
     for i in range(250000):
         scale = min(1.0, ((i+1) / 3000.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.95
-        if (i > 50000):
-            momentum = 0.90
-        else:
-            momentum = 0.50
         # get the indices of training samples for this batch update
         batch_idx += batch_size
         if (np.max(batch_idx) >= tr_samples):
             # we finished an "epoch", so we rejumble the training set
             Xtr = row_shuffle(Xtr)
             batch_idx = np.arange(batch_size)
-        # train on the training set
-        MSM = MSM_TR
-        MSM_VA = None
-        lam_kld = 1.0
         # set sgd and objective function hyperparams for this update
         MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
                 mom_1=scale*momentum, mom_2=0.99)
         MSM.set_train_switch(1.0)
         MSM.set_lam_nll(lam_nll=1.0)
-        MSM.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.8, lam_kld_p2q=0.2)
-        MSM.set_lam_kld_l1l2(lam_kld_l1l2=scale)
-        MSM.set_lam_ent(lam_ent_p=0.0, lam_ent_q=0.01)
+        MSM.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.95, lam_kld_p2q=0.05)
+        MSM.set_lam_kld_l1l2(lam_kld_l1l2=1.0)
+        MSM.set_lam_ent(lam_ent_p=0.0, lam_ent_q=0.0)
         MSM.set_lam_l2w(1e-4)
         MSM.set_drop_rate(0.0)
         MSM.q_hi_given_x_si.set_bias_noise(0.0)
@@ -234,7 +221,7 @@ def test_with_model_init():
             out_file.flush()
             costs = [0.0 for v in costs]
         if (((i % 2000) == 0) or ((i < 10000) and ((i % 1000) == 0))):
-            MSM.set_drop_rate(0.2)
+            MSM.set_drop_rate(0.0)
             MSM.q_hi_given_x_si.set_bias_noise(0.0)
             MSM.p_hi_given_si.set_bias_noise(0.0)
             MSM.p_sip1_given_si_hi.set_bias_noise(0.0)
@@ -269,12 +256,6 @@ def test_with_model_init():
                     idx += 1
             file_name = "MSM_A_SAMPLES_CND_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
-            file_name = "MSM_A_GEN_GEN_WEIGHTS_b{0:d}.png".format(i)
-            W = MSM.gen_gen_weights.get_value(borrow=False)
-            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            file_name = "MSM_A_GEN_INF_WEIGHTS_b{0:d}.png".format(i)
-            W = MSM.gen_inf_weights.get_value(borrow=False).T
-            utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
             # compute information about posterior KLds on validation set
             raw_costs = MSM.compute_raw_costs(Xb_va, Xb_va)
             init_nll, init_kld, q2p_kld, p2q_kld, step_nll, step_kld = raw_costs

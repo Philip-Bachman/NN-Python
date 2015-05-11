@@ -38,7 +38,6 @@ class MultiStageModel(object):
         p_sip1_given_si_hi: InfNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
-        model_init_mix: whether to use a model-based initial mix state
         obs_dim: dimension of the observations to generate
         z_dim: dimension of the "initial" latent space
         h_dim: dimension of the "primary" latent space
@@ -200,12 +199,17 @@ class MultiStageModel(object):
                     (0.05 * hi_p_logvar**2.0)) )
 
             # p_sip1_given_si_hi is conditioned on si and  hi.
-            si_obs_step, _ = self.p_sip1_given_si_hi.apply( \
-                    T.horizontal_stack(self.hi[i], si_obs), \
-                    do_samples=False)
+            ig_vals, fg_vals, in_vals = self.p_sip1_given_si_hi.apply( \
+                    self.hi[i])
+                    #T.horizontal_stack(self.hi[i], si_obs))
                     
-            # construct the update from si_obs to sip1_obs
-            sip1_obs = si_obs + si_obs_step
+            # get the transformed values (for an LSTM style update)
+            i_gate = T.nnet.sigmoid(ig_vals + 2.0)
+            f_gate = T.nnet.sigmoid(fg_vals + 2.0)
+            novel_input = 20.0 * T.tanh(0.05 * in_vals)
+            # perform an LSTM-like update of si
+            sip1_obs = (novel_input * i_gate) + (si_obs * f_gate)
+
             # record the updated state of the generative process
             self.si_obs.append(sip1_obs)
 
@@ -315,11 +319,11 @@ class MultiStageModel(object):
         self.group_1_updates = get_adam_updates(params=self.group_1_params, \
                 grads=self.joint_grads, alpha=self.lr_1, \
                 beta1=self.mom_1, beta2=self.mom_2, \
-                mom2_init=1e-3, smoothing=1e-4, max_grad_norm=10.0)
+                mom2_init=1e-3, smoothing=1e-5, max_grad_norm=10.0)
         self.group_2_updates = get_adam_updates(params=self.group_2_params, \
                 grads=self.joint_grads, alpha=self.lr_2, \
                 beta1=self.mom_1, beta2=self.mom_2, \
-                mom2_init=1e-3, smoothing=1e-4, max_grad_norm=10.0)
+                mom2_init=1e-3, smoothing=1e-5, max_grad_norm=10.0)
         self.joint_updates = OrderedDict()
         for k in self.group_1_updates:
             self.joint_updates[k] = self.group_1_updates[k]
@@ -337,9 +341,6 @@ class MultiStageModel(object):
         self.sample_from_prior = self._construct_sample_from_prior()
         print("Compiling data-guided model sampler...")
         self.sample_from_input = self._construct_sample_from_input()
-        # make easy access points for some interesting parameters
-        self.gen_inf_weights = self.p_hi_given_si.shared_layers[0].W
-        self.gen_gen_weights = self.p_sip1_given_si_hi.mu_layers[-1].W
         return
 
     def set_sgd_params(self, lr_1=0.01, lr_2=0.01, \

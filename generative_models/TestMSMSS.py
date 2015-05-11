@@ -15,6 +15,7 @@ from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 from NetLayers import relu_actfun, softplus_actfun, tanh_actfun, \
                       apply_mask, binarize_data, row_shuffle, to_fX
 from InfNet import InfNet
+from HydraNet import HydraNet
 from MultiStageModelSS import MultiStageModelSS
 from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist
 from HelperFuncs import collect_obs_costs
@@ -91,7 +92,7 @@ def test_with_model_init():
     z_dim = 50
     s_dim = 300
     h_dim = 100
-    ir_steps = 4
+    ir_steps = 3
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -105,7 +106,7 @@ def test_with_model_init():
     # p_hi_given_si #
     #################
     params = {}
-    shared_config = [s_dim, 500, 500]
+    shared_config = [s_dim, 800]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -125,10 +126,10 @@ def test_with_model_init():
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [(h_dim + s_dim), 500, 500]
-    top_config = [shared_config[-1], s_dim]
+    shared_config = [(h_dim + s_dim), 800]
+    output_config = [s_dim, s_dim, s_dim]
     params['shared_config'] = shared_config
-    params['mu_config'] = top_config
+    params['output_config'] = output_config
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
     params['init_scale'] = init_scale
@@ -138,7 +139,7 @@ def test_with_model_init():
     params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
-    p_sip1_given_si_hi = InfNet(rng=rng, Xd=x_in, \
+    p_sip1_given_si_hi = HydraNet(rng=rng, Xd=x_in, \
             params=params, shared_param_dicts=None)
     p_sip1_given_si_hi.init_biases(0.2)
     ################
@@ -165,7 +166,7 @@ def test_with_model_init():
     # q_z_given_x #
     ###############
     params = {}
-    shared_config = [x_dim, (500, 4), (500, 4)]
+    shared_config = [x_dim, 1000, 1000]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -180,12 +181,12 @@ def test_with_model_init():
     params['build_theano_funcs'] = False
     q_z_given_x = InfNet(rng=rng, Xd=x_in, \
             params=params, shared_param_dicts=None)
-    q_z_given_x.init_biases(0.0)
+    q_z_given_x.init_biases(0.2)
     ###################
     # q_hi_given_x_si #
     ###################
     params = {}
-    shared_config = [(x_dim + s_dim + s_dim), 800, 800]
+    shared_config = [(x_dim + s_dim + s_dim), 800]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -237,16 +238,12 @@ def test_with_model_init():
     out_file = open("MSS_B_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0002
-    momentum = 0.5
+    momentum = 0.9
     batch_idx = np.arange(batch_size) + tr_samples
     for i in range(250000):
         scale = min(1.0, ((i+1) / 2000.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.95
-        if (i > 20000):
-            momentum = 0.90
-        else:
-            momentum = 0.50
         # get the indices of training samples for this batch update
         batch_idx += batch_size
         if (np.max(batch_idx) >= tr_samples):
@@ -255,13 +252,13 @@ def test_with_model_init():
             batch_idx = np.arange(batch_size)
         # set sgd and objective function hyperparams for this update
         MSM.set_sgd_params(lr_1=scale*learn_rate, lr_2=scale*learn_rate, \
-                           mom_1=scale*momentum, mom_2=0.99)
+                           mom_1=0.9, mom_2=0.99)
         MSM.set_train_switch(1.0)
         # perform a minibatch update and record the cost for this batch
         Xi_tr = Xtr.take(batch_idx, axis=0)
         Yi_tr = Ytr.take(batch_idx, axis=0)
         Xp_tr, Xn_tr = sample_class_groups(Yi_tr, Xtr_class_groups)
-        result = MSM.train_joint(BD(Xi_tr), BD(Xp_tr), Yi_tr)
+        result = MSM.train_joint(BD(Xi_tr), BD(Xi_tr), Yi_tr)
         costs = [(costs[j] + result[j]) for j in range(len(result)-1)]
         # output useful information about training progress
         if ((i % 500) == 0):

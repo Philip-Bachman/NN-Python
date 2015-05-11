@@ -17,8 +17,6 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
                       apply_mask, to_fX, safe_softmax
-from InfNet import InfNet
-from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 
@@ -38,7 +36,7 @@ class MultiStageModelSS(object):
         y_in: int labels >= 1 for x_in when available, otherwise 0.
         p_s0_given_z: InfNet for initializing "canvas" state
         p_hi_given_si: InfNet for hi given si
-        p_sip1_given_si_hi: InfNet for sip1 given si and hi
+        p_sip1_given_si_hi: HydraNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
         class_count: number of classes to classify into
@@ -156,11 +154,10 @@ class MultiStageModelSS(object):
         #############################
         print("Building MSM step 0...")
         drop_x = drop_mask * self.x_in
-        self.q_z_mean, self.q_z_logvar, self.z_jnt = \
+        self.q_z_mean, self.q_z_logvar, self.z = \
                 self.q_z_given_x.apply(drop_x, do_samples=True)
-        self.z = self.z_jnt[:,:self.z_dim]
         # compute predictions for classes
-        self.y = T.dot(self.z_jnt, self.W_class) + self.b_class
+        self.y = T.dot(self.z, self.W_class) + self.b_class
         # get initial generated observation state
         self.s0, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
 
@@ -197,14 +194,17 @@ class MultiStageModelSS(object):
             self.kldi_p2q_pos.append(gaussian_kld( \
                 hi_p_mean, hi_p_logvar, hi_q_mean, hi_q_logvar))
 
-            # p_sip1_given_si_hi is conditioned on hi and si.
-            si_step, _ = self.p_sip1_given_si_hi.apply( \
-                    T.horizontal_stack(self.hi_pos[i], si), \
-                    do_samples=False)
-                    
-            # construct the update from si to sip1
-            #sip1 = si + si_step
-            sip1 = si_step
+            # p_sip1_given_si_hi provides the input gate, forget gate, and
+            # novel input values. these are a function of hi and si.
+            ig_vals, fg_vals, in_vals = self.p_sip1_given_si_hi.apply( \
+                    T.horizontal_stack(self.hi_pos[i], si))
+            # get the transformed values (for an LSTM style update)
+            i_gate = T.nnet.sigmoid(ig_vals + 2.0)
+            f_gate = T.nnet.sigmoid(fg_vals + 2.0)
+            novel_input = T.tanh(in_vals)
+            # perform an LSTM-like update of si
+            sip1 = (novel_input * i_gate) + (si * f_gate)
+
             # record the updated state of the generative process
             self.si_pos.append(sip1)
 
