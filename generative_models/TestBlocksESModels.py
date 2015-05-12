@@ -139,9 +139,9 @@ def test_with_model_init():
                          name="enc_rnn", **rnninits)
     dec_rnn = BiasedLSTM(dim=dec_dim, ig_bias=2.0, fg_bias=2.0, \
                          name="dec_rnn", **rnninits)
-    enc_mlp_stop = MLP([Tanh(), Sigmoid()], [(x_dim + dec_dim), 500, 1], \
+    enc_mlp_stop = MLP([Tanh(), None], [(x_dim + dec_dim), 500, 1], \
                        name="enc_mlp_stop", **inits)
-    dec_mlp_stop = MLP([Tanh(), Sigmoid()], [dec_dim, 500, 1], \
+    dec_mlp_stop = MLP([Tanh(), None], [dec_dim, 500, 1], \
                        name="dec_mlp_stop", **inits)
 
     draw = IMoESDrawModels(
@@ -259,7 +259,7 @@ def test_with_model_init():
         if ((i % 1000) == 0):
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
-            Xb = to_fX(Xva[:4000])
+            Xb = to_fX(Xva[:5000])
             va_costs = compute_nll_bound(Xb, Xb)
             str1 = "    va_nll_bound : {}".format(va_costs[1])
             joint_str = "\n".join([str1])

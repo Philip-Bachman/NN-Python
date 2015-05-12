@@ -276,7 +276,7 @@ def test_with_model_init():
         if ((i % 1000) == 0):
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
-            Xb = to_fX(Xva[:2000])
+            Xb = to_fX(Xva[:5000])
             va_costs = compute_nll_bound(Xb, Xb)
             str1 = "    va_nll_bound : {}".format(va_costs[1])
             str2 = "    va_nll_term  : {}".format(va_costs[2])

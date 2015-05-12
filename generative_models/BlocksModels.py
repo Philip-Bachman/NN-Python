@@ -996,6 +996,8 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
                 tensor.concatenate([h_dec, nll_grad], axis=1)).flatten()
         esp_dec = self.dec_mlp_stop.apply( \
                 tensor.concatenate([h_dec], axis=1)).flatten()
+        esp_enc = tensor.nnet.sigmoid(esp_enc - 2.0)
+        esp_dec = tensor.nnet.sigmoid(esp_dec - 2.0)
         # compute nll for this step (post update)
         nll = -1.0 * tensor.sum(log_prob_bernoulli(x, c_hat), axis=1)
         # compute KLd between encoder and decoder stopping probabilities
@@ -1068,6 +1070,8 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
                 tensor.concatenate([hd0, nll_grad], axis=1)).flatten()
         esp_mix_dec = self.dec_mlp_stop.apply( \
                 tensor.concatenate([hd0], axis=1)).flatten()
+        esp_mix_enc = tensor.nnet.sigmoid(esp_mix_enc - 2.0)
+        esp_mix_dec = tensor.nnet.sigmoid(esp_mix_dec - 2.0)
         # compute nll for this step (post update)
         nll_mix = -1.0 * tensor.sum(log_prob_bernoulli(x_out, c_hat), axis=1)
         # compute KLd for the encoder/decoder early stopping probabilities
