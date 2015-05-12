@@ -18,10 +18,25 @@ from blocks.utils import shared_floatx_nans
 from blocks.roles import add_role, WEIGHT, BIAS, PARAMETER, AUXILIARY
 
 from BlocksAttention import ZoomableAttentionWindow
+from NetLayers import constFX
 
-####################################################
-# KLd for pairs of diagonal Gaussian distributions #
-####################################################
+##################################
+# Probability distribution stuff #
+##################################
+
+def log_prob_bernoulli(p_true, p_approx, mask=None):
+    """
+    Compute log probability of some binary variables with probabilities
+    given by p_true, for probability estimates given by p_approx. We'll
+    compute joint log probabilities over row-wise groups.
+    """
+    if mask is None:
+        mask = tensor.ones((1, p_approx.shape[1]))
+    log_prob_1 = p_true * tensor.log(p_approx)
+    log_prob_0 = (1.0 - p_true) * tensor.log(1.0 - p_approx)
+    log_prob_01 = log_prob_1 + log_prob_0
+    row_log_probs = tensor.sum((log_prob_01 * mask), axis=1, keepdims=True)
+    return row_log_probs
 
 def gaussian_kld(mu_left, logvar_left, mu_right, logvar_right):
     """
@@ -38,6 +53,11 @@ def bernoulli_kld(p_left, p_right):
     """
     Compute KL divergence between a pair of bernoulli distributions.
     """
+    term_a = p_left * (tensor.log(p_left) - tensor.log(p_right))
+    term_b = (1.0 - p_left) * \
+             (tensor.log(1.0 - p_left) - tensor.log(1.0 - p_right))
+    bern_kld = term_a + term_b
+    return bern_kld
 
 
 ################################
@@ -48,6 +68,104 @@ class Softplus(Activation):
     @application(inputs=['input_'], outputs=['output'])
     def apply(self, input_):
         return tensor.nnet.softplus(input_)
+
+class BiasedLSTM(BaseRecurrent, Initializable):
+    @lazy(allocation=['dim'])
+    def __init__(self, dim, ig_bias=0.0, fg_bias=0.0, og_bias=0.0, 
+                 activation=None, **kwargs):
+        super(BiasedLSTM, self).__init__(**kwargs)
+        self.dim = dim
+        self.ig_bias = constFX(ig_bias) # input gate bias
+        self.fg_bias = constFX(fg_bias) # forget gate bias
+        self.og_bias = constFX(og_bias) # output gate bias
+
+        if not activation:
+            activation = Tanh()
+        self.children = [activation]
+        return
+
+    def get_dim(self, name):
+        if name == 'inputs':
+            return self.dim * 4
+        if name in ['states', 'cells']:
+            return self.dim
+        if name == 'mask':
+            return 0
+        return super(BiasedLSTM, self).get_dim(name)
+
+    def _allocate(self):
+        self.W_state = shared_floatx_nans((self.dim, 4*self.dim),
+                                          name='W_state')
+        self.W_cell_to_in = shared_floatx_nans((self.dim,),
+                                               name='W_cell_to_in')
+        self.W_cell_to_forget = shared_floatx_nans((self.dim,),
+                                                   name='W_cell_to_forget')
+        self.W_cell_to_out = shared_floatx_nans((self.dim,),
+                                                name='W_cell_to_out')
+        add_role(self.W_state, WEIGHT)
+        add_role(self.W_cell_to_in, WEIGHT)
+        add_role(self.W_cell_to_forget, WEIGHT)
+        add_role(self.W_cell_to_out, WEIGHT)
+
+        self.params = [self.W_state, self.W_cell_to_in, self.W_cell_to_forget,
+                       self.W_cell_to_out]
+        return
+
+    def _initialize(self):
+        for w in self.params:
+            self.weights_init.initialize(w, self.rng)
+        return
+
+    @recurrent(sequences=['inputs', 'mask'], states=['states', 'cells'],
+               contexts=[], outputs=['states', 'cells'])
+    def apply(self, inputs, states, cells, mask=None):
+        """Apply the Long Short Term Memory transition.
+        Parameters
+        ----------
+        states : :class:`~tensor.TensorVariable`
+            The 2 dimensional matrix of current states in the shape
+            (batch_size, features). Required for `one_step` usage.
+        cells : :class:`~tensor.TensorVariable`
+            The 2 dimensional matrix of current cells in the shape
+            (batch_size, features). Required for `one_step` usage.
+        inputs : :class:`~tensor.TensorVariable`
+            The 2 dimensional matrix of inputs in the shape (batch_size,
+            features * 4).
+        mask : :class:`~tensor.TensorVariable`
+            A 1D binary array in the shape (batch,) which is 1 if there is
+            data available, 0 if not. Assumed to be 1-s only if not given.
+        Returns
+        -------
+        states : :class:`~tensor.TensorVariable`
+            Next states of the network.
+        cells : :class:`~tensor.TensorVariable`
+            Next cell activations of the network.
+        """
+        def slice_last(x, no):
+            return x.T[no*self.dim: (no+1)*self.dim].T
+        nonlinearity = self.children[0].apply
+
+        activation = tensor.dot(states, self.W_state) + inputs
+        in_gate = tensor.nnet.sigmoid(slice_last(activation, 0) +
+                                      (cells * self.W_cell_to_in) + 
+                                      self.ig_bias)
+        forget_gate = tensor.nnet.sigmoid(slice_last(activation, 1) +
+                                          (cells * self.W_cell_to_forget) +
+                                          self.fg_bias)
+        next_cells = (forget_gate * cells +
+                      in_gate * nonlinearity(slice_last(activation, 2)))
+        out_gate = tensor.nnet.sigmoid(slice_last(activation, 3) +
+                                       (next_cells * self.W_cell_to_out) + 
+                                       self.og_bias)
+        next_states = out_gate * nonlinearity(next_cells)
+
+        if mask:
+            next_states = (mask[:, None] * next_states +
+                           (1 - mask[:, None]) * states)
+            next_cells = (mask[:, None] * next_cells +
+                          (1 - mask[:, None]) * cells)
+
+        return next_states, next_cells
 
 ###################################################
 # Diagonal Gaussian conditional density estimator #
@@ -492,8 +610,8 @@ class IMoDrawModels(BaseRecurrent, Initializable, Random):
                     dec_mlp_in, dec_rnn, dec_mlp_out, writer_mlp,
                     **kwargs):
         super(IMoDrawModels, self).__init__(**kwargs)
-        if not ((step_type == 'add') or (step_stype == 'jump')):
-            raise ValueError('step_stype must be jump or add')
+        if not ((step_type == 'add') or (step_type == 'jump')):
+            raise ValueError('step_type must be jump or add')
         # record the desired step count
         self.n_iter = n_iter
         self.step_type = step_type
@@ -743,8 +861,8 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
                  dec_mlp_in, dec_rnn, dec_mlp_out, dec_mlp_stop, writer_mlp,
                  **kwargs):
         super(IMoESDrawModels, self).__init__(**kwargs)
-        if not ((step_type == 'add') or (step_stype == 'jump')):
-            raise ValueError('step_stype must be jump or add')
+        if not ((step_type == 'add') or (step_type == 'jump')):
+            raise ValueError('step_type must be jump or add')
         # record the desired step count
         self.n_iter = n_iter
         self.step_type = step_type
@@ -769,7 +887,7 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
                          self.enc_mlp_in, self.enc_rnn, 
                          self.enc_mlp_out, self.enc_mlp_stop,
                          self.dec_mlp_in, self.dec_rnn, 
-                         self.dec_mlp_out, selc.dec_mlp_stop]
+                         self.dec_mlp_out, self.dec_mlp_stop]
         return
 
     def _allocate(self):
@@ -799,8 +917,6 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
     def get_dim(self, name):
         if name == 'c':
             return self.reader_mlp.get_dim('x_dim')
-        elif name in ['esp_enc', 'esp_dec']:
-            return 0
         elif name == 'z_mix':
             return self.mix_enc_mlp.get_dim('output')
         elif name == 'h_enc':
@@ -813,7 +929,13 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
             return self.dec_rnn.get_dim('states')
         elif name == 'c_dec':
             return self.dec_rnn.get_dim('cells')
-        elif name in ['kl', 'kl_esp', 'kl_z']:
+        elif name in ['esp_enc', 'esp_all']:
+            return 0
+        elif name in ['nll', 'nll_all']:
+            return 0
+        elif name in ['kl_esp', 'kl_z', 'kl_esp_all', 'kl_z_all']:
+            return 0
+        elif name in ['cost', 'cost_all']:
             return 0
         elif name == 'center_y':
             return 0
@@ -828,9 +950,9 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
     #------------------------------------------------------------------------
 
     @recurrent(sequences=['u'], contexts=['x', 's_mix'],
-               states=['c', 'esp_enc', 'esp_dec', 'h_enc', 'c_enc', , 'h_dec', 'c_dec', 'z_gen', 'kl_esp', 'kl_z'],
-               outputs=['c', 'esp_enc', 'esp_dec', 'h_enc', 'c_enc', 'h_dec', 'c_dec', 'z_gen', 'kl_esp', 'kl_z'])
-    def iterate(self, u, c, esp_enc, esp_dec, h_enc, c_enc, h_dec, c_dec, z_gen, kl_esp, kl_z, x, s_mix):
+               states=['c', 'h_enc', 'c_enc', 'h_dec', 'c_dec', 'esp_enc', 'nll', 'kl_esp', 'kl_z'],
+               outputs=['c', 'h_enc', 'c_enc', 'h_dec', 'c_dec', 'esp_enc', 'nll', 'kl_esp', 'kl_z'])
+    def iterate(self, u, c, h_enc, c_enc, h_dec, c_dec, esp_enc, nll, kl_esp, kl_z, x, s_mix):
         if self.step_type == 'add':
             # additive steps use c as a "direct workspace", which means it's
             # already directly comparable to x.
@@ -839,18 +961,10 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
             # non-additive steps use c_dec as a "latent workspace", which means
             # it needs to be transformed before being comparable to x.
             c_hat = self.writer_mlp.apply(c_dec)
-        # get the current "reconstruction error"
-        x_hat = x - tensor.nnet.sigmoid(c_hat)
-        # compute the encoder and decoder probabilities of stopping prior to
-        # performing another update of the "workspace".
-        esp_enc = self.enc_mlp_stop.apply( \
-                tensor.concatenate([c_hat, h_dec, x_hat], axis=1)).flatten()
-        esp_dec = self.dec_mlp_stop.apply( \
-                tensor.concatenate([c_hat, h_dec], axis=1)).flatten()
-        # compute KLd for the encoder/decoder early stopping probabilities
-        kl_esp = bernoulli_kld(esp_enc, esp_dec)
+        # get the NLL gradient
+        nll_grad = x - tensor.nnet.sigmoid(c_hat)
         # update the encoder RNN state
-        r = self.reader_mlp.apply(x, x_hat, h_dec)
+        r = self.reader_mlp.apply(x, nll_grad, h_dec)
         i_enc = self.enc_mlp_in.apply(tensor.concatenate([r, h_dec, s_mix], axis=1))
         h_enc, c_enc = self.enc_rnn.apply(states=h_enc, cells=c_enc,
                                           inputs=i_enc, iterate=False)
@@ -860,21 +974,36 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         # estimate decoder conditional over z given h_dec
         p_gen_mean, p_gen_logvar, p_z_gen = \
                 self.dec_mlp_out.apply(h_dec, u)
-        # compute KLd for the encoder/decoder distributions over z
-        kl_z = tensor.sum(gaussian_kld(q_gen_mean, q_gen_logvar, \
-                                       p_gen_mean, p_gen_logvar), axis=1)
         # update the decoder RNN state
         z_gen = q_z_gen # use samples from q while training
         i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
         h_dec, c_dec = self.dec_rnn.apply(states=h_dec, cells=c_dec, \
                                           inputs=i_dec, iterate=False)
-        # additive steps use c as the "workspace"
+        # update the workspace base on the updated decoder state
         if self.step_type == 'add':
+            # additive steps use c as a "direct workspace", which means it's
+            # already directly comparable to x.
             c = c + self.writer_mlp.apply(h_dec)
         else:
+            # non-additive steps use c_dec as a "latent workspace", which means
+            # it needs to be transformed before being comparable to x.
             c = self.writer_mlp.apply(c_dec)
-        # compute nll
-        return c, esp_enc, esp_dec, h_enc, c_enc, h_dec, c_dec, z_gen, kl_esp, kl_z
+        # compute the encoder and decoder probabilities of stopping after
+        # the update which we just performed.
+        c_hat = tensor.nnet.sigmoid(c)
+        nll_grad = x - c_hat
+        esp_enc = self.enc_mlp_stop.apply( \
+                tensor.concatenate([h_dec, nll_grad], axis=1)).flatten()
+        esp_dec = self.dec_mlp_stop.apply( \
+                tensor.concatenate([h_dec], axis=1)).flatten()
+        # compute nll for this step (post update)
+        nll = -1.0 * tensor.sum(log_prob_bernoulli(x, c_hat), axis=1)
+        # compute KLd between encoder and decoder stopping probabilities
+        kl_esp = bernoulli_kld(esp_enc, esp_dec)
+        # compute KLd between the encoder and decoder distributions over z
+        kl_z = tensor.sum(gaussian_kld(q_gen_mean, q_gen_logvar, \
+                                       p_gen_mean, p_gen_logvar), axis=1)
+        return c, h_enc, c_enc, h_dec, c_dec, esp_enc, nll, kl_esp, kl_z
 
     @recurrent(sequences=['u'], contexts=['s_mix'],
                states=['c', 'h_dec', 'c_dec'],
@@ -900,7 +1029,7 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
     #------------------------------------------------------------------------
 
     @application(inputs=['x_in', 'x_out'], 
-                 outputs=['recons', 'kl_esp', 'kl_z'])
+                 outputs=['cost', 'cost_all'])
     def reconstruct(self, x_in, x_out):
         # get important size and shape information
         batch_size = x_in.shape[0]
@@ -927,40 +1056,70 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
         c0 = tensor.zeros_like(x_out) + self.c_0
 
-        # compute KL-divergence information for the mixture init step
-        akl_mix = gaussian_kld(z_mix_mean, z_mix_logvar, \
-                                   self.zm_mean, self.zm_logvar)
-        kl_mix_np = tensor.sum(akl_q2p_mix, axis=1)
-        kl_mix = kl_mix_np.reshape((1, batch_size))
-        kl_p2q_mix = kl_p2q_mix_np.reshape((1, batch_size))
+        # get the initial reconstruction after mixture initialization
+        if self.step_type == 'add':
+            c_hat = tensor.nnet.sigmoid(c0)
+        else:
+            c_hat = tensor.nnet.sigmoid(self.writer_mlp.apply(cd0))
+        nll_grad = x_out - c_hat
+        # compute the encoder and decoder probabilities of stopping after
+        # performing only the mixture initialization step
+        esp_mix_enc = self.enc_mlp_stop.apply( \
+                tensor.concatenate([hd0, nll_grad], axis=1)).flatten()
+        esp_mix_dec = self.dec_mlp_stop.apply( \
+                tensor.concatenate([hd0], axis=1)).flatten()
+        # compute nll for this step (post update)
+        nll_mix = -1.0 * tensor.sum(log_prob_bernoulli(x_out, c_hat), axis=1)
+        # compute KLd for the encoder/decoder early stopping probabilities
+        kl_esp_mix = bernoulli_kld(esp_mix_enc, esp_mix_dec)
+        # compute KLd for the encoder/decoder distributions over z
+        kl_z_mix = tensor.sum(gaussian_kld(z_mix_mean, z_mix_logvar, \
+                                       self.zm_mean, self.zm_logvar), axis=1)
+        # reshape for easy stacking with the outputs of scan op
+        esp_mix = esp_mix_enc.reshape((1, batch_size))
+        nll_mix = nll_mix.reshape((1, batch_size))
+        kl_esp_mix = kl_esp_mix.reshape((1, batch_size))
+        kl_z_mix = kl_z_mix.reshape((1, batch_size))
 
         # get zero-mean, unit-std. Gaussian noise for use in scan op
         u_gen = self.theano_rng.normal(
                     size=(self.n_iter, batch_size, z_gen_dim),
                     avg=0., std=1.)
 
-        # run the multi-stage guided generative process
-        c, esp_enc, _, _, _, _, _, _, kl_esp, kl_z = \
+        # run the multi-stage guided generative process using scan
+        c, _, _, _, _, esp_scan, nll_scan, kl_esp_scan, kl_z_scan  = \
                 self.iterate(u=u_gen, c=c0, h_enc=he0, c_enc=ce0, \
                              h_dec=hd0, c_dec=cd0, x=x_out, s_mix=sm0)
 
-        # grab the observations generated by the multi-stage process
-        x_recons = tensor.nnet.sigmoid(c[-1,:,:])
-        x_recons.name = "reconstruction"
-        # group up the klds from mixture init and multi-stage generation
-        kl_q2p = tensor.vertical_stack(kl_q2p_mix, kl_q2p_gen)
-        kl_q2p.name = "kl_q2p"
-        kl_p2q = tensor.vertical_stack(kl_p2q_mix, kl_p2q_gen)
-        kl_p2q.name = "kl_p2q"
+        # stack up esps, nlls, and kls to get full per-step cost components
+        esp_all = tensor.vertical_stack(esp_mix, esp_scan)
+        nll_all = tensor.vertical_stack(nll_mix, nll_scan)
+        kl_esp_all = tensor.vertical_stack(kl_esp_mix, kl_esp_scan)
+        kl_z_all = tensor.vertical_stack(kl_z_mix, kl_z_scan)
+        nesp_all = 1.0 - esp_all # step-wise probabilities of continuation
 
-        # get step-wise values to allow cumulative early stopping stuff
+        ###############################################
+        # compute the VFE with early stopping allowed #
+        ###############################################
+
+        # get cumulative product of probabilities of continuation
+        nesp_prods = tensor.extra_ops.cumprod(nesp_all, axis=0)
+        # get cumulative sums of KLd, for total KLd up to a given step
+        kl_sums = tensor.extra_ops.cumsum(kl_esp_all, axis=0) + \
+                  tensor.extra_ops.cumsum(kl_z_all, axis=0)
+        # do stacking extensions to allow loop-free cost computation
         ones_row = tensor.alloc(1.0, 1, batch_size)
-        step_recons = tensor.nnet.sigmoid(c_all)
-        step_kld_q2p = kl_q2p
-        step_kld_p2q = kl_p2q
-        step_esps = tensor.vertical_stack(esp_enc, ones_row)
-
-        return x_recons, kl_q2p, kl_p2q
+        nesp_stack = tensor.vertical_stack(ones_row, nesp_prods)
+        esp_stack = tensor.vertical_stack(esp_all, ones_row)
+        shitty_shim_row_kl = kl_sums[-1].reshape((1, batch_size))
+        kl_stack = tensor.vertical_stack(kl_sums, shitty_shim_row_kl)
+        shitty_shim_row_nll = nll_all[-1].reshape((1, batch_size))
+        nll_stack = tensor.vertical_stack(nll_all, shitty_shim_row_nll)
+        # compute step-wise costs per training example
+        cost_all = (esp_stack * nesp_stack) * (nll_stack + kl_stack)
+        # to compute the final cost: sum over steps and average over trials
+        cost = tensor.sum(cost_all, axis=0).mean()
+        return cost, cost_all
 
     @application(inputs=['n_samples'], outputs=['samples'])
     def sample(self, n_samples):

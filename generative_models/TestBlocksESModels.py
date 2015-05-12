@@ -96,17 +96,16 @@ def test_with_model_init():
     va_samples = Xva.shape[0]
     batch_size = 250
 
-
     ############################################################
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
     x_dim = Xtr.shape[1]
-    write_dim = 200
-    enc_dim = 250
-    dec_dim = 250
+    write_dim = 220
+    enc_dim = 260
+    dec_dim = 260
     mix_dim = 20
     z_dim = 100
-    n_iter = 15
+    n_iter = 18
     
     rnninits = {
         'weights_init': IsotropicGaussian(0.01),
@@ -136,14 +135,14 @@ def test_with_model_init():
                         name="dec_mlp_in", **inits)
     enc_mlp_out = CondNet([], [enc_dim, z_dim], name="enc_mlp_out", **inits)
     dec_mlp_out = CondNet([], [dec_dim, z_dim], name="dec_mlp_out", **inits)
-    enc_rnn = LSTM(dim=enc_dim, name="enc_rnn", **rnninits)
-    dec_rnn = LSTM(dim=dec_dim, name="dec_rnn", **rnninits)
-    enc_mlp_stop = MLP([Tanh(), Tanh()], \
-                       [mix_dim, 250, (2*enc_dim + 2*dec_dim + mix_dim)], \
-                       name="mix_dec_mlp", **inits)
-    dec_mlp_stop = MLP([Tanh(), Tanh()], \
-                       [mix_dim, 250, (2*enc_dim + 2*dec_dim + mix_dim)], \
-                       name="mix_dec_mlp", **inits)
+    enc_rnn = BiasedLSTM(dim=enc_dim, ig_bias=2.0, fg_bias=2.0, \
+                         name="enc_rnn", **rnninits)
+    dec_rnn = BiasedLSTM(dim=dec_dim, ig_bias=2.0, fg_bias=2.0, \
+                         name="dec_rnn", **rnninits)
+    enc_mlp_stop = MLP([Tanh(), Sigmoid()], [(x_dim + dec_dim), 500, 1], \
+                       name="enc_mlp_stop", **inits)
+    dec_mlp_stop = MLP([Tanh(), Sigmoid()], [dec_dim, 500, 1], \
+                       name="dec_mlp_stop", **inits)
 
     draw = IMoESDrawModels(
                 n_iter,
@@ -167,24 +166,10 @@ def test_with_model_init():
     x_out_sym = T.matrix('x_out_sym')
 
     # collect reconstructions of x produced by the IMoDRAW model
-    x_recons, kl_q2p, kl_p2q = draw.reconstruct(x_in_sym, x_out_sym)
-
-    # get the expected NLL part of the VFE bound
-    nll_term = BinaryCrossEntropy().apply(x_out_sym, x_recons)
-    nll_term.name = "nll_term"
-
-    # get KL(q || p) and KL(p || q)
-    kld_q2p_term = kl_q2p.sum(axis=0).mean()
-    kld_q2p_term.name = "kld_q2p_term"
-    kld_p2q_term = kl_p2q.sum(axis=0).mean()
-    kld_p2q_term.name = "kld_p2q_term"
-
-    # get the proper VFE bound on NLL
-    nll_bound = nll_term + kld_q2p_term
-    nll_bound.name = "nll_bound"
+    vfe_cost, cost_all = draw.reconstruct(x_in_sym, x_out_sym)
 
     # grab handles for all the optimizable parameters in our cost
-    cg = ComputationGraph([nll_bound])
+    cg = ComputationGraph([vfe_cost])
     joint_params = VariableFilter(roles=[PARAMETER])(cg.variables)
 
     # apply some l2 regularization to the model parameters
@@ -192,8 +177,7 @@ def test_with_model_init():
     reg_term.name = "reg_term"
 
     # compute the full cost w.r.t. which we will optimize
-    total_cost = nll_term + (0.9 * kld_q2p_term) + \
-                 (0.1 * kld_p2q_term) + reg_term
+    total_cost = vfe_cost + reg_term
     total_cost.name = "total_cost"
 
     # Get the gradient of the joint cost for all optimizable parameters
@@ -216,8 +200,7 @@ def test_with_model_init():
             mom2_init=1e-4, smoothing=1e-6, max_grad_norm=10.0)
 
     # collect the outputs to return from this function
-    outputs = [total_cost, nll_bound, nll_term, kld_q2p_term, \
-               kld_p2q_term, reg_term]
+    outputs = [total_cost, vfe_cost, reg_term]
     # compile the theano function
     print("Compiling model training/update function...")
     train_joint = theano.function(inputs=[ x_in_sym, x_out_sym ], \
@@ -234,19 +217,15 @@ def test_with_model_init():
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     print("Beginning to train the model...")
-    out_file = open("TBM_RESULTS.txt", 'wb')
+    out_file = open("TBM_ES_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0002
-    momentum = 0.5
+    momentum = 0.9
     fresh_idx = np.arange(batch_size) + tr_samples
     for i in range(250000):
-        scale = min(1.0, ((i+1) / 1000.0))
+        scale = min(1.0, ((i+1) / 2500.0))
         if (((i + 1) % 10000) == 0):
             learn_rate = learn_rate * 0.95
-        if (i > 10000):
-            momentum = 0.90
-        else:
-            momentum = 0.50
         # get the indices of training samples for this batch update
         fresh_idx += batch_size
         if (np.max(fresh_idx) >= tr_samples):
@@ -256,25 +235,23 @@ def test_with_model_init():
         batch_idx = fresh_idx
         # set sgd and objective function hyperparams for this update
         zero_ary = np.zeros((1,))
-        lr_shared.set_value(to_fX(zero_ary + learn_rate))
-        mom_1_shared.set_value(to_fX(zero_ary + momentum))
+        lr_shared.set_value(to_fX(zero_ary + scale*learn_rate))
+        mom_1_shared.set_value(to_fX(zero_ary + scale*momentum))
         mom_2_shared.set_value(to_fX(zero_ary + 0.99))
 
         # perform a minibatch update and record the cost for this batch
         Xb = to_fX( Xtr.take(batch_idx, axis=0) )
         result = train_joint(Xb, Xb)
-
+        # aggregate costs over multiple minibatches
         costs = [(costs[j] + result[j]) for j in range(len(result))]
         if ((i % 200) == 0):
+            # occasionally dump information about the costs
             costs = [(v / 200.0) for v in costs]
             str1 = "-- batch {0:d} --".format(i)
             str2 = "    total_cost: {0:.4f}".format(costs[0])
             str3 = "    nll_bound : {0:.4f}".format(costs[1])
-            str4 = "    nll_term  : {0:.4f}".format(costs[2])
-            str5 = "    kld_q2p   : {0:.4f}".format(costs[3])
-            str6 = "    kld_p2q   : {0:.4f}".format(costs[4])
-            str7 = "    reg_term  : {0:.4f}".format(costs[5])
-            joint_str = "\n".join([str1, str2, str3, str4, str5, str6, str7])
+            str4 = "    reg_term  : {0:.4f}".format(costs[2])
+            joint_str = "\n".join([str1, str2, str3, str4])
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
@@ -282,12 +259,10 @@ def test_with_model_init():
         if ((i % 1000) == 0):
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
-            Xb = to_fX(Xva[:2000])
+            Xb = to_fX(Xva[:4000])
             va_costs = compute_nll_bound(Xb, Xb)
             str1 = "    va_nll_bound : {}".format(va_costs[1])
-            str2 = "    va_nll_term  : {}".format(va_costs[2])
-            str3 = "    va_kld_q2p   : {}".format(va_costs[3])
-            joint_str = "\n".join([str1, str2, str3])
+            joint_str = "\n".join([str1])
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
@@ -297,7 +272,7 @@ def test_with_model_init():
             samples = samples.reshape( (n_iter, N, 28, 28) )
             for j in xrange(n_iter):
                 img = img_grid(samples[j,:,:,:])
-                img.save("TBM-samples-b%06d-%03d.png" % (i, j))
+                img.save("TBM-ES-samples-b%06d-%03d.png" % (i, j))
 
 if __name__=="__main__":
     test_with_model_init()

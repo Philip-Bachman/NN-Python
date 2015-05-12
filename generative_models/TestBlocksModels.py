@@ -131,13 +131,15 @@ def test_with_model_init():
                       name="mix_dec_mlp", **inits)
     # setup the components of the generative DRAW model
     enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
-                        name="enc_mlp_in", **inits)
+                     name="enc_mlp_in", **inits)
     dec_mlp_in = MLP([Identity()], [             (z_dim + mix_dim), 4*dec_dim], \
-                        name="dec_mlp_in", **inits)
+                     name="dec_mlp_in", **inits)
     enc_mlp_out = CondNet([], [enc_dim, z_dim], name="enc_mlp_out", **inits)
     dec_mlp_out = CondNet([], [dec_dim, z_dim], name="dec_mlp_out", **inits)
-    enc_rnn = LSTM(dim=enc_dim, name="enc_rnn", **rnninits)
-    dec_rnn = LSTM(dim=dec_dim, name="dec_rnn", **rnninits)
+    enc_rnn = BiasedLSTM(dim=enc_dim, ig_bias=2.0, fg_bias=2.0, \
+                         name="enc_rnn", **rnninits)
+    dec_rnn = BiasedLSTM(dim=dec_dim, ig_bias=2.0, fg_bias=2.0, \
+                         name="dec_rnn", **rnninits)
 
     draw = IMoDrawModels(
                 n_iter,
