@@ -85,7 +85,7 @@ def img_grid(arr, global_scale=True):
 ########################################
 ########################################
 
-def test_with_model_init():
+def test_imocld_generation(step_type='add'):
     ##########################
     # Get some training data #
     ##########################
@@ -176,7 +176,7 @@ def test_with_model_init():
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     print("Beginning to train the model...")
-    out_file = open("TBCLM_ADD_RESULTS.txt", 'wb')
+    out_file = open("TBCLM_GEN_RESULTS_{}.txt".format(step_type), 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0002
     momentum = 0.5
@@ -222,7 +222,7 @@ def test_with_model_init():
             out_file.flush()
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
-            draw.save_model_params('TBCLM_ADD_TEST.pkl')
+            draw.save_model_params("TBCLM_GEN_PARAMS_{}.pkl".format(step_type))
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
             Xb = to_fX(Xva[:5000])
@@ -246,4 +246,5 @@ def test_with_model_init():
             #     img.save("TBM-samples-b%06d-%03d.png" % (i, j))
 
 if __name__=="__main__":
-    test_with_model_init()
+    test_imocld_generation(step_type='add')
+    #test_imocld_generation(step_type='jump')

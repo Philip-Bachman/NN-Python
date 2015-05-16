@@ -701,16 +701,16 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
         if self.step_type == 'add':
             # additive steps use c as a "direct workspace", which means it's
             # already directly comparable to x.
-            c_hat = c
+            c = c
         else:
             # non-additive steps use c_dec as a "latent workspace", which means
             # it needs to be transformed before being comparable to x.
-            c_hat = self.writer_mlp.apply(c_dec)
+            c = self.writer_mlp.apply(c_dec)
         # get the current "reconstruction error"
-        x_hat = x - tensor.nnet.sigmoid(c_hat)
-        r = self.reader_mlp.apply(x, x_hat, h_dec)
+        x_hat = x - tensor.nnet.sigmoid(c)
+        r_enc = self.reader_mlp.apply(x, x_hat, h_dec)
         # update the encoder RNN state
-        i_enc = self.enc_mlp_in.apply(tensor.concatenate([r, h_dec, s_mix], axis=1))
+        i_enc = self.enc_mlp_in.apply(tensor.concatenate([r_enc, h_dec, s_mix], axis=1))
         h_enc, c_enc = self.enc_rnn.apply(states=h_enc, cells=c_enc,
                                           inputs=i_enc, iterate=False)
         # estimate encoder conditional over z given h_enc
@@ -730,8 +730,8 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
         else:
             c = self.writer_mlp.apply(c_dec)
         # compute the NLL of the reconstructiion as of this step
-        c_hat = tensor.nnet.sigmoid(c)
-        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_hat))
+        c_as_x = tensor.nnet.sigmoid(c)
+        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x))
         # compute KL(q || p) and KL(p || q) for this step
         kl_q2p = tensor.sum(gaussian_kld(q_gen_mean, q_gen_logvar, \
                             p_gen_mean, p_gen_logvar), axis=1)
@@ -1005,8 +1005,8 @@ class IMoCLDrawModels(BaseRecurrent, Initializable, Random):
             c = self.writer_mlp.apply(c_dec)
         # compute the NLL of the reconstruction as of this step
         c_as_x = tensor.nnet.sigmoid(c)
-        x_m = (m * x) + ((1.0 - m) * c_as_x)
-        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, x_m))
+        m_inv = 1.0 - m
+        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x, mask=m_inv))
         # compute KL(q || p) and KL(p || q) for this step
         kl_q2p = tensor.sum(gaussian_kld(q_zg_mean, q_zg_logvar, \
                             p_zg_mean, p_zg_logvar), axis=1)
@@ -1023,7 +1023,7 @@ class IMoCLDrawModels(BaseRecurrent, Initializable, Random):
             c_as_x = tensor.nnet.sigmoid(c)
         else:
             c_as_x = tensor.nnet.sigmoid(self.writer_mlp.apply(c_dec))
-        x_m = (m * x) + ((1.0 - m) * c_as_x) # mask in/out known/imputed vals
+        x_m = (m * x) + ((1.0 - m) * c_as_x) # mask the known/imputed vals
         x_hat_enc = x_m - c_as_x             # get feedback used by encoder
         # update the encoder RNN state
         r_enc = self.reader_mlp.apply(x_m, x_hat_enc, h_dec)
@@ -1289,6 +1289,7 @@ class IMoCLDrawModels(BaseRecurrent, Initializable, Random):
         """
         pickle_file = open(f_name)
         numpy_params = cPickle.load(pickle_file)
+        self.set_model_params(numpy_params)
         pickle_file.close()
         return
 
@@ -1397,13 +1398,13 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         if self.step_type == 'add':
             # additive steps use c as a "direct workspace", which means it's
             # already directly comparable to x.
-            c_hat = c
+            c = c
         else:
             # non-additive steps use c_dec as a "latent workspace", which means
             # it needs to be transformed before being comparable to x.
-            c_hat = self.writer_mlp.apply(c_dec)
+            c = self.writer_mlp.apply(c_dec)
         # get the NLL gradient
-        nll_grad = x - tensor.nnet.sigmoid(c_hat)
+        nll_grad = x - tensor.nnet.sigmoid(c)
         # update the encoder RNN state
         r = self.reader_mlp.apply(x, nll_grad, h_dec)
         i_enc = self.enc_mlp_in.apply(tensor.concatenate([r, h_dec, s_mix], axis=1))
@@ -1431,8 +1432,8 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
             c = self.writer_mlp.apply(c_dec)
         # compute the encoder and decoder probabilities of stopping after
         # the update which we just performed.
-        c_hat = tensor.nnet.sigmoid(c)
-        nll_grad = x - c_hat
+        c_as_x = tensor.nnet.sigmoid(c)
+        nll_grad = x - c_as_x
         esp_enc = self.enc_mlp_stop.apply( \
                 tensor.concatenate([h_dec, nll_grad], axis=1)).flatten()
         esp_dec = self.dec_mlp_stop.apply( \
@@ -1440,7 +1441,7 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         esp_enc = tensor.nnet.sigmoid(esp_enc - 2.0)
         esp_dec = tensor.nnet.sigmoid(esp_dec - 2.0)
         # compute nll for this step (post update)
-        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_hat))
+        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x))
         # compute KLd between encoder and decoder stopping probabilities
         kl_esp = bernoulli_kld(esp_enc, esp_dec)
         # compute KLd between the encoder and decoder distributions over z
@@ -1501,10 +1502,10 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
 
         # get the initial reconstruction after mixture initialization
         if self.step_type == 'add':
-            c_hat = tensor.nnet.sigmoid(c0)
+            c_as_x = tensor.nnet.sigmoid(c0)
         else:
-            c_hat = tensor.nnet.sigmoid(self.writer_mlp.apply(cd0))
-        nll_grad = x_out - c_hat
+            c_as_x = tensor.nnet.sigmoid(self.writer_mlp.apply(cd0))
+        nll_grad = x_out - c_as_x
         # compute the encoder and decoder probabilities of stopping after
         # performing only the mixture initialization step
         esp_mix_enc = self.enc_mlp_stop.apply( \
@@ -1514,7 +1515,7 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         esp_mix_enc = tensor.nnet.sigmoid(esp_mix_enc - 2.0)
         esp_mix_dec = tensor.nnet.sigmoid(esp_mix_dec - 2.0)
         # compute nll for this step (post update)
-        nll_mix = -1.0 * tensor.flatten(log_prob_bernoulli(x_out, c_hat))
+        nll_mix = -1.0 * tensor.flatten(log_prob_bernoulli(x_out, c_as_x))
         # compute KLd for the encoder/decoder early stopping probabilities
         kl_esp_mix = bernoulli_kld(esp_mix_enc, esp_mix_dec)
         # compute KLd for the encoder/decoder distributions over z
@@ -1604,291 +1605,6 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         c, _, _, = self.decode(u=u_gen, c=c0, h_dec=hd0, c_dec=cd0, s_mix=sm0)
         #c, _, _, center_y, center_x, delta = self.decode(u)
         return tensor.nnet.sigmoid(c)
-
-##########################################################
-# Generalized DRAW model, with infinite mixtures and RL. #
-#                                                        #
-# This model is structured a bit differently, to allow   #
-# for training it as a sequential imputation model.      #
-#                                                        #
-# Sequential imputation seems to require a generative    #
-# process that operates more like a closed-loop          #
-# controller than an open-loop one.                      #
-##########################################################
-
-class ImpDrawModel(BaseRecurrent, Initializable, Random):
-    def __init__(self, n_iter, step_type, mix_enc_mlp, mix_dec_mlp,
-                    reader_mlp, enc_mlp_in, enc_rnn, enc_mlp_out,
-                    dec_mlp_in, dec_rnn, dec_mlp_out, writer_mlp,
-                    **kwargs):
-        super(ImpDrawModel, self).__init__(**kwargs)
-        if not ((step_type == 'add') or (step_type == 'jump')):
-            raise ValueError('step_type must be jump or add')
-        # record the desired step count
-        self.n_iter = n_iter
-        self.step_type = step_type
-        # grab handles for mixture stuff
-        self.mix_enc_mlp = mix_enc_mlp
-        self.mix_dec_mlp = mix_dec_mlp
-        # grab handles for ImpDRAW model stuff
-        self.reader_mlp = reader_mlp
-        self.enc_mlp_in = enc_mlp_in
-        self.enc_rnn = enc_rnn
-        self.enc_mlp_out = enc_mlp_out
-        self.dec_mlp_in = dec_mlp_in
-        self.dec_rnn = dec_rnn
-        self.dec_mlp_out = dec_mlp_out
-        self.writer_mlp = writer_mlp
-
-        # record the sub-models that underlie this model
-        self.children = [self.mix_enc_mlp, self.mix_dec_mlp, self.reader_mlp,
-                         self.enc_mlp_in, self.enc_rnn, self.enc_mlp_out,
-                         self.dec_mlp_in, self.dec_rnn, self.dec_mlp_out,
-                         self.writer_mlp]
-        return
-
-    def _allocate(self):
-        c_dim = self.get_dim('c')
-        zm_dim = self.get_dim('z_mix')
-        # self.c_0 provides the initial state of the canvas
-        self.c_0 = shared_floatx_nans((c_dim,), name='c_0')
-        # self.zm_mean provides the mean of z_mix
-        self.zm_mean = shared_floatx_nans((zm_dim,), name='zm_mean')
-        # self.zm_logvar provides the logvar of z_mix
-        self.zm_logvar = shared_floatx_nans((zm_dim,), name='zm_logvar')
-        add_role(self.c_0, PARAMETER)
-        add_role(self.zm_mean, PARAMETER)
-        add_role(self.zm_logvar, PARAMETER)
-        # add the theano shared variables to our parameter lists
-        self.params.extend([ self.c_0, self.zm_mean, self.zm_logvar ])
-        return
-
-    def _initialize(self):
-        # initialize to all parameters zeros...
-        for p in self.params:
-            p_nan = p.get_value(borrow=False)
-            p_zeros = numpy.zeros(p_nan.shape)
-            p.set_value(p_zeros.astype(theano.config.floatX))
-        return
- 
-    def get_dim(self, name):
-        if name in ['c', 'x', 'm', 'x_m']:
-            return self.reader_mlp.get_dim('x_dim')
-        elif name == 'z_mix':
-            return self.mix_enc_mlp.get_dim('output')
-        elif name == 'h_enc':
-            return self.enc_rnn.get_dim('states')
-        elif name == 'c_enc':
-            return self.enc_rnn.get_dim('cells')
-        elif name == 'z_gen':
-            return self.enc_mlp_out.get_dim('output')
-        elif name == 'h_dec':
-            return self.dec_rnn.get_dim('states')
-        elif name == 'c_dec':
-            return self.dec_rnn.get_dim('cells')
-        elif name in ['nll', 'kl_q2p', 'kl_p2q']:
-            return 0
-        elif name == 'center_y':
-            return 0
-        elif name == 'center_x':
-            return 0
-        elif name == 'delta':
-            return 0
-        else:
-            super(ImpDrawModel, self).get_dim(name)
-        return
-
-    #------------------------------------------------------------------------
-
-    @recurrent(sequences=['u'], contexts=['x', 'm'],
-               states=['c', 'h_enc', 'c_enc', 'h_dec', 'c_dec', 'kl_q2p', 'kl_p2q'],
-               outputs=['c', 'h_enc', 'c_enc', 'h_dec', 'c_dec', 'kl_q2p', 'kl_p2q'])
-    def iterate(self, u, c, h_enc, c_enc, h_dec, c_dec, kl_q2p, kl_p2q, x, m):
-        if self.step_type == 'add':
-            # additive steps use c as a "direct workspace", which means it's
-            # already directly comparable to x.
-            c_as_x = tensor.nnet.sigmoid(c)
-        else:
-            # non-additive steps use c_dec as a "latent workspace", which means
-            # it needs to be transformed before being comparable to x.
-            c_as_x = tensor.nnet.sigmoid(self.writer_mlp.apply(c_dec))
-        # apply the imputation mask...
-        x_m = (m * x) + ((1.0 - m) * c_as_x)
-        # compute gradient of NLL
-        x_hat = x - x_m
-        # guide policy reads from target x and NLL gradient x_hat
-        r_enc = self.reader_mlp.apply(x, x_hat, h_dec)
-        # primary policy reads from current partial imputation x_m
-        r_dec = self.reader_mlp.apply(x_m, x_m, h_dec)
-        # update the encoder RNN state
-        i_enc = self.enc_mlp_in.apply(tensor.concatenate([r_enc, h_dec], axis=1))
-        h_enc, c_enc = self.enc_rnn.apply(states=h_enc, cells=c_enc,
-                                          inputs=i_enc, iterate=False)
-        # estimate encoder conditional over z given h_enc
-        q_gen_mean, q_gen_logvar, q_z_gen = \
-                self.enc_mlp_out.apply(h_enc, u)
-        # estimate decoder conditional over z given h_dec
-        p_gen_mean, p_gen_logvar, p_z_gen = \
-                self.dec_mlp_out.apply(h_dec, u)
-        # update the decoder RNN state
-        z_gen = q_z_gen # use samples from q while training
-        i_dec = self.dec_mlp_in.apply(tensor.concatenate([r_dec, z_gen], axis=1))
-        h_dec, c_dec = self.dec_rnn.apply(states=h_dec, cells=c_dec, \
-                                          inputs=i_dec, iterate=False)
-        # additive steps use c as the "workspace"
-        if self.step_type == 'add':
-            c = c + self.writer_mlp.apply(h_dec)
-        else:
-            c = self.writer_mlp.apply(c_dec)
-        # compute KL(q || p) and KL(p || q) for this step
-        kl_q2p = tensor.sum(gaussian_kld(q_gen_mean, q_gen_logvar, \
-                            p_gen_mean, p_gen_logvar), axis=1)
-        kl_p2q = tensor.sum(gaussian_kld(p_gen_mean, p_gen_logvar, \
-                            q_gen_mean, q_gen_logvar), axis=1)
-        return c, h_enc, c_enc, h_dec, c_dec, kl_q2p, kl_p2q
-
-    @recurrent(sequences=['u'], contexts=['x', 'm'],
-               states=['c', 'h_dec', 'c_dec', 'x_m'],
-               outputs=['c', 'h_dec', 'c_dec', 'x_m'])
-    def decode(self, u, c, h_dec, c_dec, x_m, x, m):
-        if self.step_type == 'add':
-            # additive steps use c as a "direct workspace", which means it's
-            # already directly comparable to x.
-            c_as_x = tensor.nnet.sigmoid(c)
-        else:
-            # non-additive steps use c_dec as a "latent workspace", which means
-            # it needs to be transformed before being comparable to x.
-            c_as_x = tensor.nnet.sigmoid(self.writer_mlp.apply(c_dec))
-        # apply the imputation mask...
-        x_m = (m * x) + ((1.0 - m) * c_as_x)
-        # primary policy reads from current partial imputation c_hat
-        r_dec = self.reader_mlp.apply(x_m, x_m, h_dec)
-        # sample z from p(z | h_dec) -- we used q(z | h_enc) during training
-        p_gen_mean, p_gen_logvar, p_z_gen = self.dec_mlp_out.apply(h_dec, u)
-        z_gen = p_z_gen
-        # update the decoder RNN state
-        i_dec = self.dec_mlp_in.apply(tensor.concatenate([r_dec, z_gen], axis=1))
-        h_dec, c_dec = self.dec_rnn.apply(states=h_dec, cells=c_dec, \
-                                          inputs=i_dec, iterate=False)
-        # additive steps use c as the "workspace"
-        if self.step_type == 'add':
-            c = c + self.writer_mlp.apply(h_dec)
-        else:
-            c = self.writer_mlp.apply(c_dec)
-        c_as_x = tensor.nnet.sigmoid(c)
-        x_m = (m * x) + ((1.0 - m) * c_as_x)
-        return c, h_dec, c_dec, x_m
-
-    #------------------------------------------------------------------------
-
-    @application(inputs=['x', 'm'], 
-                 outputs=['recons', 'nll', 'kl_q2p', 'kl_p2q', 'x', 'x_m', 'c_as_x'])
-    def reconstruct(self, x, m):
-        # get important size and shape information
-        batch_size = x.shape[0]
-        z_mix_dim = self.get_dim('z_mix')
-        z_gen_dim = self.get_dim('z_gen')
-        ce_dim = self.get_dim('c_enc')
-        cd_dim = self.get_dim('c_dec')
-        he_dim = self.get_dim('h_enc')
-        hd_dim = self.get_dim('h_dec')
-
-        # sample zero-mean, unit std. Gaussian noise for mixture init
-        u_mix = self.theano_rng.normal(
-                    size=(batch_size, z_mix_dim),
-                    avg=0., std=1.)
-        # transform ZMUV noise based on q(z_mix | mask(x))
-        c0 = tensor.zeros_like(x) + self.c_0
-        c_as_x = tensor.nnet.sigmoid(c0)
-        x_m = (m * x) + ((1.0 - m) * c_as_x)
-        z_mix_mean, z_mix_logvar, z_mix = \
-                self.mix_enc_mlp.apply(x_m, u_mix)
-        # transform samples from q(z_mix | mask(x)) into initial state
-        mix_init = self.mix_dec_mlp.apply(z_mix)
-        cd0 = mix_init[:, :cd_dim]
-        hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
-        ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
-        he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):]
-
-        # compute KL-divergence information for the mixture init step
-        kl_q2p_mix = tensor.sum(gaussian_kld(z_mix_mean, z_mix_logvar, \
-                                self.zm_mean, self.zm_logvar), axis=1)
-        kl_p2q_mix = tensor.sum(gaussian_kld(self.zm_mean, self.zm_logvar, \
-                                z_mix_mean, z_mix_logvar), axis=1)
-        kl_q2p_mix = kl_q2p_mix.reshape((1, batch_size))
-        kl_p2q_mix = kl_p2q_mix.reshape((1, batch_size))
-
-        # get zero-mean, unit-std. Gaussian noise for use in scan op
-        u_gen = self.theano_rng.normal(
-                    size=(self.n_iter, batch_size, z_gen_dim),
-                    avg=0., std=1.)
-
-        # run the multi-stage guided imputation process
-        c, _, _, _, _, kl_q2p_gen, kl_p2q_gen = \
-                self.iterate(u=u_gen, c=c0, h_enc=he0, c_enc=ce0, \
-                             h_dec=hd0, c_dec=cd0, x=x, m=m)
-
-        # grab the observations generated by the multi-stage process
-        c_as_x = tensor.nnet.sigmoid(c[-1,:,:])
-        x_m = (m * x) + ((1.0 - m) * c_as_x)
-        recons = c
-        recons.name = "recons"
-        # get the NLL after the final update for each example
-        x_m_stable = (0.995 * x_m) + 0.0025
-        nll = -1.0 * log_prob_bernoulli(x, x_m_stable).flatten()
-        nll.name = "nll"
-        # group up the klds from mixture init and multi-stage generation
-        kl_q2p = tensor.vertical_stack(kl_q2p_mix, kl_q2p_gen)
-        kl_q2p.name = "kl_q2p"
-        kl_p2q = tensor.vertical_stack(kl_p2q_mix, kl_p2q_gen)
-        kl_p2q.name = "kl_p2q"
-        return recons, nll, kl_q2p, kl_p2q, x, x_m, c_as_x
-
-    @application(inputs=['x', 'm'], outputs=['recons'])
-    def sample(self, x, m):
-        """Sample imputations from model -- given inputs x and masks m.
-
-        Returns
-        -------
-
-        samples : tensor3 (x.shape[0], n_iter, x_dim)
-        """
-        # get important size and shape information
-        batch_size = x.shape[0]
-        z_mix_dim = self.get_dim('z_mix')
-        z_gen_dim = self.get_dim('z_gen')
-        cd_dim = self.get_dim('c_dec')
-        hd_dim = self.get_dim('h_dec')
-
-        # sample zero-mean, unit std. Gaussian noise for mixture init
-        u_mix = self.theano_rng.normal(
-                    size=(batch_size, z_mix_dim),
-                    avg=0., std=1.)
-        # transform ZMUV noise based on q(z_mix | mask(x))
-        c0 = tensor.zeros_like(x) + self.c_0
-        c_as_x = tensor.nnet.sigmoid(c0)
-        x_m = (m * x) + ((1.0 - m) * c_as_x)
-        z_mix_mean, z_mix_logvar, z_mix = \
-                self.mix_enc_mlp.apply(x_m, u_mix)
-        # transform samples from q(z_mix | mask(x)) into initial state
-        mix_init = self.mix_dec_mlp.apply(z_mix)
-        cd0 = mix_init[:, :cd_dim]
-        hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
-
-        # get zero-mean, unit-std. Gaussian noise for use in scan op
-        u_gen = self.theano_rng.normal(
-                    size=(self.n_iter, batch_size, z_gen_dim),
-                    avg=0., std=1.)
-
-        # run the multi-stage guided imputation process
-        _, _, _, x_m = self.decode(u=u_gen, c=c0, h_dec=hd0, \
-                              c_dec=cd0, x=x, m=m)
-
-        # grab the observations generated by the multi-stage process
-        # TODO: dimshuffle and concatenate to include c0
-        recons = x_m
-        recons.name = "recons"
-        return recons
 
 ##############################
 # Dot-matrix image generator #
