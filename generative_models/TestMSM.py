@@ -37,7 +37,7 @@ def test_with_model_init():
     del Xte
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 300
+    batch_size = 200
     batch_reps = 1
 
     ############################################################
@@ -46,7 +46,7 @@ def test_with_model_init():
     obs_dim = Xtr.shape[1]
     z_dim = 20
     h_dim = 200
-    ir_steps = 4
+    ir_steps = 6
     init_scale = 1.0
     
     x_type = 'bernoulli'
@@ -59,7 +59,7 @@ def test_with_model_init():
     # p_hi_given_si #
     #################
     params = {}
-    shared_config = [obs_dim, 500, 500]
+    shared_config = [obs_dim, 300, 300]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -79,7 +79,7 @@ def test_with_model_init():
     # p_sip1_given_si_hi #
     ######################
     params = {}
-    shared_config = [h_dim, 500, 500]
+    shared_config = [h_dim, 300, 300]
     output_config = [obs_dim, obs_dim, obs_dim]
     params['shared_config'] = shared_config
     params['output_config'] = output_config
@@ -138,7 +138,7 @@ def test_with_model_init():
     # q_hi_given_x_si #
     ###################
     params = {}
-    shared_config = [(obs_dim + obs_dim), 800, 800]
+    shared_config = [(obs_dim + obs_dim), 500, 500]
     top_config = [shared_config[-1], h_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -195,9 +195,8 @@ def test_with_model_init():
                 mom_1=scale*momentum, mom_2=0.99)
         MSM.set_train_switch(1.0)
         MSM.set_lam_nll(lam_nll=1.0)
-        MSM.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.95, lam_kld_p2q=0.05)
+        MSM.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.8, lam_kld_p2q=0.2)
         MSM.set_lam_kld_l1l2(lam_kld_l1l2=1.0)
-        MSM.set_lam_ent(lam_ent_p=0.0, lam_ent_q=0.0)
         MSM.set_lam_l2w(1e-4)
         MSM.set_drop_rate(0.0)
         MSM.q_hi_given_x_si.set_bias_noise(0.0)
@@ -213,9 +212,8 @@ def test_with_model_init():
             str2 = "    joint_cost: {0:.4f}".format(costs[0])
             str3 = "    nll_cost  : {0:.4f}".format(costs[1])
             str4 = "    kld_cost  : {0:.4f}".format(costs[2])
-            str5 = "    ent_cost  : {0:.4f}".format(costs[3])
-            str6 = "    reg_cost  : {0:.4f}".format(costs[4])
-            joint_str = "\n".join([str1, str2, str3, str4, str5, str6])
+            str5 = "    reg_cost  : {0:.4f}".format(costs[3])
+            joint_str = "\n".join([str1, str2, str3, str4, str5])
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
@@ -257,9 +255,8 @@ def test_with_model_init():
             file_name = "MSM_A_SAMPLES_CND_b{0:d}.png".format(i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # compute information about posterior KLds on validation set
-            raw_costs = MSM.compute_raw_costs(Xb_va, Xb_va)
-            init_nll, init_kld, q2p_kld, p2q_kld, step_nll, step_kld = raw_costs
-            step_nll[0] = step_nll[1] # scale of first NLL is overwhemling
+            raw_klds = MSM.compute_raw_klds(Xb_va, Xb_va)
+            init_kld, q2p_kld, p2q_kld = raw_klds
             file_name = "MSM_A_H0_KLDS_b{0:d}.png".format(i)
             utils.plot_stem(np.arange(init_kld.shape[1]), \
                     np.mean(init_kld, axis=0), file_name)

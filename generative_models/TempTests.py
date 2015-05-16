@@ -7,11 +7,8 @@ import utils as utils
 from load_data import load_udm, load_udm_ss, load_mnist, load_svhn, load_tfd
 from InfNet import InfNet, load_infnet_from_file
 from OneStageModel import OneStageModel
-from GIPair2 import GIPair2
-from GIStack import GIStack
 from NetLayers import relu_actfun, softplus_actfun, \
                       safe_softmax, tanh_actfun, row_shuffle
-from DKCode import PCA_theano
 from VideoUtils import VideoSink
 
 

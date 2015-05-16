@@ -17,6 +17,7 @@ from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 from NetLayers import relu_actfun, softplus_actfun, tanh_actfun, \
                       apply_mask, binarize_data, row_shuffle, to_fX
 from InfNet import InfNet
+from HydraNet import HydraNet
 from GPSImputer import GPSImputer
 from OneStageModel import OneStageModel
 from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist, \
@@ -127,15 +128,14 @@ def test_mnist(lam_q2p=0.5, \
     p_zi_given_xi = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
     p_zi_given_xi.init_biases(0.2)
-    #############
-    # p_xip1_zi #
-    #############
+    ###################
+    # p_xip1_given_zi #
+    ###################
     params = {}
     shared_config = [z_dim, 1000, 1000]
-    top_config = [shared_config[-1], obs_dim]
+    output_config = [obs_dim, obs_dim, obs_dim]
     params['shared_config'] = shared_config
-    params['mu_config'] = top_config
-    params['sigma_config'] = top_config
+    params['output_config'] = output_config
     params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
@@ -144,7 +144,7 @@ def test_mnist(lam_q2p=0.5, \
     params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
-    p_xip1_given_zi = InfNet(rng=rng, Xd=x_in_sym, \
+    p_xip1_given_zi = HydraNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
     p_xip1_given_zi.init_biases(0.2)
     ###################
@@ -174,6 +174,10 @@ def test_mnist(lam_q2p=0.5, \
     ###########################################################
     print("Building the GPSImputer...")
     gpsi_params = {}
+    gpsi_params['obs_dim'] = obs_dim
+    gpsi_params['z_dim'] = z_dim
+    gpsi_params['imp_steps'] = imp_steps
+    gpsi_params['step_type'] = 'swap'
     gpsi_params['x_type'] = x_type
     gpsi_params['obs_transform'] = 'sigmoid'
     gpsi_params['use_osm_mode'] = True
@@ -182,10 +186,6 @@ def test_mnist(lam_q2p=0.5, \
             p_zi_given_xi=p_zi_given_xi, \
             p_xip1_given_zi=p_xip1_given_zi, \
             q_zi_given_x_xi=q_zi_given_x_xi, \
-            obs_dim=obs_dim, \
-            z_dim=z_dim, \
-            imp_steps=imp_steps, \
-            step_type='swap', \
             params=gpsi_params, \
             shared_param_dicts=None)
     #########################################################################
@@ -404,15 +404,14 @@ def test_tfd(lam_q2p=0.5, \
     p_zi_given_xi = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
     p_zi_given_xi.init_biases(0.2)
-    #############
-    # p_xip1_zi #
-    #############
+    ###################
+    # p_xip1_given_zi #
+    ###################
     params = {}
     shared_config = [z_dim, 1000, 1000]
-    top_config = [shared_config[-1], obs_dim]
+    output_config = [obs_dim, obs_dim, obs_dim]
     params['shared_config'] = shared_config
-    params['mu_config'] = top_config
-    params['sigma_config'] = top_config
+    params['output_config'] = output_config
     params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
@@ -421,7 +420,7 @@ def test_tfd(lam_q2p=0.5, \
     params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
-    p_xip1_given_zi = InfNet(rng=rng, Xd=x_in_sym, \
+    p_xip1_given_zi = HydraNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
     p_xip1_given_zi.init_biases(0.2)
     ###################
@@ -451,6 +450,10 @@ def test_tfd(lam_q2p=0.5, \
     ###########################################################
     print("Building the GPSImputer...")
     gpsi_params = {}
+    gpsi_params['obs_dim'] = obs_dim
+    gpsi_params['z_dim'] = z_dim
+    gpsi_params['imp_steps'] = imp_steps
+    gpsi_params['step_type'] = 'swap'
     gpsi_params['x_type'] = x_type
     gpsi_params['obs_transform'] = 'sigmoid'
     gpsi_params['use_osm_mode'] = True
@@ -459,10 +462,6 @@ def test_tfd(lam_q2p=0.5, \
             p_zi_given_xi=p_zi_given_xi, \
             p_xip1_given_zi=p_xip1_given_zi, \
             q_zi_given_x_xi=q_zi_given_x_xi, \
-            obs_dim=obs_dim, \
-            z_dim=z_dim, \
-            imp_steps=imp_steps, \
-            step_type='swap', \
             params=gpsi_params, \
             shared_param_dicts=None)
     #########################################################################
@@ -679,15 +678,14 @@ def test_svhn(lam_q2p=0.5, \
     p_zi_given_xi = InfNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
     p_zi_given_xi.init_biases(0.2)
-    #############
-    # p_xip1_zi #
-    #############
+    ###################
+    # p_xip1_given_zi #
+    ###################
     params = {}
     shared_config = [z_dim, 1000, 1000]
-    top_config = [shared_config[-1], obs_dim]
+    output_config = [obs_dim, obs_dim, obs_dim]
     params['shared_config'] = shared_config
-    params['mu_config'] = top_config
-    params['sigma_config'] = top_config
+    params['output_config'] = output_config
     params['activation'] = relu_actfun
     params['init_scale'] = init_scale
     params['lam_l2a'] = 0.0
@@ -696,7 +694,7 @@ def test_svhn(lam_q2p=0.5, \
     params['bias_noise'] = 0.0
     params['input_noise'] = 0.0
     params['build_theano_funcs'] = False
-    p_xip1_given_zi = InfNet(rng=rng, Xd=x_in_sym, \
+    p_xip1_given_zi = HydraNet(rng=rng, Xd=x_in_sym, \
             params=params, shared_param_dicts=None)
     p_xip1_given_zi.init_biases(0.2)
     ###################
@@ -726,6 +724,10 @@ def test_svhn(lam_q2p=0.5, \
     ###########################################################
     print("Building the GPSImputer...")
     gpsi_params = {}
+    gpsi_params['obs_dim'] = obs_dim
+    gpsi_params['z_dim'] = z_dim
+    gpsi_params['imp_steps'] = imp_steps
+    gpsi_params['step_type'] = 'swap'
     gpsi_params['x_type'] = x_type
     gpsi_params['obs_transform'] = 'sigmoid'
     gpsi_params['use_osm_mode'] = True
@@ -734,10 +736,6 @@ def test_svhn(lam_q2p=0.5, \
             p_zi_given_xi=p_zi_given_xi, \
             p_xip1_given_zi=p_xip1_given_zi, \
             q_zi_given_x_xi=q_zi_given_x_xi, \
-            obs_dim=obs_dim, \
-            z_dim=z_dim, \
-            imp_steps=imp_steps, \
-            step_type='swap', \
             params=gpsi_params, \
             shared_param_dicts=None)
     #########################################################################

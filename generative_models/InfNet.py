@@ -568,6 +568,26 @@ class InfNet(object):
         f_handle.close()
         return
 
+    def save_to_dict(self):
+        """
+        Dump important stuff to a dict that can reboot the model.
+        """
+        model_dict = {}
+        # dump the dict self.params, which just holds "simple" python values
+        model_dict['params'] = self.params
+        # make a copy of self.shared_param_dicts, with numpy arrays in place
+        # of the theano shared variables
+        numpy_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
+        for layer_group in ['shared', 'mu', 'sigma']:
+            for shared_dict in self.shared_param_dicts[layer_group]:
+                numpy_dict = {}
+                for key in shared_dict:
+                    numpy_dict[key] = shared_dict[key].get_value(borrow=False)
+                numpy_param_dicts[layer_group].append(numpy_dict)
+        # dump the numpy version of self.shared_param_dicts
+        model_dict['numpy_param_dicts'] = numpy_param_dicts
+        return model_dict
+
 def load_infnet_from_file(f_name=None, rng=None, Xd=None, \
                           new_params=None):
     """
@@ -589,6 +609,36 @@ def load_infnet_from_file(f_name=None, rng=None, Xd=None, \
                 shared_dict[key] = theano.shared(val)
             self_dot_shared_param_dicts[layer_group].append(shared_dict)
     # now, create a PeaNet with the configuration we just unpickled
+    clone_net = InfNet(rng=rng, Xd=Xd, params=self_dot_params, \
+            shared_param_dicts=self_dot_shared_param_dicts)
+    # helpful output
+    print("==================================================")
+    print("LOADED InfNet WITH PARAMS:")
+    for k in self_dot_params:
+        print("    {0:s}: {1:s}".format(str(k), str(self_dot_params[k])))
+    print("==================================================")
+    return clone_net
+
+def load_infnet_from_dict(model_dict, rng=None, Xd=None, \
+                          new_params=None):
+    """
+    Load a clone of some previously trained model.
+    """
+    assert(not (f_name is None))
+    self_dot_params = model_dict['params']
+    if not (new_params is None):
+        for k in new_params:
+            self_dot_params[k] = new_params[k]
+    self_dot_numpy_param_dicts = model_dict['numpy_param_dict']
+    self_dot_shared_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
+    for layer_group in ['shared', 'mu', 'sigma']:
+        for numpy_dict in self_dot_numpy_param_dicts[layer_group]:
+            shared_dict = {}
+            for key in numpy_dict:
+                val = to_fX(numpy_dict[key])
+                shared_dict[key] = theano.shared(val)
+            self_dot_shared_param_dicts[layer_group].append(shared_dict)
+    # now, create an InfNet with the configuration we just unpacked
     clone_net = InfNet(rng=rng, Xd=Xd, params=self_dot_params, \
             shared_param_dicts=self_dot_shared_param_dicts)
     # helpful output

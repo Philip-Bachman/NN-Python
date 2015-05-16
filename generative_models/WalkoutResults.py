@@ -8,15 +8,12 @@ import theano.tensor as T
 from load_data import load_udm, load_udm_ss, load_mnist, load_tfd
 from PeaNet import PeaNet, load_peanet_from_file
 from InfNet import InfNet, load_infnet_from_file
-from GenNet import GenNet, load_gennet_from_file
+from HydraNet import HydraNet, load_hydranet_from_file
 from VCGLoop import VCGLoop
-from GIPair import GIPair
 from NetLayers import relu_actfun, softplus_actfun, \
                       safe_softmax, safe_log
-import GenNet as GNet
 import InfNet as INet
 import PeaNet as PNet
-from DKCode import PCA_theano
 from LogPDFs import cross_validate_sigma
 from sklearn.neighbors import KernelDensity
 

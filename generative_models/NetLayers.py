@@ -275,7 +275,7 @@ class HiddenLayer(object):
         # Layer construction complete...
         return
 
-    def apply(self, input, use_in=False, use_bn=False, use_drop=True):
+    def apply(self, input, use_in=False, use_bn=False, use_drop=False):
         """
         Apply feedforward to this input, returning several partial results.
         """

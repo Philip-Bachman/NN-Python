@@ -16,15 +16,12 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # phil's sweetness
 from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
                       apply_mask, to_fX
-from InfNet import InfNet
-from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 
-#
-# Important symbolic variables:
-#   Xd: Xd represents input at the "data variables" of the inferencer
-#
+#######################################
+# IMPLEMENT THE THING THAT DOES STUFF #
+#######################################
 
 class GPSImputer(object):
     """
@@ -36,13 +33,17 @@ class GPSImputer(object):
         x_out: the goal state for imputation
         x_mask: mask for state dims to keep fixed during imputation
         p_zi_given_xi: InfNet for stochastic part of step
-        p_xip1_given_zi: InfNet for deterministic part of step
+        p_xip1_given_zi: HydraNet for deterministic part of step
         q_zi_given_x_xi: InfNet for the guide policy
         obs_dim: dimension of the observations to generate
         z_dim: dimension of the stochastic component of p policies
         imp_steps: number of steps to run imputation procedure
         step_type: whether to use "add" steps or "swap" steps
         params: REQUIRED PARAMS SHOWN BELOW
+                obs_dim: dimension of inputs to reconstruct
+                z_dim: dimension of latent space for policy wobble
+                imp_steps: number of reconstruction steps to perform
+                step_type: either "add" or "jump"
                 x_type: can be "bernoulli" or "gaussian"
                 obs_transform: can be 'none' or 'sigmoid'
     """
@@ -51,10 +52,6 @@ class GPSImputer(object):
             p_zi_given_xi=None, \
             p_xip1_given_zi=None, \
             q_zi_given_x_xi=None, \
-            obs_dim=None, \
-            z_dim=None, \
-            imp_steps=4, \
-            step_type='add', \
             params=None, \
             shared_param_dicts=None):
         # setup a rng for this GIPair
@@ -62,6 +59,10 @@ class GPSImputer(object):
 
         # grab the user-provided parameters
         self.params = params
+        self.obs_dim = self.params['obs_dim']
+        self.z_dim = self.params['z_dim']
+        self.imp_steps = self.params['imp_steps']
+        self.step_type = self.params['step_types']
         self.x_type = self.params['x_type']
         assert((self.x_type == 'bernoulli') or (self.x_type == 'gaussian'))
         if 'obs_transform' in self.params:
@@ -79,14 +80,10 @@ class GPSImputer(object):
             self.use_osm_mode = self.params['use_osm_mode']
         else:
             self.use_osm_mode = False
+            self.params['use_osm_mode'] = False
         self.shared_param_dicts = shared_param_dicts
-
-        # record the dimensions of various spaces relevant to this model
-        self.obs_dim = obs_dim
-        self.z_dim = z_dim
-        self.imp_steps = imp_steps
-        assert((step_type == 'add') or (step_type == 'swap'))
-        self.step_type = step_type
+        
+        assert((self.step_type == 'add') or (self.step_type == 'swap'))
         if self.use_osm_mode:
             self.step_type = 'swap'
 
@@ -126,8 +123,6 @@ class GPSImputer(object):
         self.zi = []            # holds z samples for each i
         self.kldi_p2q = []      # KL(p || q) for each i
         self.kldi_q2p = []      # KL(q || p) for each i
-        self.enti_q = []        # "entropy" for q for each step
-        self.enti_p = []        # "entropy" for p for each step
 
         for i in range(self.imp_steps):
             print("Building imputation step {0:d}...".format(i+1))
@@ -155,15 +150,6 @@ class GPSImputer(object):
                     zi_p_mean, zi_p_logvar, 0.0, 0.0))
                 self.kldi_p2q.append(gaussian_kld( \
                     zi_p_mean, zi_p_logvar, 0.0, 0.0))
-                # compute relevant "entropies" for this step
-                self.enti_q.append(( \
-                        (0.10 * zi_p_mean**2.0) - \
-                        (0.50 * zi_p_logvar) + \
-                        (0.05 * zi_p_logvar**2.0)) )
-                self.enti_p.append(( \
-                        (0.10 * zi_p_mean**2.0) - \
-                        (0.50 * zi_p_logvar) + \
-                        (0.05 * zi_p_logvar**2.0)) )
             else:
                 # make zi samples that can be switched between zi_p and zi_q
                 self.zi.append( ((self.train_switch[0] * zi_q) + \
@@ -173,18 +159,11 @@ class GPSImputer(object):
                     zi_q_mean, zi_q_logvar, zi_p_mean, zi_p_logvar))
                 self.kldi_p2q.append(gaussian_kld( \
                     zi_p_mean, zi_p_logvar, zi_q_mean, zi_q_logvar))
-                # compute relevant "entropies" for this step
-                self.enti_q.append(( \
-                        (0.10 * zi_q_mean**2.0) - \
-                        (0.50 * zi_q_logvar) + \
-                        (0.05 * zi_q_logvar**2.0)) )
-                self.enti_p.append(( \
-                        (0.10 * zi_p_mean**2.0) - \
-                        (0.50 * zi_p_logvar) + \
-                        (0.05 * zi_p_logvar**2.0)) )
 
             # compute the next xi, given the sampled zi
-            xi_step, _ = self.p_xip1_given_zi.apply(self.zi[i], do_samples=False)
+            hydra_out = self.p_xip1_given_zi.apply(self.zi[i])
+            xi_step = hydra_out[-1]
+
             if (self.step_type == 'swap'):
                 # swap steps always do a full swap (like standard VAE)
                 xip1 = xi_step
@@ -217,10 +196,6 @@ class GPSImputer(object):
         self.lam_kld_p = theano.shared(value=zero_ary, name='gpsi_lam_kld_p')
         self.lam_kld_q = theano.shared(value=zero_ary, name='gpsi_lam_kld_q')
         self.set_lam_kld(lam_kld_p=0.5, lam_kld_q=0.5)
-        # setup stuff for controlling entropy in the primary and guide policies
-        self.lam_ent_q = theano.shared(value=zero_ary, name='msm_lam_ent_q')
-        self.lam_ent_p = theano.shared(value=zero_ary, name='msm_lam_ent_p')
-        self.set_lam_ent(lam_ent_p=0.0, lam_ent_q=0.01)
         # init shared var for controlling l2 regularization on params
         self.lam_l2w = theano.shared(value=zero_ary, name='msm_lam_l2w')
         self.set_lam_l2w(1e-5)
@@ -241,9 +216,7 @@ class GPSImputer(object):
         #####################################
         # CONSTRUCT THE ENTROPY-BASED COSTS #
         #####################################
-        self.ent_p, self.ent_q = self._construct_ent_costs()
-        self.ent_costs = (self.lam_ent_p[0] * self.ent_p) + \
-                         (self.lam_ent_q[0] * self.ent_q)
+        self.ent_costs = 0.0 * self.kld_costs
         self.ent_cost = T.mean(self.ent_costs)
         #################################
         # CONSTRUCT THE NLL-BASED COSTS #
@@ -289,7 +262,7 @@ class GPSImputer(object):
         self.sample_imputer = self._construct_sample_imputer()
         # make easy access points for some interesting parameters
         self.gen_inf_weights = self.p_zi_given_xi.shared_layers[0].W
-        self.gen_gen_weights = self.p_xip1_given_zi.mu_layers[-1].W
+        self.gen_gen_weights = self.p_xip1_given_zi.output_layers[-1].W
         return
 
     def set_sgd_params(self, lr=0.01, mom_1=0.9, mom_2=0.999):
@@ -325,17 +298,6 @@ class GPSImputer(object):
         self.lam_kld_p.set_value(to_fX(new_lam))
         new_lam = zero_ary + lam_kld_q
         self.lam_kld_q.set_value(to_fX(new_lam))
-        return
-
-    def set_lam_ent(self, lam_ent_p=0.1, lam_ent_q=0.0):
-        """
-        Set the relative weight of various entropy penalties/rewards.
-        """
-        zero_ary = np.zeros((1,))
-        new_lam = zero_ary + lam_ent_p
-        self.lam_ent_p.set_value(to_fX(new_lam))
-        new_lam = zero_ary + lam_ent_q
-        self.lam_ent_q.set_value(to_fX(new_lam))
         return
 
     def set_lam_l2w(self, lam_l2w=1e-3):
@@ -390,22 +352,6 @@ class GPSImputer(object):
         kld_pi = sum(kld_pis)
         kld_qi = sum(kld_qis)
         return [kld_pi, kld_qi]
-
-    def _construct_ent_costs(self):
-        """
-        Construct the policy entropy part of cost to minimize.
-        """
-        ent_pis = []
-        ent_qis = []
-        for i in range(self.imp_steps):
-            entpi = self.enti_p[i]
-            entqi = self.enti_q[i]
-            ent_pis.append(T.sum(entpi, axis=1, keepdims=True))
-            ent_qis.append(T.sum(entqi, axis=1, keepdims=True))
-        # compute the batch-wise costs
-        ent_pi = sum(ent_pis)
-        ent_qi = sum(ent_qis)
-        return [ent_pi, ent_qi]
 
     def _construct_reg_costs(self):
         """
@@ -504,6 +450,77 @@ class GPSImputer(object):
                 masked_samps.append(xsm)
             return model_samps, masked_samps
         return imputer_sampler
+
+    def save_to_file(self, f_name=None):
+        """
+        Dump important stuff to a Python pickle, so that we can reload this
+        model later.
+        """
+        assert(not (f_name is None))
+        f_handle = file(f_name, 'wb')
+        # dump the dict self.params, which just holds "simple" python values
+        cPickle.dump(self.params, f_handle, protocol=-1)
+        # make a copy of self.shared_param_dicts, with numpy arrays in place
+        # of the theano shared variables
+        numpy_param_dicts = {}
+        for key in self.shared_param_dicts:
+            numpy_ary = self.shared_param_dicts[key].get_value(borrow=False)
+            numpy_param_dicts[key] = numpy_ary
+        # dump the numpy version of self.shared_param_dicts to pickle file
+        cPickle.dump(numpy_param_dicts, f_handle, protocol=-1)
+        # get numpy dicts for each of the "child" models that we must save
+        child_model_dicts = {}
+        child_model_dicts['p_zi_given_xi'] = self.p_zi_given_xi.save_to_dict()
+        child_model_dicts['p_xip1_given_zi'] = self.p_xip1_given_zi.save_to_dict()
+        child_model_dicts['q_zi_given_x_xi'] = self.q_zi_given_x_xi.save_to_dict()
+        # dump the numpy child model dicts to the pickle file
+        cPickle.dump(child_model_dicts, f_handle, protocol=-1)
+        f_handle.close()
+        return
+
+def load_gpsimputer_from_file(f_name=None, rng=None):
+    """
+    Load a clone of some previously trained model.
+    """
+    from InfNet import load_infnet_from_dict
+    from HydraNet import load_hydranet_from_dict
+    assert(not (f_name is None))
+    pickle_file = open(f_name)
+    # reload the basic python parameters
+    self_dot_params = cPickle.load(pickle_file)
+    # reload the theano shared parameters
+    self_dot_numpy_param_dicts = cPickle.load(pickle_file)
+    self_dot_shared_param_dicts = {}
+    for key in self_dot_numpy_param_dicts:
+        val = to_fX(self_dot_numpy_param_dicts[key])
+        self_dot_shared_param_dicts[key] = theano.shared(val)
+    # reload the child models
+    child_model_dicts = cPickle.load(pickle_file)
+    xd = T.matrix()
+    p_zi_given_xi = load_infnet_from_dict( \
+            child_model_dicts['p_zi_given_xi'], rng=rng, Xd=xd)
+    p_xip1_given_zi = load_hydranet_from_dict( \
+            child_model_dicts['p_xip1_given_zi'], rng=rng, Xd=xd)
+    q_zi_given_x_xi = load_infnet_from_dict( \
+            child_model_dicts['q_zi_given_x_xi'], rng=rng, Xd=xd)
+    # now, create a new GPSImputer based on the loaded data
+    xi = T.matrix()
+    xm = T.matrix()
+    xo = T.matrix()
+    clone_net = GPSImputer(rng=rng, \
+                           x_in=xi, x_mask=xm, x_out=xo, \
+                           p_zi_given_xi=p_zi_given_xi, \
+                           p_xip1_given_zi=p_xip1_given_zi, \
+                           q_zi_given_x_xi=q_zi_given_x_xi, \
+                           params=self_dot_params, \
+                           shared_param_dicts=self_dot_shared_param_dicts)
+    # helpful output
+    print("==================================================")
+    print("LOADED GPSImputer WITH PARAMS:")
+    for k in self_dot_params:
+        print("    {0:s}: {1:s}".format(str(k), str(self_dot_params[k])))
+    print("==================================================")
+    return clone_net
 
 if __name__=="__main__":
     print("Hello world!")

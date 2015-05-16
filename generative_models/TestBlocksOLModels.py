@@ -120,7 +120,7 @@ def test_with_model_init():
     # setup the reader and writer
     read_dim = 2*x_dim
     reader_mlp = Reader(x_dim=x_dim, dec_dim=dec_dim, **inits)
-    writer_mlp = MLP([None, None], [dec_dim, write_dim, x_dim], \
+    writer_mlp = MLP([None, Tanh(), None], [dec_dim, write_dim, 2*write_dim, x_dim], \
                      name="writer_mlp", **inits)
     
     # setup the mixture weight sampler
@@ -141,7 +141,7 @@ def test_with_model_init():
     dec_rnn = BiasedLSTM(dim=dec_dim, ig_bias=2.0, fg_bias=2.0, \
                          name="dec_rnn", **rnninits)
 
-    draw = IMoDrawModels(
+    draw = IMoOLDrawModels(
                 n_iter,
                 step_type='jump', # step_type can be 'add' or 'jump'
                 mix_enc_mlp=mix_enc_mlp,
@@ -161,10 +161,10 @@ def test_with_model_init():
     x_out_sym = T.matrix('x_out_sym')
 
     # collect reconstructions of x produced by the IMoDRAW model
-    x_recons, kl_q2p, kl_p2q = draw.reconstruct(x_in_sym, x_out_sym)
+    recons, nll, kl_q2p, kl_p2q = draw.reconstruct(x_in_sym, x_out_sym)
 
     # get the expected NLL part of the VFE bound
-    nll_term = BinaryCrossEntropy().apply(x_out_sym, x_recons)
+    nll_term = nll.mean()
     nll_term.name = "nll_term"
 
     # get KL(q || p) and KL(p || q)
@@ -228,7 +228,7 @@ def test_with_model_init():
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     print("Beginning to train the model...")
-    out_file = open("TBM_RESULTS.txt", 'wb')
+    out_file = open("TBM_JUMP_RESULTS.txt", 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0002
     momentum = 0.5

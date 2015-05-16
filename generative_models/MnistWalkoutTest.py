@@ -8,6 +8,7 @@ import theano.tensor as T
 from load_data import load_udm, load_udm_ss, load_mnist, load_tfd
 from PeaNet import PeaNet, load_peanet_from_file
 from InfNet import InfNet, load_infnet_from_file
+from HydraNet import HydraNet, load_hydranet_from_file
 from VCGLoop import VCGLoop
 from OneStageModel import OneStageModel
 from NetLayers import relu_actfun, softplus_actfun, \
@@ -21,8 +22,8 @@ sys.setrecursionlimit(10**6)
 
 # DERP
 #RESULT_PATH = "MNIST_WALKOUT_TEST_KLD/"
-RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
-#RESULT_PATH = "MNIST_WALKOUT_TEST_MAX_KLD/"
+#RESULT_PATH = "MNIST_WALKOUT_TEST_VAE/"
+RESULT_PATH = "MNIST_WALKOUT_TEST_MAX_KLD/"
 PRIOR_DIM = 50
 LOGVAR_BOUND = 6.0
 
@@ -49,16 +50,11 @@ def pretrain_osm(lam_kld=0.0):
     Xtr_mean = np.mean(Xtr, axis=0)
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 400
-    batch_reps = 6
-    carry_frac = 0.25
-    carry_size = int(batch_size * carry_frac)
-    reset_prob = 0.04
+    batch_size = 250
+    batch_reps = 1
 
     # setup some symbolic variables and stuff
-    Xd = T.matrix('Xd_base')
-    Xc = T.matrix('Xc_base')
-    Xm = T.matrix('Xm_base')
+    x_in_sym = T.matrix('x_in_sym')
     data_dim = Xtr.shape[1]
 
     ##########################
@@ -66,12 +62,11 @@ def pretrain_osm(lam_kld=0.0):
     ##########################
     gn_params = {}
     shared_config = [PRIOR_DIM, 1000, 1000]
-    top_config = [shared_config[-1], data_dim]
+    output_config = [data_dim, data_dim]
     gn_params['shared_config'] = shared_config
-    gn_params['mu_config'] = top_config
-    gn_params['sigma_config'] = top_config
+    gn_params['output_config'] = output_config
     gn_params['activation'] = relu_actfun
-    gn_params['init_scale'] = 1.4
+    gn_params['init_scale'] = 1.2
     gn_params['lam_l2a'] = 0.0
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -85,17 +80,17 @@ def pretrain_osm(lam_kld=0.0):
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.4
+    in_params['init_scale'] = 1.2
     in_params['lam_l2a'] = 0.0
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
     in_params['bias_noise'] = 0.0
     in_params['input_noise'] = 0.0
     # Initialize the base networks for this OneStageModel
-    IN = InfNet(rng=rng, Xd=Xd, \
-            params=in_params, shared_param_dicts=None)
-    GN = InfNet(rng=rng, Xd=Xd, \
-            params=gn_params, shared_param_dicts=None)
+    IN = InfNet(rng=rng, Xd=x_in_sym, params=in_params, \
+                shared_param_dicts=None)
+    GN = HydraNet(rng=rng, Xd=x_in_sym, params=gn_params, \
+                  shared_param_dicts=None)
     # Initialize biases in IN and GN
     IN.init_biases(0.2)
     GN.init_biases(0.2)
@@ -107,7 +102,7 @@ def pretrain_osm(lam_kld=0.0):
     # in_fname = RESULT_PATH+"pt_osm_params_b110000_IN.pkl"
     # IN = load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, \
     #         new_params=None)
-    # GN = load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd, \
+    # GN = load_hydranet_from_file(f_name=gn_fname, rng=rng, Xd=Xd, \
     #         new_params=None)
     # in_params = IN.params
     # gn_params = GN.params
@@ -119,7 +114,7 @@ def pretrain_osm(lam_kld=0.0):
     osm_params['x_type'] = 'gaussian'
     osm_params['xt_transform'] = 'sigmoid'
     osm_params['logvar_bound'] = LOGVAR_BOUND
-    OSM = OneStageModel(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, \
+    OSM = OneStageModel(rng=rng, x_in=x_in_sym, \
             p_x_given_z=GN, q_z_given_x=IN, \
             x_dim=data_dim, z_dim=PRIOR_DIM, params=osm_params)
     OSM.set_lam_l2w(1e-5)
@@ -131,39 +126,23 @@ def pretrain_osm(lam_kld=0.0):
     # Set initial learning rate and basic SGD hyper parameters
     obs_costs = np.zeros((batch_size,))
     costs = [0. for i in range(10)]
-    learn_rate = 0.001
+    learn_rate = 0.0002
+    momentum = 0.0
     for i in range(200000):
-        scale = min(1.0, float(i) / 10000.0)
-        if ((i > 1) and ((i % 20000) == 0)):
-            learn_rate = learn_rate * 0.8
-        if (i < 50000):
-            momentum = 0.5
-        elif (i < 10000):
-            momentum = 0.7
-        else:
-            momentum = 0.9
-        if ((i == 0) or (npr.rand() < reset_prob)):
-            # sample a fully random batch
-            batch_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-        else:
-            # sample a partially random batch, which retains some portion of
-            # the worst scoring examples from the previous batch
-            fresh_idx = npr.randint(low=0,high=tr_samples,size=(batch_size-carry_size,))
-            batch_idx = np.concatenate((fresh_idx.ravel(), carry_idx.ravel()))
+        scale = min(1.0, float(i) / 5000.0)
+        kld_scale = min(1.0, float(i) / 50000.0)
+        if ((i > 1) and ((i % 10000) == 0)):
+            learn_rate = learn_rate * 0.9
         # do a minibatch update of the model, and compute some costs
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
-        Xd_batch = Xtr.take(tr_idx, axis=0)
-        Xc_batch = 0.0 * Xd_batch
-        Xm_batch = 0.0 * Xd_batch
+        Xb = Xtr.take(tr_idx, axis=0)
         # do a minibatch update of the model, and compute some costs
-        OSM.set_sgd_params(lr_1=(scale*learn_rate), \
-                mom_1=(scale*momentum), mom_2=0.98)
+        OSM.set_sgd_params(lr=(scale*learn_rate), \
+                           mom_1=(scale*momentum), mom_2=0.98)
         OSM.set_lam_nll(1.0)
-        OSM.set_lam_kld(lam_kld_1=scale*lam_kld, lam_kld_2=0.0, lam_kld_c=50.0)
-        result = OSM.train_joint(Xd_batch, Xc_batch, Xm_batch, batch_reps)
-        batch_costs = result[4] + result[5]
-        obs_costs = collect_obs_costs(batch_costs, batch_reps)
-        carry_idx = batch_idx[np.argsort(-obs_costs)[0:carry_size]]
+        OSM.set_lam_kld(lam_kld_1=(1.0 + (kld_scale * (lam_kld - 1.0))), \
+                        lam_kld_2=0.0)
+        result = OSM.train_joint(Xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result))]
         if ((i % 1000) == 0):
             # record and then reset the cost trackers
@@ -236,17 +215,14 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
     data_dim = Xtr.shape[1]
-    batch_size = 400
-    batch_reps = 5
+    batch_size = 250
+    batch_reps = 1
     Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
     Xtr_mean = (0.0 * Xtr_mean) + np.mean(np.mean(Xtr,axis=1))
-    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0)
 
     # Symbolic inputs
-    Xd = T.matrix(name='Xd')
-    Xc = T.matrix(name='Xc')
-    Xm = T.matrix(name='Xm')
-    Xt = T.matrix(name='Xt')
+    x_d = T.matrix(name='x_d')
+    x_t = T.matrix(name='x_t')
 
     ###############################
     # Setup discriminator network #
@@ -267,16 +243,16 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
     dn_params['vis_drop'] = 0.2
     dn_params['hid_drop'] = 0.5
     # Initialize a network object to use as the discriminator
-    DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
+    DN = PeaNet(rng=rng, Xd=x_t, params=dn_params)
     DN.init_biases(0.0)
 
     #######################################################
     # Load inferencer and generator from saved parameters #
     #######################################################
-    gn_fname = RESULT_PATH+"pt_osm_params_b100000_GN.pkl"
-    in_fname = RESULT_PATH+"pt_osm_params_b100000_IN.pkl"
-    IN = load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
-    GN = load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
+    gn_fname = RESULT_PATH+"pt_osm_params_b35000_GN.pkl"
+    in_fname = RESULT_PATH+"pt_osm_params_b35000_IN.pkl"
+    IN = load_infnet_from_file(f_name=in_fname, rng=rng, Xd=x_d)
+    GN = load_hydranet_from_file(f_name=gn_fname, rng=rng, Xd=x_d)
 
     ########################################################
     # Define parameters for the VCGLoop, and initialize it #
@@ -289,15 +265,16 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
     vcgl_params['cost_decay'] = 0.1
     vcgl_params['chain_type'] = 'walkout'
     vcgl_params['lam_l2d'] = 5e-2
-    VCGL = VCGLoop(rng=rng, Xd=Xd, Xc=Xc, Xm=Xm, Xt=Xt, \
-                 i_net=IN, g_net=GN, d_net=DN, chain_len=5, \
-                 data_dim=data_dim, prior_dim=PRIOR_DIM, params=vcgl_params)
+    VCGL = VCGLoop(rng=rng, x_d=x_d, x_t=x_t, \
+                 i_net=IN, g_net=GN, d_net=DN, \
+                 chain_len=10, data_dim=data_dim, \
+                 z_dim=PRIOR_DIM, params=vcgl_params)
 
     out_file = open(RESULT_PATH+"pt_walk_results.txt", 'wb')
     ####################################################
     # Train the VCGLoop by unrolling and applying BPTT #
     ####################################################
-    learn_rate = 0.0005
+    learn_rate = 0.0003
     cost_1 = [0. for i in range(10)]
     for i in range(100000):
         scale = float(min((i+1), 5000)) / 5000.0
@@ -308,26 +285,21 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
         ########################################
         VCGL.set_all_sgd_params(learn_rate=(scale*learn_rate), \
                 mom_1=0.9, mom_2=0.99)
-        VCGL.set_disc_weights(dweight_gn=25.0, dweight_dn=25.0)
+        VCGL.set_disc_weights(dweight_gn=20.0, dweight_dn=20.0)
         VCGL.set_lam_chain_nll(1.0)
         VCGL.set_lam_chain_kld(lam_kld)
-        VCGL.set_lam_mask_nll(0.0)
-        VCGL.set_lam_mask_kld(0.0)
         # get some data to train with
         tr_idx = npr.randint(low=0,high=tr_samples,size=(batch_size,))
         Xd_batch = Xtr.take(tr_idx, axis=0)
-        Xc_batch = 0.0 * Xd_batch
-        Xm_batch = 0.0 * Xd_batch
-        # examples from the target distribution, to train discriminator
-        tr_idx = npr.randint(low=0,high=tr_samples,size=(2*batch_size,))
+        tr_idx = npr.randint(low=0,high=tr_samples,size=(3*batch_size,))
         Xt_batch = Xtr.take(tr_idx, axis=0)
         # do a minibatch update of the model, and compute some costs
-        outputs = VCGL.train_joint(Xd_batch, Xc_batch, Xm_batch, Xt_batch, batch_reps)
+        outputs = VCGL.train_joint(Xd_batch, Xt_batch, batch_reps)
         cost_1 = [(cost_1[k] + 1.*outputs[k]) for k in range(len(outputs))]
         if ((i % 500) == 0):
             cost_1 = [(v / 500.0) for v in cost_1]
             o_str_1 = "batch: {0:d}, joint_cost: {1:.4f}, chain_nll_cost: {2:.4f}, chain_kld_cost: {3:.4f}, disc_cost_gn: {4:.4f}, disc_cost_dn: {5:.4f}".format( \
-                    i, cost_1[0], cost_1[1], cost_1[2], cost_1[5], cost_1[6])
+                    i, cost_1[0], cost_1[1], cost_1[2], cost_1[3], cost_1[4])
             print(o_str_1)
             cost_1 = [0. for v in cost_1]
         if ((i % 1000) == 0):
@@ -337,18 +309,7 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
             # draw some chains of samples from the VAE loop
             file_name = RESULT_PATH+"pt_walk_chain_samples_b{0:d}.png".format(i)
             Xd_samps = np.repeat(Xd_batch, 3, axis=0)
-            sample_lists = VCGL.OSM.sample_from_chain(Xd_samps, loop_iters=20)
-            Xs = np.vstack(sample_lists["data samples"])
-            utils.visualize_samples(Xs, file_name, num_rows=20)
-            # draw some masked chains of samples from the VAE loop
-            file_name = RESULT_PATH+"pt_walk_mask_samples_b{0:d}.png".format(i)
-            Xd_samps = np.repeat(Xc_mean[0:Xd_batch.shape[0],:], 3, axis=0)
-            Xc_samps = np.repeat(Xd_batch, 3, axis=0)
-            Xm_rand = sample_masks(Xc_samps, drop_prob=0.0)
-            Xm_patch = sample_patch_masks(Xc_samps, (28,28), (15,15))
-            Xm_samps = Xm_rand * Xm_patch
-            sample_lists = VCGL.OSM.sample_from_chain(Xd_samps, \
-                    X_c=Xc_samps, X_m=Xm_samps, loop_iters=20)
+            sample_lists = VCGL.sample_from_chain(Xd_samps, loop_iters=20)
             Xs = np.vstack(sample_lists["data samples"])
             utils.visualize_samples(Xs, file_name, num_rows=20)
             # draw some samples independently from the GenNet's prior
@@ -364,7 +325,7 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
 
 if __name__=="__main__":
     # FOR EXTREME KLD REGULARIZATION
-    pretrain_osm(lam_kld=24.0)
+    #pretrain_osm(lam_kld=24.0)
     train_walk_from_pretrained_osm(lam_kld=24.0)
 
     # FOR KLD MODEL

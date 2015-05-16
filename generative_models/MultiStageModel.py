@@ -35,7 +35,7 @@ class MultiStageModel(object):
         x_out: the target output to decode
         p_s0_given_z: InfNet for initializing "canvas" state
         p_hi_given_si: InfNet for hi given si
-        p_sip1_given_si_hi: InfNet for sip1 given si and hi
+        p_sip1_given_si_hi: HydraNet for sip1 given si and hi
         q_z_given_x: InfNet for z given x
         q_hi_given_x_si: InfNet for hi given x and si
         obs_dim: dimension of the observations to generate
@@ -68,13 +68,13 @@ class MultiStageModel(object):
             assert((self.params['obs_transform'] == 'sigmoid') or \
                     (self.params['obs_transform'] == 'none'))
             if self.params['obs_transform'] == 'sigmoid':
-                self.obs_transform = lambda x: T.nnet.sigmoid(x)
+                self.obs_transform = lambda x: T.nnet.sigmoid(20.0 * T.tanh(0.05 * x))
             else:
                 self.obs_transform = lambda x: x
         else:
-            self.obs_transform = lambda x: T.nnet.sigmoid(x)
+            self.obs_transform = lambda x: T.nnet.sigmoid(20.0 * T.tanh(0.05 * x))
         if self.x_type == 'bernoulli':
-            self.obs_transform = lambda x: T.nnet.sigmoid(x)
+            self.obs_transform = lambda x: T.nnet.sigmoid(20.0 * T.tanh(0.05 * x))
         self.shared_param_dicts = shared_param_dicts
 
         # record the dimensions of various spaces relevant to this model
@@ -94,8 +94,7 @@ class MultiStageModel(object):
         # computation graph created to describe this MultiStageModel
         self.x_in = x_in
         self.x_out = x_out
-        self.batch_reps = T.lscalar()
-        self.iter_clock = T.eye(self.ir_steps)
+        self.hi_zmuv = T.tensor3() # for ZMUV Gaussian samples to use in scan
 
         # setup switching variable for changing between sampling/training
         zero_ary = to_fX( np.zeros((1,)) )
@@ -126,6 +125,15 @@ class MultiStageModel(object):
             self.obs_logvar = self.shared_param_dicts['obs_logvar']
             self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar)
 
+        # setup a function for computing reconstruction log likelihood
+        if self.x_type == 'bernoulli':
+            self.log_prob_func = lambda xo, xh: \
+                    (-1.0 * log_prob_bernoulli(xo, xh))
+        else:
+            self.log_prob_func = lambda xo, xh: \
+                    (-1.0 * log_prob_gaussian2(xo, xh, \
+                     log_vars=self.bounded_logvar))
+
         # get a drop mask that drops things with probability p
         drop_scale = 1. / (1. - self.drop_rate[0])
         drop_rnd = self.rng.uniform(size=self.x_out.shape, \
@@ -140,78 +148,63 @@ class MultiStageModel(object):
         self.q_z_mean, self.q_z_logvar, self.z = \
                 self.q_z_given_x.apply(drop_x, do_samples=True)
         # get initial observation state
-        self.s0_obs, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
+        self.s0, _ = self.p_s0_given_z.apply(self.z, do_samples=False)
 
-        ###############################################################
-        # Setup the iterative refinement loop, starting from self.s0. #
-        ###############################################################
-        self.si_obs = [self.s0_obs]   # holds si_obs for each i
-        self.hi = []                  # holds hi for each i
-        self.kldi_q2p = []            # holds KL(q || p) for each i
-        self.kldi_p2q = []            # holds KL(p || q) for each i
-        self.enti_q = []              # holds ENT(q) for each i
-        self.enti_p = []              # holds ENT(p) for each i
+        # gather KLd and NLL for the initialization step
+        self.init_klds = gaussian_kld(self.q_z_mean, self.q_z_logvar, \
+                                      self.p_z_mean, self.p_z_logvar)
+        self.init_nlls =  -1.0 * \
+                self.log_prob_func(self.x_out, self.obs_transform(self.s0))
 
-        for i in range(self.ir_steps):
-            print("Building MSM step {0:d}...".format(i+1))
+        ##################################################
+        # Setup the iterative generation loop using scan #
+        ##################################################
+        def ir_step_func(hi_zmuv, sim1):
             # get variables used throughout this refinement step
-            si_obs = self.si_obs[i]
-            si_obs_trans = self.obs_transform(si_obs)
-            grad_ll = self.x_out - si_obs_trans
-            clock_vals = T.alloc(0.0, si_obs.shape[0], self.ir_steps) + \
-                    self.iter_clock[i]
-
-            # get a drop mask that drops things with probability p
-            drop_scale = 1. / (1. - self.drop_rate[0])
-            drop_rnd = self.rng.uniform(size=self.x_out.shape, \
-                    low=0.0, high=1.0, dtype=theano.config.floatX)
-            drop_mask = drop_scale * (drop_rnd > self.drop_rate[0])
-
-            # get droppy versions of
-            drop_obs = drop_mask * si_obs_trans
-            drop_grad = drop_mask * grad_ll
+            sim1_obs = self.obs_transform(sim1) # transform state -> obs
+            grad_ll = self.x_out - sim1_obs
 
             # get samples of next hi, conditioned on current si
-            hi_p_mean, hi_p_logvar, hi_p = self.p_hi_given_si.apply( \
-                    drop_obs, do_samples=True)
+            hi_p_mean, hi_p_logvar = self.p_hi_given_si.apply( \
+                    sim1_obs, do_samples=False)
             # now we build the model for variational hi given si
-            hi_q_mean, hi_q_logvar, hi_q = self.q_hi_given_x_si.apply( \
-                    T.horizontal_stack(drop_grad, drop_obs), \
-                    do_samples=True)
+            hi_q_mean, hi_q_logvar = self.q_hi_given_x_si.apply( \
+                    T.horizontal_stack(grad_ll, sim1_obs), \
+                    do_samples=False)
+            hi_q = (T.exp(0.5 * hi_q_logvar) * hi_zmuv) + hi_q_mean
+            hi_p = (T.exp(0.5 * hi_p_logvar) * hi_zmuv) + hi_p_mean
 
             # make hi samples that can be switched between hi_p and hi_q
-            self.hi.append( ((self.train_switch[0] * hi_q) + \
+            hi = ( ((self.train_switch[0] * hi_q) + \
                     ((1.0 - self.train_switch[0]) * hi_p)) )
 
-            # compute relevant KLds for this step
-            self.kldi_q2p.append(gaussian_kld( \
-                hi_q_mean, hi_q_logvar, hi_p_mean, hi_p_logvar))
-            self.kldi_p2q.append(gaussian_kld( \
-                hi_p_mean, hi_p_logvar, hi_q_mean, hi_q_logvar))
-            # compute relevant "entropy" costs for this step
-            self.enti_q.append(( \
-                    (0.10 * hi_q_mean**2.0) - \
-                    (0.50 * hi_q_logvar) + \
-                    (0.05 * hi_q_logvar**2.0)) )
-            self.enti_p.append(( \
-                    (0.10 * hi_p_mean**2.0) - \
-                    (0.50 * hi_p_logvar) + \
-                    (0.05 * hi_p_logvar**2.0)) )
-
             # p_sip1_given_si_hi is conditioned on si and  hi.
-            ig_vals, fg_vals, in_vals = self.p_sip1_given_si_hi.apply( \
-                    self.hi[i])
-                    #T.horizontal_stack(self.hi[i], si_obs))
+            ig_vals, fg_vals, in_vals = self.p_sip1_given_si_hi.apply(hi)
                     
             # get the transformed values (for an LSTM style update)
-            i_gate = T.nnet.sigmoid(ig_vals + 2.0)
-            f_gate = T.nnet.sigmoid(fg_vals + 2.0)
-            novel_input = 20.0 * T.tanh(0.05 * in_vals)
-            # perform an LSTM-like update of si
-            sip1_obs = (novel_input * i_gate) + (si_obs * f_gate)
+            i_gate = 1.0 * T.nnet.sigmoid(ig_vals + 2.0)
+            f_gate = 1.0 * T.nnet.sigmoid(fg_vals + 2.0)
+            # perform an LSTM-like update of the state sim1 -> si
+            si = (in_vals * i_gate) + (sim1 * f_gate)
 
-            # record the updated state of the generative process
-            self.si_obs.append(sip1_obs)
+            # compute generator NLL for this step
+            nlli = self.log_prob_func(self.x_out, self.obs_transform(si))
+            # compute relevant KLds for this step
+            kldi_q2p = gaussian_kld(hi_q_mean, hi_q_logvar, \
+                                    hi_p_mean, hi_p_logvar)
+            kldi_p2q = gaussian_kld(hi_p_mean, hi_p_logvar, \
+                                    hi_q_mean, hi_q_logvar)
+            return si, nlli, kldi_q2p, kldi_p2q
+
+        init_values = [self.s0, None, None, None]
+
+        self.scan_results, self.scan_updates = theano.scan(ir_step_func, \
+                outputs_info=init_values, sequences=self.hi_zmuv)
+
+        self.si = self.scan_results[0]
+        self.nlli = self.scan_results[1]
+        self.kldi_q2p = self.scan_results[2]
+        self.kldi_p2q = self.scan_results[3]
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -234,26 +227,22 @@ class MultiStageModel(object):
         self.lam_kld_q2p = theano.shared(value=zero_ary, name='msm_lam_kld_q2p')
         self.lam_kld_p2q = theano.shared(value=zero_ary, name='msm_lam_kld_p2q')
         self.set_lam_kld(lam_kld_z=1.0, lam_kld_q2p=0.7, lam_kld_p2q=0.3)
-        # setup stuff for controlling entropy in the primary and guide policies
-        self.lam_ent_q = theano.shared(value=zero_ary, name='msm_lam_ent_q')
-        self.lam_ent_p = theano.shared(value=zero_ary, name='msm_lam_ent_p')
-        self.set_lam_ent(lam_ent_q=0.1, lam_ent_p=0.0)
         # init shared var for controlling l2 regularization on params
         self.lam_l2w = theano.shared(value=zero_ary, name='msm_lam_l2w')
         self.set_lam_l2w(1e-5)
 
         # Grab all of the "optimizable" parameters in "group 1"
-        self.group_1_params = []
-        self.group_1_params.extend(self.q_z_given_x.mlp_params)
-        self.group_1_params.extend(self.q_hi_given_x_si.mlp_params)
+        self.q_params = []
+        self.q_params.extend(self.q_z_given_x.mlp_params)
+        self.q_params.extend(self.q_hi_given_x_si.mlp_params)
         # Grab all of the "optimizable" parameters in "group 2"
-        self.group_2_params = [self.p_z_mean, self.p_z_logvar]
-        self.group_2_params.extend(self.p_hi_given_si.mlp_params)
-        self.group_2_params.extend(self.p_sip1_given_si_hi.mlp_params)
-        self.group_2_params.extend(self.p_s0_given_z.mlp_params)
+        self.p_params = [self.p_z_mean, self.p_z_logvar]
+        self.p_params.extend(self.p_hi_given_si.mlp_params)
+        self.p_params.extend(self.p_sip1_given_si_hi.mlp_params)
+        self.p_params.extend(self.p_s0_given_z.mlp_params)
 
         # Make a joint list of parameters group 1/2
-        self.joint_params = self.group_1_params + self.group_2_params
+        self.joint_params = self.q_params + self.p_params
 
         #################################
         # CONSTRUCT THE KLD-BASED COSTS #
@@ -280,21 +269,10 @@ class MultiStageModel(object):
         self.kld_cost = T.mean(self.kld_costs)
         self.kl2_cost = T.mean(self.kl2_costs)
         self.kld_l1l2_cost = T.mean(self.kld_l1l2_costs)
-        #####################################
-        # CONSTRUCT THE ENTROPY-BASED COSTS #
-        #####################################
-        self.ent_p, self.ent_q = self._construct_ent_costs()
-        self.ent_costs = (self.lam_ent_p[0] * self.ent_p) + \
-                         (self.lam_ent_q[0] * self.ent_q)
-        self.ent_cost = T.mean(self.ent_costs)
         #################################
         # CONSTRUCT THE NLL-BASED COSTS #
         #################################
-        self.seq_nll_costs = []
-        for i in range(len(self.si_obs)):
-            nll_i = self._construct_nll_costs(self.x_out, step_num=i)
-            self.seq_nll_costs.append(nll_i)
-        self.nll_costs = self.seq_nll_costs[-1]
+        self.nll_costs = self.nlli[-1]
         self.nll_cost = self.lam_nll[0] * T.mean(self.nll_costs)
         ########################################
         # CONSTRUCT THE REST OF THE JOINT COST #
@@ -302,11 +280,11 @@ class MultiStageModel(object):
         param_reg_cost = self._construct_reg_costs()
         self.reg_cost = self.lam_l2w[0] * param_reg_cost
         self.joint_cost = self.nll_cost + self.kld_l1l2_cost + \
-                          self.ent_cost + self.reg_cost
+                          self.reg_cost
         ##############################
         # CONSTRUCT A PER-INPUT COST #
         ##############################
-        self.obs_costs = self.nll_costs + self.kld_l1l2_costs + self.ent_costs
+        self.obs_costs = self.nll_costs + self.kld_l1l2_costs
 
         # Get the gradient of the joint cost for all optimizable parameters
         print("Computing gradients of self.joint_cost...")
@@ -316,23 +294,26 @@ class MultiStageModel(object):
             self.joint_grads[p] = grad_list[i]
 
         # Construct the updates for the generator and inferencer networks
-        self.group_1_updates = get_adam_updates(params=self.group_1_params, \
+        self.q_updates = get_adam_updates(params=self.q_params, \
                 grads=self.joint_grads, alpha=self.lr_1, \
                 beta1=self.mom_1, beta2=self.mom_2, \
                 mom2_init=1e-3, smoothing=1e-5, max_grad_norm=10.0)
-        self.group_2_updates = get_adam_updates(params=self.group_2_params, \
+        self.p_updates = get_adam_updates(params=self.p_params, \
                 grads=self.joint_grads, alpha=self.lr_2, \
                 beta1=self.mom_1, beta2=self.mom_2, \
                 mom2_init=1e-3, smoothing=1e-5, max_grad_norm=10.0)
         self.joint_updates = OrderedDict()
-        for k in self.group_1_updates:
-            self.joint_updates[k] = self.group_1_updates[k]
-        for k in self.group_2_updates:
-            self.joint_updates[k] = self.group_2_updates[k]
+        for k in self.q_updates:
+            self.joint_updates[k] = self.q_updates[k]
+        for k in self.p_updates:
+            self.joint_updates[k] = self.p_updates[k]
+        # add scan updates, which seem to be required
+        for k in self.scan_updates:
+            self.joint_updates[k] = self.scan_updates[k]
 
         # Construct a function for jointly training the generator/inferencer
         print("Compiling cost computer...")
-        self.compute_raw_costs = self._construct_raw_costs()
+        self.compute_raw_klds = self._construct_raw_klds()
         print("Compiling training function...")
         self.train_joint = self._construct_train_joint()
         print("Compiling free-energy sampler...")
@@ -383,17 +364,6 @@ class MultiStageModel(object):
         self.lam_kld_p2q.set_value(to_fX(new_lam))
         return
 
-    def set_lam_ent(self, lam_ent_q=0.1, lam_ent_p=0.0):
-        """
-        Set the relative weight of various entropy penalties/rewards.
-        """
-        zero_ary = np.zeros((1,))
-        new_lam = zero_ary + lam_ent_q
-        self.lam_ent_q.set_value(to_fX(new_lam))
-        new_lam = zero_ary + lam_ent_p
-        self.lam_ent_p.set_value(to_fX(new_lam))
-        return
-
     def set_lam_l2w(self, lam_l2w=1e-3):
         """
         Set the relative strength of l2 regularization on network params.
@@ -434,13 +404,25 @@ class MultiStageModel(object):
         self.drop_rate.set_value(to_fX(new_val))
         return
 
-    def _construct_nll_costs(self, xo, step_num=-1):
+    def _construct_zmuv_samples(self, xi, br):
+        """
+        Construct the necessary (symbolic) samples for computing through this
+        MultiStageModel for input (sybolic) matrix X.
+        """
+        z_zmuv = self.rng.normal( \
+                size=(xi.shape[0]*br, self.z_dim), \
+                avg=0.0, std=1.0, dtype=theano.config.floatX)
+        hi_zmuv = self.rng.normal( \
+                size=(self.ir_steps, xi.shape[0]*br, self.h_dim), \
+                avg=0.0, std=1.0, dtype=theano.config.floatX)
+        return z_zmuv, hi_zmuv
+
+    def _construct_nll_costs(self, si, xo):
         """
         Construct the negative log-likelihood part of free energy.
         """
         # average log-likelihood over the refinement sequence
-        sn = 20.0 * T.tanh(0.05 * self.si_obs[step_num])
-        xh = self.obs_transform(sn)
+        xh = self.obs_transform(si)
         if self.x_type == 'bernoulli':
             ll_costs = log_prob_bernoulli(xo, xh)
         else:
@@ -474,31 +456,6 @@ class MultiStageModel(object):
         kld_z_p2q = T.sum(kld_z_p2qs**p, axis=1, keepdims=True)
         return [kld_z_q2p, kld_z_p2q, kld_hi_q2p, kld_hi_p2q]
 
-    def _construct_ent_costs(self):
-        """
-        Construct the posterior entropy part of cost to minimize.
-        """
-        ent_hi_qs = []
-        ent_hi_ps = []
-        for i in range(self.ir_steps):
-            ent_hi_q = self.enti_q[i]
-            ent_hi_p = self.enti_p[i]
-            ent_hi_qs.append(T.sum(ent_hi_q, axis=1, keepdims=True))
-            ent_hi_ps.append(T.sum(ent_hi_p, axis=1, keepdims=True))
-        # compute the batch-wise costs
-        ent_hi_q = sum(ent_hi_qs)
-        ent_hi_p = sum(ent_hi_ps)
-        # construct entropy cost for z
-        ent_z_qs = (0.1 * self.q_z_mean**2.0) - (0.5 * self.q_z_logvar)
-        ent_z_ps = T.zeros_like(ent_z_qs) + \
-                   (0.1 * self.p_z_mean**2.0) - (0.5 * self.p_z_logvar)
-        ent_z_q = T.sum(ent_z_qs, axis=1, keepdims=True)
-        ent_z_p = T.sum(ent_z_ps, axis=1, keepdims=True)
-        # sum costs for z and hi
-        ent_p = ent_z_p + ent_hi_p
-        ent_q = ent_z_q + ent_hi_q
-        return [ent_p, ent_q]
-
     def _construct_reg_costs(self):
         """
         Construct the cost for low-level basic regularization. E.g. for
@@ -514,63 +471,39 @@ class MultiStageModel(object):
         # setup some symbolic variables for theano to deal with
         xi = T.matrix()
         xo = T.matrix()
+        br = T.lscalar()
         # collect the outputs to return from this function
         outputs = [self.joint_cost, self.nll_cost, self.kld_cost, \
-                   self.ent_cost, self.reg_cost, self.obs_costs]
+                   self.reg_cost, self.obs_costs]
         # compile the theano function
-        func = theano.function(inputs=[ xi, xo, self.batch_reps ], \
+        _, hi_zmuv = self._construct_zmuv_samples(xi, br)
+        func = theano.function(inputs=[ xi, xo, br ], \
                 outputs=outputs, \
-                givens={ self.x_in: xi.repeat(self.batch_reps, axis=0), \
-                         self.x_out: xo.repeat(self.batch_reps, axis=0) }, \
+                givens={ self.x_in: xi.repeat(br, axis=0), \
+                         self.x_out: xo.repeat(br, axis=0), \
+                         self.hi_zmuv: hi_zmuv }, \
                 updates=self.joint_updates)
         return func
 
-    def _construct_raw_costs(self):
+    def _construct_raw_klds(self):
         """
-        Construct all the raw, i.e. not weighted by any lambdas, costs.
+        Construct function for computing KLd per latent dimension.
         """
-        # get NLL for all steps
-        init_nlls = self._construct_nll_costs(self.x_out, step_num=0)
-        step_nlls = []
-        for i in range(self.ir_steps):
-            step_nlls.append(self._construct_nll_costs(self.x_out, \
-                             step_num=(i+1)))
-        nlli = T.stack(*step_nlls)
-        # get KLd for all steps
-        init_klds = gaussian_kld(self.q_z_mean, self.q_z_logvar, \
-                self.p_z_mean, self.p_z_logvar)
-        kld_hi_q2p_list = []
-        kld_hi_p2q_list = []
-        for i in range(self.ir_steps):
-            kld_hi_q2p = self.kldi_q2p[i]
-            kld_hi_p2q = self.kldi_p2q[i]
-            kld_hi_q2p_list.append(kld_hi_q2p)
-            kld_hi_p2q_list.append(kld_hi_p2q)
-        kldi_q2p = T.stack(*kld_hi_q2p_list)
-        kldi_p2q = T.stack(*kld_hi_p2q_list)
         # gather step-wise costs into a single list (init costs at the end)
-        all_step_costs = [nlli, kldi_q2p, kldi_p2q, init_nlls, init_klds]
+        all_step_costs = [self.init_klds, self.kldi_q2p, self.kldi_p2q]
         # compile theano function for computing all relevant costs
-        inputs = [self.x_in, self.x_out]
-        cost_func = theano.function(inputs=inputs, outputs=all_step_costs)
-        def raw_cost_computer(XI, XO):
-            _all_costs = cost_func(XI, XO)
-            _init_nlls = _all_costs[-2]
-            _init_klds = _all_costs[-1]
+        inputs = [self.x_in, self.x_out, self.hi_zmuv]
+        cost_func = theano.function(inputs=inputs, outputs=all_step_costs, \
+                                    updates=self.scan_updates)
+        def raw_kld_computer(XI, XO):
+            hi_zmuv = to_fX( npr.randn(self.ir_steps, XI.shape[0], self.h_dim) )
+            _all_costs = cost_func(XI, XO, hi_zmuv)
+            _init_klds = _all_costs[0]
             _kld_q2p = np.sum(np.mean(_all_costs[1], axis=1, keepdims=True), axis=0)
             _kld_p2q = np.sum(np.mean(_all_costs[2], axis=1, keepdims=True), axis=0)
-            _step_klds = np.mean(np.sum(_all_costs[1], axis=2, keepdims=True), axis=1)
-            sk = [np.sum(np.mean(_init_klds, axis=0))]
-            sk.extend([k for k in _step_klds])
-            _step_klds = to_fX( np.asarray(sk) )
-            _step_nlls = np.mean(_all_costs[0], axis=1)
-            sn = [np.mean(_init_nlls, axis=0)]
-            sn.extend([k for k in _step_nlls])
-            _step_nlls = to_fX( np.asarray(sn) )
-            results = [_init_nlls, _init_klds, _kld_q2p, _kld_p2q, \
-                       _step_nlls, _step_klds]
+            results = [_init_klds, _kld_q2p, _kld_p2q]
             return results
-        return raw_cost_computer
+        return raw_kld_computer
 
     def _construct_compute_fe_terms(self):
         """
@@ -579,14 +512,17 @@ class MultiStageModel(object):
         # setup some symbolic variables for theano to deal with
         xi = T.matrix()
         xo = T.matrix()
+        _, hi_zmuv = self._construct_zmuv_samples(xi, 1)
         # construct values to output
-        nll = self._construct_nll_costs(xo, step_num=-1)
-        kld = self.kld_z_q2p + self.kld_hi_q2p
+        nll = self.nlli[-1]
+        kld = self.kld_z.flatten() + self.kld_hi_q2p.flatten()
         # compile theano function for a one-sample free-energy estimate
         fe_term_sample = theano.function(inputs=[ xi, xo ], \
                 outputs=[nll, kld], \
                 givens={self.x_in: xi, \
-                        self.x_out: xo})
+                        self.x_out: xo, \
+                        self.hi_zmuv: hi_zmuv}, \
+                updates=self.scan_updates)
         # construct a wrapper function for multi-sample free-energy estimate
         def fe_term_estimator(XI, XO, sample_count):
             # compute a multi-sample estimate of variational free-energy
@@ -609,11 +545,16 @@ class MultiStageModel(object):
         """
         z_sym = T.matrix()
         x_sym = T.matrix()
-        oputs = [self.obs_transform(s) for s in self.si_obs]
+        irs = self.ir_steps
+        oputs = [self.obs_transform(self.s0)]
+        oputs.extend([self.obs_transform(self.si[i]) for i in range(irs)])
+        _, hi_zmuv = self._construct_zmuv_samples(x_sym, 1)
         sample_func = theano.function(inputs=[z_sym, x_sym], outputs=oputs, \
-                givens={self.z: z_sym, \
-                        self.x_in: T.zeros_like(x_sym), \
-                        self.x_out: T.zeros_like(x_sym)})
+                givens={ self.z: z_sym, \
+                         self.x_in: T.zeros_like(x_sym), \
+                         self.x_out: T.zeros_like(x_sym), \
+                         self.hi_zmuv: hi_zmuv }, \
+                updates=self.scan_updates)
         def prior_sampler(samp_count):
             x_samps = to_fX( np.zeros((samp_count, self.obs_dim)) )
             old_switch = self.train_switch.get_value(borrow=False)
@@ -632,21 +573,24 @@ class MultiStageModel(object):
         generated by this MultiStageModel, conditioned on some inputs to the
         initial encoder stage (i.e. self.q_z_given_x). This returns the full 
         sequence of "partially completed" examples.
-
-        The 
         """
         xi = T.matrix()
         xo = T.matrix()
-        oputs = [self.obs_transform(s) for s in self.si_obs]
+        irs = self.ir_steps
+        oputs = [self.obs_transform(self.s0)]
+        oputs.extend([self.obs_transform(self.si[i]) for i in range(irs)])
+        _, hi_zmuv = self._construct_zmuv_samples(xi, 1)
         sample_func = theano.function(inputs=[xi, xo], outputs=oputs, \
-                givens={self.x_in: xi, \
-                        self.x_out: xo})
+                givens={ self.x_in: xi, \
+                         self.x_out: xo, \
+                         self.hi_zmuv: hi_zmuv }, \
+                updates=self.scan_updates)
         def conditional_sampler(XI, XO=None, guided_decoding=False):
             XI = to_fX( XI )
             if XO is None:
                 XO = XI
             XO = to_fX( XO )
-            # set model to desired generation mode                
+            # set model to desired generation mode
             old_switch = self.train_switch.get_value(borrow=False)
             if guided_decoding:
                 # take samples from guide policies (i.e. variational q)

@@ -8,6 +8,7 @@ import theano.tensor as T
 from load_data import load_tfd
 from PeaNet import PeaNet, load_peanet_from_file
 from InfNet import InfNet, load_infnet_from_file
+from HydraNet import HydraNet, load_hydranet_from_file
 from VCGLoop import VCGLoop
 from OneStageModel import OneStageModel
 from NetLayers import relu_actfun, softplus_actfun, \
@@ -65,12 +66,11 @@ def pretrain_osm(lam_kld=0.0):
     ##########################
     gn_params = {}
     shared_config = [PRIOR_DIM, 1500, 1500]
-    top_config = [shared_config[-1], data_dim]
+    output_config = [data_dim, data_dim]
     gn_params['shared_config'] = shared_config
-    gn_params['mu_config'] = top_config
-    gn_params['sigma_config'] = top_config
+    gn_params['output_config'] = output_config
     gn_params['activation'] = relu_actfun
-    gn_params['init_scale'] = 1.4
+    gn_params['init_scale'] = 1.2
     gn_params['lam_l2a'] = 0.0
     gn_params['vis_drop'] = 0.0
     gn_params['hid_drop'] = 0.0
@@ -84,7 +84,7 @@ def pretrain_osm(lam_kld=0.0):
     in_params['mu_config'] = top_config
     in_params['sigma_config'] = top_config
     in_params['activation'] = relu_actfun
-    in_params['init_scale'] = 1.4
+    in_params['init_scale'] = 1.2
     in_params['lam_l2a'] = 0.0
     in_params['vis_drop'] = 0.0
     in_params['hid_drop'] = 0.0
@@ -93,7 +93,7 @@ def pretrain_osm(lam_kld=0.0):
     # Initialize the base networks for this OneStageModel
     IN = InfNet(rng=rng, Xd=Xd, \
             params=in_params, shared_param_dicts=None)
-    GN = InfNet(rng=rng, Xd=Xd, \
+    GN = HydraNet(rng=rng, Xd=Xd, \
             params=gn_params, shared_param_dicts=None)
     # Initialize biases in IN and GN
     IN.init_biases(0.2)
@@ -106,7 +106,7 @@ def pretrain_osm(lam_kld=0.0):
     # in_fname = RESULT_PATH+"pt_osm_params_b110000_IN.pkl"
     # IN = load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd, \
     #         new_params=None)
-    # GN = load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd, \
+    # GN = load_hydranet_from_file(f_name=gn_fname, rng=rng, Xd=Xd, \
     #         new_params=None)
     # in_params = IN.params
     # gn_params = GN.params
@@ -277,7 +277,7 @@ def train_walk_from_pretrained_osm(lam_kld=0.0):
     gn_fname = RESULT_PATH+"pt_osm_params_b100000_GN.pkl"
     in_fname = RESULT_PATH+"pt_osm_params_b100000_IN.pkl"
     IN = load_infnet_from_file(f_name=in_fname, rng=rng, Xd=Xd)
-    GN = load_infnet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
+    GN = load_hydranet_from_file(f_name=gn_fname, rng=rng, Xd=Xd)
 
     ########################################################
     # Define parameters for the VCGLoop, and initialize it #

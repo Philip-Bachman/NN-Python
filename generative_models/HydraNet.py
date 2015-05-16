@@ -242,20 +242,22 @@ class HydraNet(object):
         self.act_reg_cost = self.lam_l2a * self._act_reg_cost()
         return
 
-    def apply(self, X):
+    def apply(self, X, use_bn=False, use_drop=False):
         """
         Pass input X through this HydraNet and get the resulting outputs.
         """
         # pass activations through the shared layers
         shared_acts = [X]
         for layer in self.shared_layers:
-            _, _, layer_acts = layer.apply(shared_acts[-1])
+            _, _, layer_acts = layer.apply(shared_acts[-1], \
+                                       use_bn=use_bn, use_drop=use_drop)
             shared_acts.append(layer_acts)
         shared_output = shared_acts[-1]
         # compute outputs of the output layers
         outputs = []
         for layer in self.output_layers:
-            _, layer_acts, _ = layer.apply(shared_output)
+            _, layer_acts, _ = layer.apply(shared_output, \
+                                       use_bn=use_bn, use_drop=use_drop))
             outputs.append(layer_acts)
         return outputs
 
@@ -361,6 +363,26 @@ class HydraNet(object):
         f_handle.close()
         return
 
+    def save_to_dict(self):
+        """
+        Dump important stuff to a dict capable of rebooting the model.
+        """
+        model_dict = {}
+        # dump the dict self.params, which just holds "simple" python values
+        model_dict['params'] = self.params
+        # make a copy of self.shared_param_dicts, with numpy arrays in place
+        # of the theano shared variables
+        numpy_param_dicts = {'shared': [], 'output': []}
+        for layer_group in ['shared', 'output']:
+            for shared_dict in self.shared_param_dicts[layer_group]:
+                numpy_dict = {}
+                for key in shared_dict:
+                    numpy_dict[key] = shared_dict[key].get_value(borrow=False)
+                numpy_param_dicts[layer_group].append(numpy_dict)
+        # dump the numpy version of self.shared_param_dicts to the dict
+        model_dict['numpy_param_dicts'] = numpy_param_dicts
+        return
+
 def load_hydranet_from_file(f_name=None, rng=None, Xd=None, \
                             new_params=None):
     """
@@ -386,6 +408,39 @@ def load_hydranet_from_file(f_name=None, rng=None, Xd=None, \
                 shared_dict[key] = theano.shared(val)
             self_dot_shared_param_dicts[layer_group].append(shared_dict)
     # now, create a HydraNet with the configuration we just unpickled
+    clone_net = HydraNet(rng=rng, Xd=Xd, params=self_dot_params, \
+                         shared_param_dicts=self_dot_shared_param_dicts)
+    # helpful output
+    print("==================================================")
+    print("LOADED HydraNet WITH PARAMS:")
+    for k in self_dot_params:
+        print("    {0:s}: {1:s}".format(str(k), str(self_dot_params[k])))
+    print("==================================================")
+    return clone_net
+
+def load_hydranet_from_dict(model_dict, rng=None, Xd=None, \
+                            new_params=None):
+    """
+    Load a clone of some previously trained model.
+    """
+    # load basic parameters
+    self_dot_params = model_dict['params']
+    if not (new_params is None):
+        for k in new_params:
+            self_dot_params[k] = new_params[k]
+    # load numpy arrays that will be converted to Theano shared arrays
+    self_dot_numpy_param_dicts = model_dict['numpy_param_dicts']
+    self_dot_shared_param_dicts = {'shared': [], 'output': []}
+    for layer_group in ['shared', 'output']:
+        # go over the list of parameter dicts in this layer group
+        for numpy_dict in self_dot_numpy_param_dicts[layer_group]:
+            shared_dict = {}
+            for key in numpy_dict:
+                # convert each numpy array to a Theano shared array
+                val = to_fX(numpy_dict[key])
+                shared_dict[key] = theano.shared(val)
+            self_dot_shared_param_dicts[layer_group].append(shared_dict)
+    # now, create a HydraNet with the configuration we just unpacked
     clone_net = HydraNet(rng=rng, Xd=Xd, params=self_dot_params, \
                          shared_param_dicts=self_dot_shared_param_dicts)
     # helpful output
