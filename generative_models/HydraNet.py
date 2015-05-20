@@ -257,7 +257,7 @@ class HydraNet(object):
         outputs = []
         for layer in self.output_layers:
             _, layer_acts, _ = layer.apply(shared_output, \
-                                       use_bn=use_bn, use_drop=use_drop))
+                                       use_bn=use_bn, use_drop=use_drop)
             outputs.append(layer_acts)
         return outputs
 

@@ -133,14 +133,14 @@ def test_imocld_generation(step_type='add', attention=False):
                           name="mix_enc_mlp", **inits)
     # mlp for decoding z_mix into a distribution over initial LSTM states
     mix_dec_mlp = MLP([Tanh(), Tanh()], \
-                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + 2*enc_dim)], \
+                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + 2*enc_dim + mix_dim)], \
                       name="mix_dec_mlp", **inits)
     # mlps for processing inputs to LSTMs
-    var_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
+    var_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
                      name="var_mlp_in", **inits)
-    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
+    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
                      name="enc_mlp_in", **inits)
-    dec_mlp_in = MLP([Identity()], [               z_dim, 4*dec_dim], \
+    dec_mlp_in = MLP([Identity()], [             (z_dim + mix_dim), 4*dec_dim], \
                      name="dec_mlp_in", **inits)
     # mlps for turning LSTM outputs into conditionals over z_gen
     var_mlp_out = CondNet([], [enc_dim, z_dim], name="var_mlp_out", **inits)
@@ -174,7 +174,7 @@ def test_imocld_generation(step_type='add', attention=False):
     # build the cost gradients, training function, samplers, etc.
     draw.build_model_funcs()
 
-    #draw.load_model_params(f_name="TBCLM_GEN_PARAMS_{}.pkl".format(step_type))
+    #draw.load_model_params(f_name="TBCLM_GEN_PARAMS_{}_{}.pkl".format(step_type, att_tag))
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -247,7 +247,7 @@ def test_imocld_generation(step_type='add', attention=False):
             # samples = samples.reshape( (n_iter, N, 28, 28) )
             # for j in xrange(n_iter):
             #     img = img_grid(samples[j,:,:,:])
-            #     img.save("TBCLM-gen-samples-b%06d-%03d.png" % (i, j))
+            #     img.save("TBCLM-gen-samples-%03d.png" % (j,))
 
 if __name__=="__main__":
     test_imocld_generation(step_type='add', attention=False)

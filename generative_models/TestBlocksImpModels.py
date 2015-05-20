@@ -121,7 +121,7 @@ def shift_and_scale_into_01(X):
 ########################################
 ########################################
 
-def test_imocld_imputation(step_type='add'):
+def test_imocld_imputation(step_type='add', attention=False):
     ##########################
     # Get some training data #
     ##########################
@@ -156,6 +156,8 @@ def test_imocld_imputation(step_type='add'):
         'biases_init': Constant(0.),
     }
 
+    att_tag = "NA" # attention not implemented yet
+
     # setup the reader and writer (shared by primary and guide policies)
     read_dim = 2*x_dim # dimension of output from reader_mlp
     reader_mlp = Reader(x_dim=x_dim, dec_dim=dec_dim, **inits)
@@ -169,14 +171,14 @@ def test_imocld_imputation(step_type='add'):
                           name="mix_enc_mlp", **inits)
     # mlp for decoding z_mix into a distribution over initial LSTM states
     mix_dec_mlp = MLP([Tanh(), Tanh()], \
-                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + 2*enc_dim)], \
+                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + 2*enc_dim + s_mix)], \
                       name="mix_dec_mlp", **inits)
     # mlps for processing inputs to LSTMs
-    var_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
+    var_mlp_in = MLP([Identity()], [(read_dim + dec_dim + s_mix), 4*enc_dim], \
                      name="var_mlp_in", **inits)
-    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
+    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + s_mix), 4*enc_dim], \
                      name="enc_mlp_in", **inits)
-    dec_mlp_in = MLP([Identity()], [               z_dim, 4*dec_dim], \
+    dec_mlp_in = MLP([Identity()], [             (z_dim + s_mix), 4*dec_dim], \
                      name="dec_mlp_in", **inits)
     # mlps for turning LSTM outputs into conditionals over z_gen
     var_mlp_out = CondNet([], [enc_dim, z_dim], name="var_mlp_out", **inits)
@@ -210,13 +212,13 @@ def test_imocld_imputation(step_type='add'):
     # build the cost gradients, training function, samplers, etc.
     draw.build_model_funcs()
 
-    draw.load_model_params(f_name="TBCLM_IMP_PARAMS_{}.pkl".format(step_type))
+    #draw.load_model_params(f_name="TBCLM_IMP_PARAMS_{}_{}.pkl".format(step_type, att_tag))
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     print("Beginning to train the model...")
-    out_file = open("TBCLM_IMP_RESULTS_{}.txt".format(step_type), 'wb')
+    out_file = open("TBCLM_IMP_RESULTS_{}_{}.txt".format(step_type, att_tag), 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0002
     momentum = 0.5
@@ -263,7 +265,7 @@ def test_imocld_imputation(step_type='add'):
             out_file.flush()
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
-            #draw.save_model_params("TBCLM_IMP_PARAMS_{}.pkl".format(step_type))
+            draw.save_model_params("TBCLM_IMP_PARAMS_{}_{}.pkl".format(step_type, att_tag))
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
             Xb = to_fX(Xva[:5000])
@@ -278,15 +280,15 @@ def test_imocld_imputation(step_type='add'):
             out_file.write(joint_str+"\n")
             out_file.flush()
             # draw some independent samples from the model
-            Xb = to_fX(Xva[:256])
-            _, Xb, Mb = construct_masked_data(Xb, drop_prob=0.0, occ_dim=15, \
-                      data_mean=None)
-            samples = draw.do_sample(Xb, Mb)
-            n_iter, N, D = samples.shape
-            samples = samples.reshape( (n_iter, N, 28, 28) )
-            for j in xrange(n_iter):
-                img = img_grid(samples[j,:,:,:])
-                img.save("TBCLM-IMP-samples-b%06d-%03d.png" % (i, j))
+            # Xb = to_fX(Xva[:256])
+            # _, Xb, Mb = construct_masked_data(Xb, drop_prob=0.0, occ_dim=15, \
+            #           data_mean=None)
+            # samples = draw.do_sample(Xb, Mb)
+            # n_iter, N, D = samples.shape
+            # samples = samples.reshape( (n_iter, N, 28, 28) )
+            # for j in xrange(n_iter):
+            #     img = img_grid(samples[j,:,:,:])
+            #     img.save("TBCLM-IMP-samples-b%06d-%03d.png" % (i, j))
 
 if __name__=="__main__":
     #test_imocld_imputation(step_type='add')

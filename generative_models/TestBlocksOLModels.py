@@ -145,12 +145,12 @@ def test_imoold_generation(step_type='add', attention=False):
     mix_enc_mlp = CondNet([Tanh()], [x_dim, 250, mix_dim], \
                           name="mix_enc_mlp", **inits)
     mix_dec_mlp = MLP([Tanh(), Tanh()], \
-                      [mix_dim, 250, (2*enc_dim + 2*dec_dim)], \
+                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + mix_dim)], \
                       name="mix_dec_mlp", **inits)
     # setup the components of the sequential generative model
-    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
+    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
                      name="enc_mlp_in", **inits)
-    dec_mlp_in = MLP([Identity()], [               z_dim, 4*dec_dim], \
+    dec_mlp_in = MLP([Identity()], [             (z_dim + mix_dim), 4*dec_dim], \
                      name="dec_mlp_in", **inits)
     enc_mlp_out = CondNet([], [enc_dim, z_dim], name="enc_mlp_out", **inits)
     dec_mlp_out = CondNet([], [dec_dim, z_dim], name="dec_mlp_out", **inits)
@@ -242,14 +242,13 @@ def test_imoold_generation(step_type='add', attention=False):
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
-            # draw some independent samples from the model
+            # # draw some independent samples from the model
             # samples = draw.do_sample(16*16)
             # n_iter, N, D = samples.shape
             # samples = samples.reshape( (n_iter, N, 28, 28) )
             # for j in xrange(n_iter):
             #     img = img_grid(samples[j,:,:,:])
             #     img.save("TBOLM-gen-samples-%03d.png" % (j,))
-            #     #img.save("TBOLM-gen-samples-b%06d-%03d.png" % (i, j))
 
 if __name__=="__main__":
     test_imoold_generation(step_type='add', attention=False)
