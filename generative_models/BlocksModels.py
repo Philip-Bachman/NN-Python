@@ -364,10 +364,16 @@ class AttentionReader(Initializable):
         self.dec_dim = dec_dim
         self.output_dim = 2*N*N
 
+        self.pre_trafo = Linear(
+                name=self.name+'_pretrafo',
+                input_dim=dec_dim, output_dim=dec_dim, 
+                weights_init=self.weights_init, biases_init=self.biases_init,
+                use_bias=True)
+
         self.zoomer = ZoomableAttentionWindow(height, width, N)
         self.readout = MLP(activations=[Identity()], dims=[dec_dim, 5], **kwargs)
 
-        self.children = [self.readout]
+        self.children = [self.pre_trafo, self.readout]
 
     def get_dim(self, name):
         if name == 'input':
@@ -381,7 +387,8 @@ class AttentionReader(Initializable):
             
     @application(inputs=['x', 'x_hat', 'h_dec'], outputs=['r'])
     def apply(self, x, x_hat, h_dec):
-        l = self.readout.apply(h_dec)
+        p = self.pre_trafo.apply(h_dec)
+        l = self.readout.apply(p)
 
         center_y, center_x, delta, sigma, gamma = self.zoomer.nn2att(l)
 
@@ -425,6 +432,13 @@ class AttentionWriter(Initializable):
         assert output_dim == width*height
 
         self.zoomer = ZoomableAttentionWindow(height, width, N)
+
+        self.pre_trafo = Linear(
+                name=self.name+'_pretrafo',
+                input_dim=input_dim, output_dim=input_dim, 
+                weights_init=self.weights_init, biases_init=self.biases_init,
+                use_bias=True)  
+
         self.z_trafo = Linear(
                 name=self.name+'_ztrafo',
                 input_dim=input_dim, output_dim=5, 
@@ -437,12 +451,13 @@ class AttentionWriter(Initializable):
                 weights_init=self.weights_init, biases_init=self.biases_init,
                 use_bias=True)
 
-        self.children = [self.z_trafo, self.w_trafo]
+        self.children = [self.pre_trafo, self.z_trafo, self.w_trafo]
 
     @application(inputs=['h'], outputs=['c_update'])
     def apply(self, h):
-        w = self.w_trafo.apply(h)
-        l = self.z_trafo.apply(h)
+        p = self.pre_trafo.apply(h)
+        w = self.w_trafo.apply(p)
+        l = self.z_trafo.apply(p)
 
         center_y, center_x, delta, sigma, gamma = self.zoomer.nn2att(l)
 
@@ -452,8 +467,9 @@ class AttentionWriter(Initializable):
 
     @application(inputs=['h'], outputs=['c_update', 'center_y', 'center_x', 'delta'])
     def apply_detailed(self, h):
-        w = self.w_trafo.apply(h)
-        l = self.z_trafo.apply(h)
+        p = self.pre_trafo.apply(h)
+        w = self.w_trafo.apply(p)
+        l = self.z_trafo.apply(p)
 
         center_y, center_x, delta, sigma, gamma = self.zoomer.nn2att(l)
 
@@ -461,149 +477,6 @@ class AttentionWriter(Initializable):
 
         return c_update, center_y, center_x, delta
 
-
-
-#-----------------------------------------------------------------------------
-
-
-class DrawModel(BaseRecurrent, Initializable, Random):
-    def __init__(self, n_iter, reader, 
-                    encoder_mlp, encoder_rnn, sampler, 
-                    decoder_mlp, decoder_rnn, writer, **kwargs):
-        super(DrawModel, self).__init__(**kwargs)   
-        self.n_iter = n_iter
-
-        self.reader = reader
-        self.encoder_mlp = encoder_mlp 
-        self.encoder_rnn = encoder_rnn
-        self.sampler = sampler
-        self.decoder_mlp = decoder_mlp 
-        self.decoder_rnn = decoder_rnn
-        self.writer = writer
-
-        self.children = [self.reader, self.encoder_mlp, self.encoder_rnn, self.sampler, 
-                         self.writer, self.decoder_mlp, self.decoder_rnn]
-        return
- 
-    def _allocate(self):
-        c_dim = self.get_dim('c')
-        self.c_0 = shared_floatx_nans((c_dim,), name='c_0')
-        add_role(self.c_0, PARAMETER)
-        # add the theano shared variables to our parameter lists
-        self.params.extend([ self.c_0 ])
-        return
-
-    def _initialize(self):
-        # initialize to zeros...
-        for p in self.params:
-            p_nan = p.get_value(borrow=False)
-            p_zeros = numpy.zeros(p_nan.shape)
-            p.set_value(p_zeros.astype(theano.config.floatX))
-        return
-
-    def get_dim(self, name):
-        if name == 'c':
-            return self.reader.get_dim('x_dim')
-        elif name == 'h_enc':
-            return self.encoder_rnn.get_dim('states')
-        elif name == 'c_enc':
-            return self.encoder_rnn.get_dim('cells')
-        elif name in ['z', 'z_mean', 'z_log_sigma']:
-            return self.sampler.get_dim('output')
-        elif name == 'h_dec':
-            return self.decoder_rnn.get_dim('states')
-        elif name == 'c_dec':
-            return self.decoder_rnn.get_dim('cells')
-        elif name == 'kl':
-            return 0
-        elif name == 'center_y':
-            return 0
-        elif name == 'center_x':
-            return 0
-        elif name == 'delta':
-            return 0
-        else:
-            super(DrawModel, self).get_dim(name)
-        return
-
-    #------------------------------------------------------------------------
-
-    @recurrent(sequences=['u'], contexts=['x'], 
-               states=['c', 'h_enc', 'c_enc', 'z', 'kl', 'h_dec', 'c_dec'],
-               outputs=['c', 'h_enc', 'c_enc', 'z', 'kl', 'h_dec', 'c_dec'])
-    def iterate(self, u, c, h_enc, c_enc, z, kl, h_dec, c_dec, x):
-        x_hat = x-tensor.nnet.sigmoid(c)
-        r = self.reader.apply(x, x_hat, h_dec)
-        i_enc = self.encoder_mlp.apply(tensor.concatenate([r, h_dec], axis=1))
-        h_enc, c_enc = self.encoder_rnn.apply(states=h_enc, cells=c_enc, inputs=i_enc, iterate=False)
-        z, all_klds = self.sampler.sample(h_enc, u)
-        kl = tensor.sum(all_klds, axis=1)
-
-        i_dec = self.decoder_mlp.apply(z)
-        h_dec, c_dec = self.decoder_rnn.apply(states=h_dec, cells=c_dec, inputs=i_dec, iterate=False)
-        c = c + self.writer.apply(h_dec)
-        return c, h_enc, c_enc, z, kl, h_dec, c_dec
-
-    @recurrent(sequences=['u'], contexts=[], 
-               states=['c', 'h_dec', 'c_dec'],
-               outputs=['c', 'h_dec', 'c_dec'])
-    def decode(self, u, c, h_dec, c_dec):
-        batch_size = c.shape[0]
-
-        z = self.sampler.sample_from_prior(u)
-        i_dec = self.decoder_mlp.apply(z)
-        h_dec, c_dec = self.decoder_rnn.apply(
-                    states=h_dec, cells=c_dec, 
-                    inputs=i_dec, iterate=False)
-        c = c + self.writer.apply(h_dec)
-        return c, h_dec, c_dec
-
-    #------------------------------------------------------------------------
-
-    @application(inputs=['features'], outputs=['recons', 'kl'])
-    def reconstruct(self, features):
-        batch_size = features.shape[0]
-        dim_z = self.get_dim('z')
-
-        # Sample from mean-zeros std.-one Gaussian
-        u = self.theano_rng.normal(
-                    size=(self.n_iter, batch_size, dim_z),
-                    avg=0., std=1.)
-
-        c0 = tensor.zeros_like(features) + self.c_0
-
-        c, h_enc, c_enc, z, kl, h_dec, c_dec = \
-            rvals = self.iterate(x=features, c=c0, u=u)
-
-        x_recons = tensor.nnet.sigmoid(c[-1,:,:])
-        x_recons.name = "reconstruction"
-
-        kl.name = "kl"
-
-        return x_recons, kl
-
-    @application(inputs=['n_samples'], outputs=['samples'])
-    def sample(self, n_samples):
-        """Sample from model.
-
-        Returns 
-        -------
-
-        samples : tensor3 (n_samples, n_iter, x_dim)
-        """
-        c_dim = self.get_dim('c')
-        u_dim = self.sampler.mean_transform.get_dim('output')
-    
-        # Sample from mean-zeros std.-one Gaussian
-        u = self.theano_rng.normal(
-                    size=(self.n_iter, n_samples, u_dim),
-                    avg=0., std=1.)
-
-        c0 = tensor.alloc(0.0, n_samples, c_dim) + self.c_0
-
-        c, _, _, = self.decode(u=u, c=c0)
-        #c, _, _, center_y, center_x, delta = self.decode(u)
-        return tensor.nnet.sigmoid(c)
 
 ##########################################################
 # Generalized DRAW model, with infinite mixtures and RL. #
@@ -624,7 +497,7 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
         # grab handles for mixture stuff
         self.mix_enc_mlp = mix_enc_mlp
         self.mix_dec_mlp = mix_dec_mlp
-        # grab handles for IMoDRAW model stuff
+        # grab handles for IMoOLDRAW model stuff
         self.reader_mlp = reader_mlp
         self.enc_mlp_in = enc_mlp_in
         self.enc_rnn = enc_rnn
@@ -694,10 +567,10 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
 
     #------------------------------------------------------------------------
 
-    @recurrent(sequences=['u'], contexts=['x', 's_mix'],
+    @recurrent(sequences=['u'], contexts=['x'],
                states=['c', 'h_enc', 'c_enc', 'h_dec', 'c_dec', 'nll', 'kl_q2p', 'kl_p2q'],
                outputs=['c', 'h_enc', 'c_enc', 'h_dec', 'c_dec', 'nll', 'kl_q2p', 'kl_p2q'])
-    def iterate(self, u, c, h_enc, c_enc, h_dec, c_dec, nll, kl_q2p, kl_p2q, x, s_mix):
+    def iterate(self, u, c, h_enc, c_enc, h_dec, c_dec, nll, kl_q2p, kl_p2q, x):
         if self.step_type == 'add':
             # additive steps use c as a "direct workspace", which means it's
             # already directly comparable to x.
@@ -710,7 +583,7 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
         x_hat = x - tensor.nnet.sigmoid(c)
         r_enc = self.reader_mlp.apply(x, x_hat, h_dec)
         # update the encoder RNN state
-        i_enc = self.enc_mlp_in.apply(tensor.concatenate([r_enc, h_dec, s_mix], axis=1))
+        i_enc = self.enc_mlp_in.apply(tensor.concatenate([r_enc, h_dec], axis=1))
         h_enc, c_enc = self.enc_rnn.apply(states=h_enc, cells=c_enc,
                                           inputs=i_enc, iterate=False)
         # estimate encoder conditional over z given h_enc
@@ -721,7 +594,7 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
                 self.dec_mlp_out.apply(h_dec, u)
         # update the decoder RNN state
         z_gen = q_z_gen # use samples from q while training
-        i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
+        i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen], axis=1))
         h_dec, c_dec = self.dec_rnn.apply(states=h_dec, cells=c_dec, \
                                           inputs=i_dec, iterate=False)
         # additive steps use c as the "workspace"
@@ -739,17 +612,17 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
                             q_gen_mean, q_gen_logvar), axis=1)
         return c, h_enc, c_enc, h_dec, c_dec, nll, kl_q2p, kl_p2q
 
-    @recurrent(sequences=['u'], contexts=['s_mix'], 
+    @recurrent(sequences=['u'], contexts=[],
                states=['c', 'h_dec', 'c_dec'],
                outputs=['c', 'h_dec', 'c_dec'])
-    def decode(self, u, c, h_dec, c_dec, s_mix):
+    def decode(self, u, c, h_dec, c_dec):
         batch_size = c.shape[0]
         # sample z from p(z | h_dec) -- we used q(z | h_enc) during training
         p_gen_mean, p_gen_logvar, p_z_gen = \
                 self.dec_mlp_out.apply(h_dec, u)
         z_gen = p_z_gen
         # update the decoder RNN state
-        i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen, s_mix], axis=1))
+        i_dec = self.dec_mlp_in.apply(tensor.concatenate([z_gen], axis=1))
         h_dec, c_dec = self.dec_rnn.apply(
                     states=h_dec, cells=c_dec,
                     inputs=i_dec, iterate=False)
@@ -786,8 +659,7 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
         cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
         ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
-        he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):(cd_dim+hd_dim+ce_dim+he_dim)]
-        sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
+        he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):]
         c0 = tensor.zeros_like(x_out) + self.c_0
 
         # compute KL-divergence information for the mixture init step
@@ -806,7 +678,7 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
         # run the multi-stage guided generative process
         c, _, _, _, _, step_nlls, kl_q2p_gen, kl_p2q_gen = \
                 self.iterate(u=u_gen, c=c0, h_enc=he0, c_enc=ce0, \
-                             h_dec=hd0, c_dec=cd0, x=x_out, s_mix=sm0)
+                             h_dec=hd0, c_dec=cd0, x=x_out)
 
         # grab the observations generated by the multi-stage process
         recons = tensor.nnet.sigmoid(c[-1,:,:])
@@ -848,7 +720,6 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
         mix_init = self.mix_dec_mlp.apply(z_mix)
         cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
-        sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):]
         c0 = tensor.alloc(0.0, n_samples, c_dim) + self.c_0
 
         # sample from zero-mean unit-std. Gaussian for use in scan op
@@ -856,9 +727,133 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
                     size=(self.n_iter, n_samples, z_gen_dim),
                     avg=0., std=1.)
 
-        c, _, _, = self.decode(u=u_gen, c=c0, h_dec=hd0, c_dec=cd0, s_mix=sm0)
+        c, _, _, = self.decode(u=u_gen, c=c0, h_dec=hd0, c_dec=cd0)
         #c, _, _, center_y, center_x, delta = self.decode(u)
         return tensor.nnet.sigmoid(c)
+
+    def build_model_funcs(self):
+        """
+        Build the symbolic costs and theano functions relevant to this model.
+        """
+        # some symbolic vars to represent various inputs/outputs
+        x_in_sym = tensor.matrix('x_in_sym')
+        x_out_sym = tensor.matrix('x_out_sym')
+
+        # collect reconstructions of x produced by the IMoOLDRAW model
+        _, nll, kl_q2p, kl_p2q = self.reconstruct(x_in_sym, x_out_sym)
+
+        # get the expected NLL part of the VFE bound
+        self.nll_term = nll.mean()
+        self.nll_term.name = "nll_term"
+
+        # get KL(q || p) and KL(p || q)
+        self.kld_q2p_term = kl_q2p.sum(axis=0).mean()
+        self.kld_q2p_term.name = "kld_q2p_term"
+        self.kld_p2q_term = kl_p2q.sum(axis=0).mean()
+        self.kld_p2q_term.name = "kld_p2q_term"
+
+        # get the proper VFE bound on NLL
+        self.nll_bound = self.nll_term + self.kld_q2p_term
+        self.nll_bound.name = "nll_bound"
+
+        # grab handles for all the optimizable parameters in our cost
+        self.cg = ComputationGraph([self.nll_bound])
+        self.joint_params = VariableFilter(roles=[PARAMETER])(self.cg.variables)
+
+        # apply some l2 regularization to the model parameters
+        self.reg_term = (1e-5 * sum([tensor.sum(p**2.0) for p in self.joint_params]))
+        self.reg_term.name = "reg_term"
+
+        # compute the full cost w.r.t. which we will optimize
+        self.joint_cost = self.nll_term + (0.9 * self.kld_q2p_term) + \
+                          (0.1 * self.kld_p2q_term) + self.reg_term
+        self.joint_cost.name = "joint_cost"
+
+        # Get the gradient of the joint cost for all optimizable parameters
+        print("Computing gradients of joint_cost...")
+        self.joint_grads = OrderedDict()
+        grad_list = tensor.grad(self.joint_cost, self.joint_params)
+        for i, p in enumerate(self.joint_params):
+            self.joint_grads[p] = grad_list[i]
+        
+        # shared var learning rate for generator and inferencer
+        zero_ary = to_fX( numpy.zeros((1,)) )
+        self.lr = theano.shared(value=zero_ary, name='tbm_lr')
+        # shared var momentum parameters for generator and inferencer
+        self.mom_1 = theano.shared(value=zero_ary, name='tbm_mom_1')
+        self.mom_2 = theano.shared(value=zero_ary, name='tbm_mom_2')
+        # construct the updates for the generator and inferencer networks
+        self.joint_updates = get_adam_updates(params=self.joint_params, \
+                grads=self.joint_grads, alpha=self.lr, \
+                beta1=self.mom_1, beta2=self.mom_2, \
+                mom2_init=1e-4, smoothing=1e-6, max_grad_norm=10.0)
+
+        # collect the outputs to return from this function
+        outputs = [self.joint_cost, self.nll_bound, self.nll_term, \
+                   self.kld_q2p_term, self.kld_p2q_term, self.reg_term]
+
+        # compile the theano function
+        print("Compiling model training/update function...")
+        self.train_joint = theano.function(inputs=[x_in_sym, x_out_sym], \
+                                outputs=outputs, updates=self.joint_updates)
+        print("Compiling NLL bound estimator function...")
+        self.compute_nll_bound = theano.function(inputs=[x_in_sym, x_out_sym], \
+                                                 outputs=outputs)
+        print("Compiling model sampler...")
+        n_samples = tensor.iscalar("n_samples")
+        samples = self.sample(n_samples)
+        self.do_sample = theano.function([n_samples], outputs=samples, \
+                                         allow_input_downcast=True)
+        return
+
+    def get_model_params(self, ary_type='numpy'):
+        """
+        Get the optimizable parameters in this model. This returns a list
+        and, to reload this model's parameters, the list must stay in order.
+
+        This can provide shared variables or numpy arrays.
+        """
+        if self.cg is None:
+            self.build_model_funcs()
+        joint_params = VariableFilter(roles=[PARAMETER])(self.cg.variables)
+        if ary_type == 'numpy':
+            for i, p in enumerate(joint_params):
+                joint_params[i] = p.get_value(borrow=False)
+        return joint_params
+
+    def set_model_params(self, numpy_param_list):
+        """
+        Set the optimizable parameters in this model. This requires a list
+        and, to reload this model's parameters, the list must be in order.
+        """
+        if self.cg is None:
+            self.build_model_funcs()
+        # grab handles for all the optimizable parameters in our cost
+        joint_params = VariableFilter(roles=[PARAMETER])(self.cg.variables)
+        for i, p in enumerate(joint_params):
+            joint_params[i].set_value(to_fX(numpy_param_list[i]))
+        return joint_params
+
+    def save_model_params(self, f_name=None):
+        """
+        Save model parameters to a pickle file, in numpy form.
+        """
+        numpy_params = self.get_model_params(ary_type='numpy')
+        f_handle = file(f_name, 'wb')
+        # dump the dict self.params, which just holds "simple" python values
+        cPickle.dump(numpy_params, f_handle, protocol=-1)
+        f_handle.close()
+        return
+
+    def load_model_params(self, f_name=None):
+        """
+        Load model parameters from a pickle file, in numpy form.
+        """
+        pickle_file = open(f_name)
+        numpy_params = cPickle.load(pickle_file)
+        self.set_model_params(numpy_params)
+        pickle_file.close()
+        return
 
 ##########################################################
 # Generalized DRAW model, with infinite mixtures and RL. #

@@ -85,7 +85,7 @@ def img_grid(arr, global_scale=True):
 ########################################
 ########################################
 
-def test_imocld_generation(step_type='add'):
+def test_imocld_generation(step_type='add', attention=False):
     ##########################
     # Get some training data #
     ##########################
@@ -107,7 +107,7 @@ def test_imocld_generation(step_type='add'):
     dec_dim = 250
     mix_dim = 20
     z_dim = 100
-    n_iter = 15
+    n_iter = 16
     
     rnninits = {
         'weights_init': IsotropicGaussian(0.01),
@@ -117,6 +117,8 @@ def test_imocld_generation(step_type='add'):
         'weights_init': IsotropicGaussian(0.01),
         'biases_init': Constant(0.),
     }
+
+    att_tag = "NA" # attention not tested yet
 
     # setup the reader and writer (shared by primary and guide policies)
     read_dim = 2*x_dim # dimension of output from reader_mlp
@@ -172,11 +174,13 @@ def test_imocld_generation(step_type='add'):
     # build the cost gradients, training function, samplers, etc.
     draw.build_model_funcs()
 
+    #draw.load_model_params(f_name="TBCLM_GEN_PARAMS_{}.pkl".format(step_type))
+
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     print("Beginning to train the model...")
-    out_file = open("TBCLM_GEN_RESULTS_{}.txt".format(step_type), 'wb')
+    out_file = open("TBCLM_GEN_RESULTS_{}_{}.txt".format(step_type, att_tag), 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0002
     momentum = 0.5
@@ -222,7 +226,7 @@ def test_imocld_generation(step_type='add'):
             out_file.flush()
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
-            draw.save_model_params("TBCLM_GEN_PARAMS_{}.pkl".format(step_type))
+            draw.save_model_params("TBCLM_GEN_PARAMS_{}_{}.pkl".format(step_type, att_tag))
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
             Xb = to_fX(Xva[:5000])
@@ -235,7 +239,7 @@ def test_imocld_generation(step_type='add'):
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
-            # # draw some independent samples from the model
+            # draw some independent samples from the model
             # Xb = to_fX(Xva[:256])
             # Mb = 0.0 * Xb
             # samples = draw.do_sample(Xb, Mb)
@@ -243,8 +247,8 @@ def test_imocld_generation(step_type='add'):
             # samples = samples.reshape( (n_iter, N, 28, 28) )
             # for j in xrange(n_iter):
             #     img = img_grid(samples[j,:,:,:])
-            #     img.save("TBM-samples-b%06d-%03d.png" % (i, j))
+            #     img.save("TBCLM-gen-samples-b%06d-%03d.png" % (i, j))
 
 if __name__=="__main__":
-    test_imocld_generation(step_type='add')
-    #test_imocld_generation(step_type='jump')
+    test_imocld_generation(step_type='add', attention=False)
+    #test_imocld_generation(step_type='jump', attention=False)

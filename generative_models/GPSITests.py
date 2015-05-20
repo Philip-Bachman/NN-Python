@@ -119,7 +119,6 @@ def test_mnist(lam_q2p=0.5,
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
     params['init_scale'] = init_scale
-    params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
     params['bias_noise'] = 0.0
@@ -138,7 +137,6 @@ def test_mnist(lam_q2p=0.5,
     params['output_config'] = output_config
     params['activation'] = relu_actfun
     params['init_scale'] = init_scale
-    params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
     params['bias_noise'] = 0.0
@@ -158,7 +156,6 @@ def test_mnist(lam_q2p=0.5,
     params['sigma_config'] = top_config
     params['activation'] = relu_actfun
     params['init_scale'] = init_scale
-    params['lam_l2a'] = 0.0
     params['vis_drop'] = 0.0
     params['hid_drop'] = 0.0
     params['bias_noise'] = 0.0
@@ -262,12 +259,12 @@ def test_mnist(lam_q2p=0.5,
             valid_result_dict['step_kld'].append((i, step_kld))
             valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-	    # save results to a pickle file
-	    result_dicts = {'train_results': train_result_dict, \
-			    'valid_results': valid_result_dict}
-	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-	    cPickle.dump(result_dicts, f_handle, protocol=-1)
-	    f_handle.close()
+    	    # save results to a pickle file
+    	    result_dicts = {'train_results': train_result_dict, \
+    			    'valid_results': valid_result_dict}
+    	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
+    	    cPickle.dump(result_dicts, f_handle, protocol=-1)
+    	    f_handle.close()
         if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)
@@ -535,12 +532,12 @@ def test_tfd(lam_q2p=0.5,
             valid_result_dict['step_kld'].append((i, step_kld))
             valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
             valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-	    # save results to a pickle file
-	    result_dicts = {'train_results': train_result_dict, \
-			    'valid_results': valid_result_dict}
-	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-	    cPickle.dump(result_dicts, f_handle, protocol=-1)
-	    f_handle.close()
+    	    # save results to a pickle file
+    	    result_dicts = {'train_results': train_result_dict, \
+    			    'valid_results': valid_result_dict}
+    	    f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
+    	    cPickle.dump(result_dicts, f_handle, protocol=-1)
+    	    f_handle.close()
         if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
             Xva = row_shuffle(Xva)

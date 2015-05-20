@@ -210,7 +210,7 @@ def test_imocld_imputation(step_type='add'):
     # build the cost gradients, training function, samplers, etc.
     draw.build_model_funcs()
 
-    #draw.load_model_params(f_name='TBCLM_IMP_TEST.pkl')
+    draw.load_model_params(f_name="TBCLM_IMP_PARAMS_{}.pkl".format(step_type))
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -263,7 +263,7 @@ def test_imocld_imputation(step_type='add'):
             out_file.flush()
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
-            draw.save_model_params("TBCLM_IMP_PARAMS_{}.pkl".format(step_type))
+            #draw.save_model_params("TBCLM_IMP_PARAMS_{}.pkl".format(step_type))
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
             Xb = to_fX(Xva[:5000])
@@ -277,17 +277,17 @@ def test_imocld_imputation(step_type='add'):
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
-            # # draw some independent samples from the model
-            # Xb = to_fX(Xva[:256])
-            # _, Xb, Mb = construct_masked_data(Xb, drop_prob=0.0, occ_dim=15, \
-            #           data_mean=None)
-            # samples = draw.do_sample(Xb, Mb)
-            # n_iter, N, D = samples.shape
-            # samples = samples.reshape( (n_iter, N, 28, 28) )
-            # for j in xrange(n_iter):
-            #     img = img_grid(samples[j,:,:,:])
-            #     img.save("TBM-samples-b%06d-%03d.png" % (i, j))
+            # draw some independent samples from the model
+            Xb = to_fX(Xva[:256])
+            _, Xb, Mb = construct_masked_data(Xb, drop_prob=0.0, occ_dim=15, \
+                      data_mean=None)
+            samples = draw.do_sample(Xb, Mb)
+            n_iter, N, D = samples.shape
+            samples = samples.reshape( (n_iter, N, 28, 28) )
+            for j in xrange(n_iter):
+                img = img_grid(samples[j,:,:,:])
+                img.save("TBCLM-IMP-samples-b%06d-%03d.png" % (i, j))
 
 if __name__=="__main__":
-    test_imocld_imputation(step_type='add')
-    #test_imocld_imputation(step_type='jump')
+    #test_imocld_imputation(step_type='add')
+    test_imocld_imputation(step_type='jump')
