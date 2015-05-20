@@ -21,8 +21,8 @@ resource.setrlimit(resource.RLIMIT_STACK, (2**29,-1))
 sys.setrecursionlimit(10**6)
 
 # DERP
-#RESULT_PATH = "TFD_WALKOUT_TEST_KLD/"
-RESULT_PATH = "TFD_WALKOUT_TEST_VAE/"
+RESULT_PATH = "TFD_WALKOUT_TEST_KLD/"
+#RESULT_PATH = "TFD_WALKOUT_TEST_VAE/"
 #RESULT_PATH = "TFD_WALKOUT_TEST_MAX_KLD/"
 PRIOR_DIM = 100
 LOGVAR_BOUND = 6.0
@@ -48,8 +48,8 @@ def pretrain_osm(lam_kld=0.0):
     Xva = dataset[0]
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 100
-    batch_reps = 5
+    batch_size = 200
+    batch_reps = 1
 
     # setup some symbolic variables and stuff
     Xd = T.matrix('Xd_base')
@@ -194,9 +194,9 @@ if __name__=="__main__":
 	#train_walk_from_pretrained_osm(lam_kld=60.0)
 
     # FOR KLD MODEL
-    # pretrain_osm(lam_kld=15.0)
+    pretrain_osm(lam_kld=15.0)
     # train_walk_from_pretrained_osm(lam_kld=15.0)
 
     # FOR VAE MODEL
-    pretrain_osm(lam_kld=1.0)
+    #pretrain_osm(lam_kld=1.0)
     #train_walk_from_pretrained_osm(lam_kld=1.0)

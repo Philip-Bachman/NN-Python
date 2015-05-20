@@ -18,6 +18,7 @@ from blocks.bricks.recurrent import BaseRecurrent, recurrent
 from blocks.initialization import Constant, IsotropicGaussian, Orthogonal
 from blocks.bricks import Random, MLP, Linear, Tanh, Softmax, Sigmoid, Initializable
 from blocks.bricks import Tanh, Identity, Activation, Feedforward
+from blocks.bricks.cost import BinaryCrossEntropy
 from blocks.utils import shared_floatx_nans
 from blocks.roles import add_role, WEIGHT, BIAS, PARAMETER, AUXILIARY
 
@@ -604,7 +605,7 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
             c = self.writer_mlp.apply(c_dec)
         # compute the NLL of the reconstructiion as of this step
         c_as_x = tensor.nnet.sigmoid(c)
-        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x))
+        nll = tensor.flatten(BinaryCrossEntropy.apply(x, c_as_x))
         # compute KL(q || p) and KL(p || q) for this step
         kl_q2p = tensor.sum(gaussian_kld(q_gen_mean, q_gen_logvar, \
                             p_gen_mean, p_gen_logvar), axis=1)
@@ -1002,8 +1003,8 @@ class IMoCLDrawModels(BaseRecurrent, Initializable, Random):
             c = self.writer_mlp.apply(c_dec)
         # compute the NLL of the reconstruction as of this step
         c_as_x = tensor.nnet.sigmoid(c)
-        m_inv = 1.0 - m
-        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x, mask=m_inv))
+        x_m = (m * x) + ((1.0 - m) * c_as_x)
+        nll = tensor.flatten(BinaryCrossEntropy.apply(x, x_m))
         # compute KL(q || p) and KL(p || q) for this step
         kl_q2p = tensor.sum(gaussian_kld(q_zg_mean, q_zg_logvar, \
                             p_zg_mean, p_zg_logvar), axis=1)
@@ -1444,7 +1445,7 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         esp_enc = tensor.nnet.sigmoid(esp_enc - 2.0)
         esp_dec = tensor.nnet.sigmoid(esp_dec - 2.0)
         # compute nll for this step (post update)
-        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x))
+        nll = tensor.flatten(BinaryCrossEntropy.apply(x, c_as_x))
         # compute KLd between encoder and decoder stopping probabilities
         kl_esp = bernoulli_kld(esp_enc, esp_dec)
         # compute KLd between the encoder and decoder distributions over z
@@ -1518,7 +1519,7 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         esp_mix_enc = tensor.nnet.sigmoid(esp_mix_enc - 2.0)
         esp_mix_dec = tensor.nnet.sigmoid(esp_mix_dec - 2.0)
         # compute nll for this step (post update)
-        nll_mix = -1.0 * tensor.flatten(log_prob_bernoulli(x_out, c_as_x))
+        nll_mix = tensor.flatten(BinaryCrossEntropy.apply(x_out, c_as_x))
         # compute KLd for the encoder/decoder early stopping probabilities
         kl_esp_mix = bernoulli_kld(esp_mix_enc, esp_mix_dec)
         # compute KLd for the encoder/decoder distributions over z
