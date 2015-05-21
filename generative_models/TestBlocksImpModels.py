@@ -96,7 +96,7 @@ def construct_masked_data(xi, \
     else:
         # don't apply fully-random occlusion
         xm_rand = np.ones(xi.shape)
-    if occ_dim is None:
+    if (occ_dim is None) or (occ_dim == 0):
         # don't apply rectangular occlusion
         xm_patch = np.ones(xi.shape)
     else:
@@ -121,7 +121,7 @@ def shift_and_scale_into_01(X):
 ########################################
 ########################################
 
-def test_imocld_imputation(step_type='add', occ_dim=14, attention=False):
+def test_imocld_imputation(step_type='add', occ_dim=14, drop_prob=0.0, attention=False):
     ##########################
     # Get some training data #
     ##########################
@@ -146,6 +146,7 @@ def test_imocld_imputation(step_type='add', occ_dim=14, attention=False):
     mix_dim = 20
     z_dim = 100
     n_iter = 16
+    dp_int = int(100.0 * drop_prob)
     
     rnninits = {
         'weights_init': IsotropicGaussian(0.01),
@@ -212,13 +213,13 @@ def test_imocld_imputation(step_type='add', occ_dim=14, attention=False):
     # build the cost gradients, training function, samplers, etc.
     draw.build_model_funcs()
 
-    #draw.load_model_params(f_name="TBCLM_IMP_PARAMS_OD{}_{}_{}.pkl".format(occ_dim, step_type, att_tag))
+    #draw.load_model_params(f_name="TBCLM_IMP_PARAMS_OD{}_DP{}_{}_{}.pkl".format(occ_dim, dp_int, step_type, att_tag))
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
     ################################################################
     print("Beginning to train the model...")
-    out_file = open("TBCLM_IMP_RESULTS_OD{}_{}_{}.txt".format(occ_dim, step_type, att_tag), 'wb')
+    out_file = open("TBCLM_IMP_RESULTS_OD{}_DP{}_{}_{}.txt".format(occ_dim, dp_int, step_type, att_tag), 'wb')
     costs = [0. for i in range(10)]
     learn_rate = 0.0002
     momentum = 0.5
@@ -245,8 +246,8 @@ def test_imocld_imputation(step_type='add', occ_dim=14, attention=False):
 
         # perform a minibatch update and record the cost for this batch
         Xb = to_fX(Xtr.take(batch_idx, axis=0))
-        _, Xb, Mb = construct_masked_data(Xb, drop_prob=0.0, occ_dim=occ_dim, \
-                                          data_mean=None)
+        _, Xb, Mb = construct_masked_data(Xb, drop_prob=drop_prob, \
+                                    occ_dim=occ_dim, data_mean=None)
         result = draw.train_joint(Xb, Mb)
 
         costs = [(costs[j] + result[j]) for j in range(len(result))]
@@ -265,12 +266,12 @@ def test_imocld_imputation(step_type='add', occ_dim=14, attention=False):
             out_file.flush()
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
-            draw.save_model_params("TBCLM_IMP_PARAMS_OD{}_{}_{}.pkl".format(occ_dim, step_type, att_tag))
+            draw.save_model_params("TBCLM_IMP_PARAMS_OD{}_DP{}_{}_{}.pkl".format(occ_dim, dp_int, step_type, att_tag))
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
             Xb = to_fX(Xva[:5000])
-            _, Xb, Mb = construct_masked_data(Xb, drop_prob=0.0, occ_dim=occ_dim, \
-                                  data_mean=None)
+            _, Xb, Mb = construct_masked_data(Xb, drop_prob=drop_prob, \
+                                    occ_dim=occ_dim, data_mean=None)
             va_costs = draw.compute_nll_bound(Xb, Mb)
             str1 = "    va_nll_bound : {}".format(va_costs[1])
             str2 = "    va_nll_term  : {}".format(va_costs[2])
@@ -281,8 +282,8 @@ def test_imocld_imputation(step_type='add', occ_dim=14, attention=False):
             out_file.flush()
             # draw some independent samples from the model
             # Xb = to_fX(Xva[:256])
-            # _, Xb, Mb = construct_masked_data(Xb, drop_prob=0.0, occ_dim=occ_dim, \
-            #           data_mean=None)
+            # _, Xb, Mb = construct_masked_data(Xb, drop_prob=drop_prob, \
+            #                         occ_dim=occ_dim, data_mean=None)
             # samples = draw.do_sample(Xb, Mb)
             # n_iter, N, D = samples.shape
             # samples = samples.reshape( (n_iter, N, 28, 28) )
@@ -291,5 +292,11 @@ def test_imocld_imputation(step_type='add', occ_dim=14, attention=False):
             #     img.save("TBCLM-IMP-samples-b%06d-%03d.png" % (i, j))
 
 if __name__=="__main__":
-    test_imocld_imputation(step_type='add', occ_dim=14)
-    #test_imocld_imputation(step_type='jump', occ_dim=14)
+    #test_imocld_imputation(step_type='add', occ_dim=14, drop_prob=0.0)
+    #test_imocld_imputation(step_type='jump', occ_dim=14, drop_prob=0.0)
+    test_imocld_imputation(step_type='add', occ_dim=16, drop_prob=0.0)
+    test_imocld_imputation(step_type='jump', occ_dim=16, drop_prob=0.0)
+    test_imocld_imputation(step_type='add', occ_dim=0, drop_prob=0.6)
+    test_imocld_imputation(step_type='jump', occ_dim=0, drop_prob=0.6)
+    #test_imocld_imputation(step_type='add', occ_dim=0, drop_prob=0.8)
+    #test_imocld_imputation(step_type='jump', occ_dim=0, drop_prob=0.8)

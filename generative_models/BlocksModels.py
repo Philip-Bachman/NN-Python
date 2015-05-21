@@ -38,11 +38,9 @@ def log_prob_bernoulli(p_true, p_approx, mask=None):
     """
     if mask is None:
         mask = tensor.ones((1, p_approx.shape[1]))
-    #log_prob_1 = p_true * tensor.log(p_approx)
-    #log_prob_0 = (1.0 - p_true) * tensor.log((1.0 - p_approx))
-    #log_prob_01 = log_prob_1 + log_prob_0
-    #row_log_probs = tensor.sum((log_prob_01 * mask), axis=1, keepdims=True)
-    row_log_probs = -1.0 * tensor.sum((tensor.nnet.binary_crossentropy(p_approx, p_true) * mask), axis=1, keepdims=True)
+    row_log_probs = -1.0 * tensor.sum( \
+            (tensor.nnet.binary_crossentropy(p_approx, p_true) * mask), \
+            axis=1, keepdims=True)
     return row_log_probs
 
 def gaussian_kld(mu_left, logvar_left, mu_right, logvar_right):
@@ -332,7 +330,6 @@ class Qsampler(Initializable, Random):
 
 #-----------------------------------------------------------------------------
 
-
 class Reader(Initializable):
     def __init__(self, x_dim, dec_dim, **kwargs):
         super(Reader, self).__init__(name="reader", **kwargs)
@@ -420,7 +417,6 @@ class Writer(Initializable):
     def apply(self, h):
         return self.transform.apply(h)
 
-
 class AttentionWriter(Initializable):
     def __init__(self, input_dim, output_dim, width, height, N, **kwargs):
         super(AttentionWriter, self).__init__(name="writer", **kwargs)
@@ -478,7 +474,6 @@ class AttentionWriter(Initializable):
         c_update = 1./gamma * self.zoomer.write(w, center_y, center_x, delta, sigma)
 
         return c_update, center_y, center_x, delta
-
 
 ##########################################################
 # Generalized DRAW model, with infinite mixtures and RL. #
@@ -1081,7 +1076,7 @@ class IMoCLDrawModels(BaseRecurrent, Initializable, Random):
         he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):(cd_dim+hd_dim+ce_dim+he_dim)]
         cv0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):(cd_dim+hd_dim+ce_dim+he_dim+cv_dim)]
         hv0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim+cv_dim):(cd_dim+hd_dim+ce_dim+he_dim+cv_dim+hv_dim)]
-        sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim+cv_dim+hv_dim):]
+        sm0 = 0.0 * mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim+cv_dim+hv_dim):]
 
         # compute KL-divergence information for the mixture init step
         kl_q2p_mix = tensor.sum(gaussian_kld(q_zm_mean, q_zm_logvar, \
@@ -1160,7 +1155,7 @@ class IMoCLDrawModels(BaseRecurrent, Initializable, Random):
         he0 = mix_init[:, (cd_dim+hd_dim+ce_dim):(cd_dim+hd_dim+ce_dim+he_dim)]
         cv0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim):(cd_dim+hd_dim+ce_dim+he_dim+cv_dim)]
         hv0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim+cv_dim):(cd_dim+hd_dim+ce_dim+he_dim+cv_dim+hv_dim)]
-        sm0 = mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim+cv_dim+hv_dim):]
+        sm0 = 0.0 * mix_init[:, (cd_dim+hd_dim+ce_dim+he_dim+cv_dim+hv_dim):]
 
         # get zero-mean, unit-std. Gaussian noise for use in scan op
         u_gen = self.theano_rng.normal(

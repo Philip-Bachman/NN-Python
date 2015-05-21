@@ -122,7 +122,6 @@ def test_imoold_generation(step_type='add', attention=False):
         'biases_init': Constant(0.),
     }
 
-
     # setup the reader and writer
     if attention:
         read_N, write_N = (2, 5) # resolution of reader and writer
@@ -137,7 +136,7 @@ def test_imoold_generation(step_type='add', attention=False):
     else:
         read_dim = 2*x_dim
         reader_mlp = Reader(x_dim=x_dim, dec_dim=dec_dim, **inits)
-        writer_mlp = MLP([None, Tanh(), None], [dec_dim, write_dim, 2*write_dim, x_dim], \
+        writer_mlp = MLP([None, None], [dec_dim, write_dim, x_dim], \
                          name="writer_mlp", **inits)
         att_tag = "NA"
     
@@ -242,13 +241,13 @@ def test_imoold_generation(step_type='add', attention=False):
             print(joint_str)
             out_file.write(joint_str+"\n")
             out_file.flush()
-            # # draw some independent samples from the model
-            # samples = draw.do_sample(16*16)
-            # n_iter, N, D = samples.shape
-            # samples = samples.reshape( (n_iter, N, 28, 28) )
-            # for j in xrange(n_iter):
-            #     img = img_grid(samples[j,:,:,:])
-            #     img.save("TBOLM-gen-samples-%03d.png" % (j,))
+            # draw some independent samples from the model
+            samples = draw.do_sample(16*16)
+            n_iter, N, D = samples.shape
+            samples = samples.reshape( (n_iter, N, 28, 28) )
+            for j in xrange(n_iter):
+                img = img_grid(samples[j,:,:,:])
+                img.save("TBOLM-gen-samples-%03d.png" % (j,))
 
 if __name__=="__main__":
     test_imoold_generation(step_type='add', attention=False)
