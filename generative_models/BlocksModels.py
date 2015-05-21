@@ -38,10 +38,11 @@ def log_prob_bernoulli(p_true, p_approx, mask=None):
     """
     if mask is None:
         mask = tensor.ones((1, p_approx.shape[1]))
-    log_prob_1 = p_true * tensor.log(p_approx+1e-6)
-    log_prob_0 = (1.0 - p_true) * tensor.log((1.0 - p_approx)+1e-6)
-    log_prob_01 = log_prob_1 + log_prob_0
-    row_log_probs = tensor.sum((log_prob_01 * mask), axis=1, keepdims=True)
+    #log_prob_1 = p_true * tensor.log(p_approx)
+    #log_prob_0 = (1.0 - p_true) * tensor.log((1.0 - p_approx))
+    #log_prob_01 = log_prob_1 + log_prob_0
+    #row_log_probs = tensor.sum((log_prob_01 * mask), axis=1, keepdims=True)
+    row_log_probs = -1.0 * tensor.sum((tensor.nnet.binary_crossentropy(p_approx, p_true) * mask), axis=1, keepdims=True)
     return row_log_probs
 
 def gaussian_kld(mu_left, logvar_left, mu_right, logvar_right):
@@ -605,7 +606,7 @@ class IMoOLDrawModels(BaseRecurrent, Initializable, Random):
             c = self.writer_mlp.apply(c_dec)
         # compute the NLL of the reconstructiion as of this step
         c_as_x = tensor.nnet.sigmoid(c)
-        nll = tensor.flatten(BinaryCrossEntropy.apply(x, c_as_x))
+        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x))
         # compute KL(q || p) and KL(p || q) for this step
         kl_q2p = tensor.sum(gaussian_kld(q_gen_mean, q_gen_logvar, \
                             p_gen_mean, p_gen_logvar), axis=1)
@@ -1003,8 +1004,8 @@ class IMoCLDrawModels(BaseRecurrent, Initializable, Random):
             c = self.writer_mlp.apply(c_dec)
         # compute the NLL of the reconstruction as of this step
         c_as_x = tensor.nnet.sigmoid(c)
-        x_m = (m * x) + ((1.0 - m) * c_as_x)
-        nll = tensor.flatten(BinaryCrossEntropy.apply(x, x_m))
+	m_inv = 1.0 - m
+        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x, mask=m_inv))
         # compute KL(q || p) and KL(p || q) for this step
         kl_q2p = tensor.sum(gaussian_kld(q_zg_mean, q_zg_logvar, \
                             p_zg_mean, p_zg_logvar), axis=1)
@@ -1152,7 +1153,7 @@ class IMoCLDrawModels(BaseRecurrent, Initializable, Random):
         p_zm_mean, p_zm_logvar, p_zm = \
                 self.mix_enc_mlp.apply(x_m, u_mix) # use masked x info
         # transform samples from q(z_mix | x) into initial generator state
-        mix_init = self.mix_dec_mlp.apply(q_zm)
+        mix_init = self.mix_dec_mlp.apply(p_zm)
         cd0 = mix_init[:, :cd_dim]
         hd0 = mix_init[:, cd_dim:(cd_dim+hd_dim)]
         ce0 = mix_init[:, (cd_dim+hd_dim):(cd_dim+hd_dim+ce_dim)]
@@ -1445,7 +1446,7 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         esp_enc = tensor.nnet.sigmoid(esp_enc - 2.0)
         esp_dec = tensor.nnet.sigmoid(esp_dec - 2.0)
         # compute nll for this step (post update)
-        nll = tensor.flatten(BinaryCrossEntropy.apply(x, c_as_x))
+        nll = -1.0 * tensor.flatten(log_prob_bernoulli(x, c_as_x))
         # compute KLd between encoder and decoder stopping probabilities
         kl_esp = bernoulli_kld(esp_enc, esp_dec)
         # compute KLd between the encoder and decoder distributions over z
@@ -1519,7 +1520,7 @@ class IMoESDrawModels(BaseRecurrent, Initializable, Random):
         esp_mix_enc = tensor.nnet.sigmoid(esp_mix_enc - 2.0)
         esp_mix_dec = tensor.nnet.sigmoid(esp_mix_dec - 2.0)
         # compute nll for this step (post update)
-        nll_mix = tensor.flatten(BinaryCrossEntropy.apply(x_out, c_as_x))
+        nll_mix = -1.0 * tensor.flatten(log_prob_bernoulli(x_out, c_as_x))
         # compute KLd for the encoder/decoder early stopping probabilities
         kl_esp_mix = bernoulli_kld(esp_mix_enc, esp_mix_dec)
         # compute KLd for the encoder/decoder distributions over z
