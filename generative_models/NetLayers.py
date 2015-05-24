@@ -13,19 +13,6 @@ from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 # ACTIVATIONS AND OTHER STUFF #
 ###############################
 
-def DCG(x):
-    x_dcg = theano.gradient.disconnected_grad(x)
-    return x_dcg
-
-def constFX(x):
-    """Cast x as constant TensorVariable with dtype floatX."""
-    x_CFX = T.constant(x, dtype=theano.config.floatX)
-    return x_CFX
-
-def to_fX(np_ary):
-    np_ary_fX = np_ary.astype(theano.config.floatX)
-    return np_ary_fX
-
 def row_normalize(x):
     """Normalize rows of matrix x to unit (L2) norm."""
     x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1) +  constFX(1e-8))

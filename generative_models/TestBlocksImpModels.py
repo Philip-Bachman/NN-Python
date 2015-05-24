@@ -28,10 +28,10 @@ from blocks.bricks.recurrent import SimpleRecurrent, LSTM
 # phil's sweetness
 import utils
 from BlocksModels import *
-from NetLayers import apply_mask, binarize_data, row_shuffle, to_fX
 from DKCode import get_adam_updates, get_adadelta_updates
 from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist
-from HelperFuncs import sample_masks, sample_patch_masks
+from HelperFuncs import construct_masked_data, shift_and_scale_into_01, \
+                        row_shuffle, to_fX
 
 ###################################
 ###################################
@@ -78,41 +78,6 @@ def img_grid(arr, global_scale=True):
     
     I = (255*I).astype(np.uint8)
     return Image.fromarray(I)
-
-def construct_masked_data(xi, \
-                          drop_prob=0.0, \
-                          occ_dim=None, \
-                          data_mean=None):
-    """
-    Construct randomly masked data from xi.
-    """
-    if data_mean is None:
-        data_mean = np.zeros((xi.shape[1],))
-    im_dim = int(xi.shape[1]**0.5) # images should be square
-    xo = xi.copy()
-    if drop_prob > 0.0:
-        # apply fully-random occlusion
-        xm_rand = sample_masks(xi, drop_prob=drop_prob)
-    else:
-        # don't apply fully-random occlusion
-        xm_rand = np.ones(xi.shape)
-    if (occ_dim is None) or (occ_dim == 0):
-        # don't apply rectangular occlusion
-        xm_patch = np.ones(xi.shape)
-    else:
-        # apply rectangular occlusion
-        xm_patch = sample_patch_masks(xi, (im_dim,im_dim), (occ_dim,occ_dim))
-    xm = xm_rand * xm_patch
-    xi = (xm * xi) + ((1.0 - xm) * data_mean)
-    xi = to_fX(xi)
-    xo = to_fX(xo)
-    xm = to_fX(xm)
-    return xi, xo, xm
-
-def shift_and_scale_into_01(X):
-    X = X - np.min(X, axis=1, keepdims=True)
-    X = X / np.max(X, axis=1, keepdims=True)
-    return X
 
 
 ########################################
@@ -172,15 +137,17 @@ def test_imocld_imputation(step_type='add', occ_dim=14, drop_prob=0.0, attention
                           name="mix_enc_mlp", **inits)
     # mlp for decoding z_mix into a distribution over initial LSTM states
     mix_dec_mlp = MLP([Tanh(), Tanh()], \
-                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + 2*enc_dim + mix_dim)], \
+                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + 2*enc_dim)], \
                       name="mix_dec_mlp", **inits)
     # mlps for processing inputs to LSTMs
-    var_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
+    var_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
                      name="var_mlp_in", **inits)
-    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
+    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
                      name="enc_mlp_in", **inits)
-    dec_mlp_in = MLP([Identity()], [             (z_dim + mix_dim), 4*dec_dim], \
+    dec_mlp_in = MLP([Identity()], [               z_dim, 4*dec_dim], \
                      name="dec_mlp_in", **inits)
+    #dec_mlp_in = MLP([Identity()], [   (enc_dim + z_dim), 4*dec_dim], \
+    #                 name="dec_mlp_in", **inits)
     # mlps for turning LSTM outputs into conditionals over z_gen
     var_mlp_out = CondNet([], [enc_dim, z_dim], name="var_mlp_out", **inits)
     enc_mlp_out = CondNet([], [enc_dim, z_dim], name="enc_mlp_out", **inits)
@@ -220,6 +187,8 @@ def test_imocld_imputation(step_type='add', occ_dim=14, drop_prob=0.0, attention
     ################################################################
     print("Beginning to train the model...")
     out_file = open("TBCLM_IMP_RESULTS_OD{}_DP{}_{}_{}.txt".format(occ_dim, dp_int, step_type, att_tag), 'wb')
+    out_file.write("Testing IMoCLDrawModels with dec LSTM update including h_enc.\n")
+    out_file.flush()
     costs = [0. for i in range(10)]
     learn_rate = 0.0002
     momentum = 0.5
@@ -281,22 +250,22 @@ def test_imocld_imputation(step_type='add', occ_dim=14, drop_prob=0.0, attention
             out_file.write(joint_str+"\n")
             out_file.flush()
             # draw some independent samples from the model
-            # Xb = to_fX(Xva[:256])
-            # _, Xb, Mb = construct_masked_data(Xb, drop_prob=drop_prob, \
-            #                         occ_dim=occ_dim, data_mean=None)
-            # samples = draw.do_sample(Xb, Mb)
-            # n_iter, N, D = samples.shape
-            # samples = samples.reshape( (n_iter, N, 28, 28) )
-            # for j in xrange(n_iter):
-            #     img = img_grid(samples[j,:,:,:])
-            #     img.save("TBCLM-IMP-samples-b%06d-%03d.png" % (i, j))
+            Xb = to_fX(Xva[:256])
+            _, Xb, Mb = construct_masked_data(Xb, drop_prob=drop_prob, \
+                                    occ_dim=occ_dim, data_mean=None)
+            samples = draw.do_sample(Xb, Mb)
+            n_iter, N, D = samples.shape
+            samples = samples.reshape( (n_iter, N, 28, 28) )
+            for j in xrange(n_iter):
+                img = img_grid(samples[j,:,:,:])
+                img.save("TBCLM-IMP-samples-%03d.png" % (j,))
 
 if __name__=="__main__":
     #test_imocld_imputation(step_type='add', occ_dim=14, drop_prob=0.0)
     #test_imocld_imputation(step_type='jump', occ_dim=14, drop_prob=0.0)
-    test_imocld_imputation(step_type='add', occ_dim=16, drop_prob=0.0)
-    test_imocld_imputation(step_type='jump', occ_dim=16, drop_prob=0.0)
-    test_imocld_imputation(step_type='add', occ_dim=0, drop_prob=0.6)
-    test_imocld_imputation(step_type='jump', occ_dim=0, drop_prob=0.6)
-    #test_imocld_imputation(step_type='add', occ_dim=0, drop_prob=0.8)
-    #test_imocld_imputation(step_type='jump', occ_dim=0, drop_prob=0.8)
+    #test_imocld_imputation(step_type='add', occ_dim=16, drop_prob=0.0)
+    #test_imocld_imputation(step_type='jump', occ_dim=16, drop_prob=0.0)
+    #test_imocld_imputation(step_type='add', occ_dim=0, drop_prob=0.6)
+    #test_imocld_imputation(step_type='jump', occ_dim=0, drop_prob=0.6)
+    test_imocld_imputation(step_type='add', occ_dim=0, drop_prob=0.8)
+    test_imocld_imputation(step_type='jump', occ_dim=0, drop_prob=0.8)

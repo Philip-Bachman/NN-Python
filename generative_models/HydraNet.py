@@ -15,8 +15,8 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
-                      softplus_actfun, constFX, to_fX
+from NetLayers import HiddenLayer, relu_actfun, softplus_actfun
+from HelperFuncs import constFX, to_fX
 
 ####################################
 # INFREENCE NETWORK IMPLEMENTATION #
@@ -48,7 +48,6 @@ class HydraNet(object):
         rng: a numpy.random RandomState object
         Xd: symbolic input matrix for inputs
         params: a dict of parameters describing the desired network:
-            lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on observable variables
             hid_drop: drop rate to use on hidden layer activations
                 -- note: vis_drop/hid_drop are optional, with defaults 0.0/0.0
@@ -73,7 +72,6 @@ class HydraNet(object):
         # Process user-supplied parameters for this network #
         #####################################################
         self.params = params
-        self.lam_l2a = params['lam_l2a']
         if 'build_theano_funcs' in params:
             self.build_theano_funcs = params['build_theano_funcs']
         else:
@@ -238,8 +236,6 @@ class HydraNet(object):
 
         # create a symbolic handle for the outputs of this net
         self.outputs = self.apply(Xd)
-        # Get simple regularization penalty to moderate activation dynamics
-        self.act_reg_cost = self.lam_l2a * self._act_reg_cost()
         return
 
     def apply(self, X, use_bn=False, use_drop=False):
@@ -284,18 +280,6 @@ class HydraNet(object):
         for layer in self.output_layers:
             layer.bias_noise.set_value(new_bn)
         return
-
-    def _act_reg_cost(self):
-        """
-        Apply L2 regularization to the activations in each net.
-        """
-        act_sq_sums = []
-        for layer in self.shared_layers:
-            act_sq_sums.append(layer.act_l2_sum)
-        for layer in self.output_layers:
-            act_sq_sums.append(layer.act_l2_sum)
-        full_act_sq_sum = T.sum(act_sq_sums)
-        return full_act_sq_sum
 
     def init_biases(self, b_init=0.0, b_std=1e-2):
         """
@@ -381,7 +365,7 @@ class HydraNet(object):
                 numpy_param_dicts[layer_group].append(numpy_dict)
         # dump the numpy version of self.shared_param_dicts to the dict
         model_dict['numpy_param_dicts'] = numpy_param_dicts
-        return
+        return model_dict
 
 def load_hydranet_from_file(f_name=None, rng=None, Xd=None, \
                             new_params=None):
@@ -450,6 +434,12 @@ def load_hydranet_from_dict(model_dict, rng=None, Xd=None, \
         print("    {0:s}: {1:s}".format(str(k), str(self_dot_params[k])))
     print("==================================================")
     return clone_net
+
+
+
+
+
+
 
 if __name__=="__main__":
     # Derp

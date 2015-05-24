@@ -17,20 +17,15 @@ import theano.tensor as T
 
 # blocks stuff
 from blocks.initialization import Constant, IsotropicGaussian, Orthogonal
-from blocks.filter import VariableFilter
-from blocks.graph import ComputationGraph
-from blocks.roles import PARAMETER
 from blocks.model import Model
 from blocks.bricks import Tanh, Identity, Rectifier
-from blocks.bricks.cost import BinaryCrossEntropy
 from blocks.bricks.recurrent import SimpleRecurrent, LSTM
 
 # phil's sweetness
 import utils
 from BlocksModels import *
-from NetLayers import apply_mask, binarize_data, row_shuffle, to_fX
-from DKCode import get_adam_updates, get_adadelta_updates
-from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist
+from load_data import load_udm, load_mnist, load_binarized_mnist
+from HelperFuncs import row_shuffle, to_fX
 
 ###################################
 ###################################
@@ -144,12 +139,12 @@ def test_imoold_generation(step_type='add', attention=False):
     mix_enc_mlp = CondNet([Tanh()], [x_dim, 250, mix_dim], \
                           name="mix_enc_mlp", **inits)
     mix_dec_mlp = MLP([Tanh(), Tanh()], \
-                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + mix_dim)], \
+                      [mix_dim, 250, (2*enc_dim + 2*dec_dim)], \
                       name="mix_dec_mlp", **inits)
     # setup the components of the sequential generative model
-    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
+    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
                      name="enc_mlp_in", **inits)
-    dec_mlp_in = MLP([Identity()], [             (z_dim + mix_dim), 4*dec_dim], \
+    dec_mlp_in = MLP([Identity()], [               z_dim, 4*dec_dim], \
                      name="dec_mlp_in", **inits)
     enc_mlp_out = CondNet([], [enc_dim, z_dim], name="enc_mlp_out", **inits)
     dec_mlp_out = CondNet([], [dec_dim, z_dim], name="dec_mlp_out", **inits)

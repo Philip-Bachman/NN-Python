@@ -10,8 +10,7 @@ import cPickle
 #from theano.tensor.shared_randomstreams import RandomStreams as RandStream
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
-from NetLayers import HiddenLayer, JoinLayer, DAELayer, \
-                      relu_actfun, safe_softmax
+from NetLayers import HiddenLayer, relu_actfun, safe_softmax
 
 #####################################################################
 # NON-LINEARITIES: Some activation functions, for your convenience. #
@@ -66,7 +65,6 @@ class PeaNet(object):
         rng: a numpy.random RandomState object
         Xd: Theano symbolic matrix for "observation" inputs to this PeaNet
         params: a dict of parameters describing the desired ensemble:
-            lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on input layers (when desired)
             hid_drop: drop rate to use on hidden layers (when desired)
                 -- note: vis_drop/hid_drop are optional, with defaults 0.2/0.5
@@ -104,7 +102,6 @@ class PeaNet(object):
         assert(len(params['spawn_configs']) > 0)
         self.Xd = Xd # symbolic input to this computation graph
         self.params = params
-        lam_l2a = params['lam_l2a']
         if 'vis_drop' in params:
             self.vis_drop = params['vis_drop']
         else:
@@ -261,22 +258,9 @@ class PeaNet(object):
         self.pea_reg_cost = self._ear_cost()
         # get a cost function for penalizing/rewarding prediction entropy
         self.ent_reg_cost = self._ent_cost()
-        self.act_reg_cost = lam_l2a * self._act_reg_cost()
         # construct a function for sampling from a categorical
         self.sample_posterior = self._construct_sample_posterior()
         return
-
-    def _act_reg_cost(self):
-        """
-        Apply L2 regularization to the activations in each spawn-net.
-        """
-        act_sq_sums = []
-        for i in range(self.spawn_count):
-            sn = self.spawn_nets[i]
-            for snl in sn:
-                act_sq_sums.append(snl.act_l2_sum)
-        full_act_sq_sum = T.sum(act_sq_sums) / self.spawn_count
-        return full_act_sq_sum
 
     def _ear_cost(self):
         """
@@ -406,67 +390,14 @@ def load_peanet_from_file(f_name=None, rng=None, Xd=None):
 
 
 if __name__ == "__main__":
-    # TEST CODE FOR MODEL SAVING AND LOADING
-    from load_data import load_udm, load_udm_ss, load_mnist
-    from NetLayers import relu_actfun, softplus_actfun, \
-                          safe_softmax, safe_log
+    # Derp
+    print("NO TEST/DEMO CODE FOR NOW.")
+
+
+
+
+
     
-    # Simple test code, to check that everything is basically functional.
-    print("TESTING...")
-
-    # Initialize a source of randomness
-    rng = np.random.RandomState(1234)
-
-    # Load some data to train/validate/test with
-    dataset = 'data/mnist.pkl.gz'
-    datasets = load_udm(dataset, zero_mean=False)
-    Xtr = datasets[0][0]
-    Xtr = Xtr.get_value(borrow=False)
-    Xva = datasets[1][0]
-    Xva = Xva.get_value(borrow=False)
-    print("Xtr.shape: {0:s}, Xva.shape: {1:s}".format(str(Xtr.shape),str(Xva.shape)))
-
-    # get and set some basic dataset information
-    tr_samples = Xtr.shape[0]
-    data_dim = Xtr.shape[1]
-    batch_size = 128
-    prior_dim = 50
-    prior_sigma = 1.0
-    Xtr_mean = np.mean(Xtr, axis=0, keepdims=True)
-    Xtr_mean = (0.0 * Xtr_mean) + np.mean(Xtr)
-    Xc_mean = np.repeat(Xtr_mean, batch_size, axis=0).astype(theano.config.floatX)
-
-    # Symbolic inputs
-    Xd = T.matrix(name='Xd')
-
-    ###############################
-    # Setup discriminator network #
-    ###############################
-    # Set some reasonable mlp parameters
-    dn_params = {}
-    # Set up some proto-networks
-    pc0 = [data_dim, (250, 4), (250, 4), 10]
-    dn_params['proto_configs'] = [pc0]
-    # Set up some spawn networks
-    sc0 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    #sc1 = {'proto_key': 0, 'input_noise': 0.1, 'bias_noise': 0.1, 'do_dropout': True}
-    dn_params['spawn_configs'] = [sc0]
-    dn_params['spawn_weights'] = [1.0]
-    # Set remaining params
-    dn_params['lam_l2a'] = 1e-2
-    dn_params['vis_drop'] = 0.2
-    dn_params['hid_drop'] = 0.5
-    dn_params['init_scale'] = 2.0
-    # Initialize a network object to use as the discriminator
-    DN = PeaNet(rng=rng, Xd=Xd, params=dn_params)
-    DN.init_biases(0.0)
-
-    pkl_file_name = "TEST_PKL_FILE.pkl"
-    print("Saving model:")
-    DN.save_to_file(f_name=pkl_file_name)
-    print("Loading model:")
-    DN_clone = load_peanet_from_file(f_name=pkl_file_name, rng=rng, Xd=Xd)
-    print("DONE!")
 
 ##############
 # EYE BUFFER #

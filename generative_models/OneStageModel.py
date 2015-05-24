@@ -14,8 +14,7 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      apply_mask, to_fX
+from HelperFuncs import apply_mask, to_fX
 from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
 
@@ -67,7 +66,7 @@ class OneStageModel(object):
         if 'logvar_bound' in self.params:
             self.logvar_bound = self.params['logvar_bound']
         else:
-            self.logvar_bound = 10
+            self.logvar_bound = 10.0
         #
         # x_type: this tells if we're using bernoulli or gaussian model for
         #         the observations
@@ -86,7 +85,6 @@ class OneStageModel(object):
         # record the symbolic variables that will provide inputs to the
         # computation graph created to describe this OneStageModel
         self.x_in = x_in
-        self.batch_reps = T.lscalar()
         
         #####################################################################
         # Setup the computation graph that provides values in our objective #
@@ -284,12 +282,13 @@ class OneStageModel(object):
         """
         # setup some symbolic variables for theano to deal with
         xi = T.matrix()
+        br = T.lscalar()
         # collect the values to output with each function evaluation
         outputs = [self.joint_cost, self.nll_cost, self.kld_cost, \
                    self.reg_cost, self.nll_costs, self.kld_costs]
-        func = theano.function(inputs=[ xi, self.batch_reps ], \
+        func = theano.function(inputs=[ xi, br ], \
                 outputs=outputs, \
-                givens={ self.x_in: xi.repeat(self.batch_reps, axis=0) }, \
+                givens={ self.x_in: xi.repeat(br, axis=0) }, \
                 updates=self.joint_updates)
         return func
 

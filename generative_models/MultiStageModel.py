@@ -14,12 +14,9 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      apply_mask, to_fX
-from InfNet import InfNet
-from PeaNet import PeaNet
 from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
+from HelperFuncs import to_fX
 
 ####################
 # IMPLEMENTATATION #

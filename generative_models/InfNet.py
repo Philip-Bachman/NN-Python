@@ -15,8 +15,8 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun, \
-                      softplus_actfun, constFX, to_fX
+from NetLayers import HiddenLayer, relu_actfun, softplus_actfun
+from HelperFuncs import constFX, to_fX
 
 ####################################
 # INFREENCE NETWORK IMPLEMENTATION #
@@ -47,7 +47,6 @@ class InfNet(object):
         rng: a numpy.random RandomState object
         Xd: symbolic input matrix for inputs
         params: a dict of parameters describing the desired network:
-            lam_l2a: L2 regularization weight on neuron activations
             vis_drop: drop rate to use on observable variables
             hid_drop: drop rate to use on hidden layer activations
                 -- note: vis_drop/hid_drop are optional, with defaults 0.0/0.0
@@ -73,7 +72,6 @@ class InfNet(object):
         # Process user-supplied parameters for this network #
         #####################################################
         self.params = params
-        self.lam_l2a = params['lam_l2a']
         if 'build_theano_funcs' in params:
             self.build_theano_funcs = params['build_theano_funcs']
         else:
@@ -349,8 +347,6 @@ class InfNet(object):
                 self.apply(Xd)
         self.output = self.output_samples
         self.out_dim = self.sigma_layers[-1].out_dim
-        # Get simple regularization penalty to moderate activation dynamics
-        self.act_reg_cost = self.lam_l2a * self._act_reg_cost()
         # Construct a theano function for sampling from the approximate
         # posteriors inferred by this model for some collection of points
         # in the "data space".
@@ -467,20 +463,6 @@ class InfNet(object):
         for layer in self.sigma_layers:
             layer.bias_noise.set_value(new_bn)
         return
-
-    def _act_reg_cost(self):
-        """
-        Apply L2 regularization to the activations in each net.
-        """
-        act_sq_sums = []
-        for layer in self.shared_layers:
-            act_sq_sums.append(layer.act_l2_sum)
-        for layer in self.mu_layers:
-            act_sq_sums.append(layer.act_l2_sum)
-        for layer in self.sigma_layers:
-            act_sq_sums.append(layer.act_l2_sum)
-        full_act_sq_sum = T.sum(act_sq_sums)
-        return full_act_sq_sum
 
     def _construct_sample_posterior(self):
         """
@@ -624,12 +606,11 @@ def load_infnet_from_dict(model_dict, rng=None, Xd=None, \
     """
     Load a clone of some previously trained model.
     """
-    assert(not (f_name is None))
     self_dot_params = model_dict['params']
     if not (new_params is None):
         for k in new_params:
             self_dot_params[k] = new_params[k]
-    self_dot_numpy_param_dicts = model_dict['numpy_param_dict']
+    self_dot_numpy_param_dicts = model_dict['numpy_param_dicts']
     self_dot_shared_param_dicts = {'shared': [], 'mu': [], 'sigma': []}
     for layer_group in ['shared', 'mu', 'sigma']:
         for numpy_dict in self_dot_numpy_param_dicts[layer_group]:

@@ -28,9 +28,8 @@ from blocks.bricks.recurrent import SimpleRecurrent, LSTM
 # phil's sweetness
 import utils
 from BlocksModels import *
-from NetLayers import apply_mask, binarize_data, row_shuffle, to_fX
-from DKCode import get_adam_updates, get_adadelta_updates
 from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist
+from HelperFuncs import row_shuffle, to_fX
 
 ###################################
 ###################################
@@ -133,15 +132,17 @@ def test_imocld_generation(step_type='add', attention=False):
                           name="mix_enc_mlp", **inits)
     # mlp for decoding z_mix into a distribution over initial LSTM states
     mix_dec_mlp = MLP([Tanh(), Tanh()], \
-                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + 2*enc_dim + mix_dim)], \
+                      [mix_dim, 250, (2*enc_dim + 2*dec_dim + 2*enc_dim)], \
                       name="mix_dec_mlp", **inits)
     # mlps for processing inputs to LSTMs
-    var_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
+    var_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
                      name="var_mlp_in", **inits)
-    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim + mix_dim), 4*enc_dim], \
+    enc_mlp_in = MLP([Identity()], [(read_dim + dec_dim), 4*enc_dim], \
                      name="enc_mlp_in", **inits)
-    dec_mlp_in = MLP([Identity()], [             (z_dim + mix_dim), 4*dec_dim], \
+    dec_mlp_in = MLP([Identity()], [               z_dim, 4*dec_dim], \
                      name="dec_mlp_in", **inits)
+    #dec_mlp_in = MLP([Identity()], [   (enc_dim + z_dim), 4*dec_dim], \
+    #                 name="dec_mlp_in", **inits)
     # mlps for turning LSTM outputs into conditionals over z_gen
     var_mlp_out = CondNet([], [enc_dim, z_dim], name="var_mlp_out", **inits)
     enc_mlp_out = CondNet([], [enc_dim, z_dim], name="enc_mlp_out", **inits)
@@ -240,14 +241,14 @@ def test_imocld_generation(step_type='add', attention=False):
             out_file.write(joint_str+"\n")
             out_file.flush()
             # draw some independent samples from the model
-            # Xb = to_fX(Xva[:256])
-            # Mb = 0.0 * Xb
-            # samples = draw.do_sample(Xb, Mb)
-            # n_iter, N, D = samples.shape
-            # samples = samples.reshape( (n_iter, N, 28, 28) )
-            # for j in xrange(n_iter):
-            #     img = img_grid(samples[j,:,:,:])
-            #     img.save("TBCLM-gen-samples-%03d.png" % (j,))
+            Xb = to_fX(Xva[:256])
+            Mb = 0.0 * Xb
+            samples = draw.do_sample(Xb, Mb)
+            n_iter, N, D = samples.shape
+            samples = samples.reshape( (n_iter, N, 28, 28) )
+            for j in xrange(n_iter):
+                img = img_grid(samples[j,:,:,:])
+                img.save("TBCLM-gen-samples-%03d.png" % (j,))
 
 if __name__=="__main__":
     test_imocld_generation(step_type='add', attention=False)

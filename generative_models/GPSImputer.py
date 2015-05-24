@@ -3,6 +3,7 @@
 #############################################################################
 
 # basic python
+import cPickle
 import numpy as np
 import numpy.random as npr
 from collections import OrderedDict
@@ -14,10 +15,9 @@ import theano.tensor as T
 from theano.sandbox.cuda.rng_curand import CURAND_RandomStreams as RandStream
 
 # phil's sweetness
-from NetLayers import HiddenLayer, DiscLayer, relu_actfun, softplus_actfun, \
-                      apply_mask, to_fX
 from DKCode import get_adam_updates, get_adadelta_updates
 from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
+from HelperFuncs import to_fX
 
 #######################################
 # IMPLEMENT THE THING THAT DOES STUFF #
@@ -35,10 +35,6 @@ class GPSImputer(object):
         p_zi_given_xi: InfNet for stochastic part of step
         p_xip1_given_zi: HydraNet for deterministic part of step
         q_zi_given_x_xi: InfNet for the guide policy
-        obs_dim: dimension of the observations to generate
-        z_dim: dimension of the stochastic component of p policies
-        imp_steps: number of steps to run imputation procedure
-        step_type: whether to use "add" steps or "swap" steps
         params: REQUIRED PARAMS SHOWN BELOW
                 obs_dim: dimension of inputs to reconstruct
                 z_dim: dimension of latent space for policy wobble
@@ -46,6 +42,8 @@ class GPSImputer(object):
                 step_type: either "add" or "jump"
                 x_type: can be "bernoulli" or "gaussian"
                 obs_transform: can be 'none' or 'sigmoid'
+                use_osm_mode: switch for testing imputation using a
+                              pre-trained VAE
     """
     def __init__(self, rng=None, 
             x_in=None, x_mask=None, x_out=None, \
@@ -62,7 +60,7 @@ class GPSImputer(object):
         self.obs_dim = self.params['obs_dim']
         self.z_dim = self.params['z_dim']
         self.imp_steps = self.params['imp_steps']
-        self.step_type = self.params['step_types']
+        self.step_type = self.params['step_type']
         self.x_type = self.params['x_type']
         assert((self.x_type == 'bernoulli') or (self.x_type == 'gaussian'))
         if 'obs_transform' in self.params:
@@ -83,9 +81,9 @@ class GPSImputer(object):
             self.params['use_osm_mode'] = False
         self.shared_param_dicts = shared_param_dicts
         
-        assert((self.step_type == 'add') or (self.step_type == 'swap'))
+        assert((self.step_type == 'add') or (self.step_type == 'jump'))
         if self.use_osm_mode:
-            self.step_type = 'swap'
+            self.step_type = 'jump'
 
         # grab handles to the relevant InfNets
         self.p_zi_given_xi = p_zi_given_xi
@@ -97,7 +95,8 @@ class GPSImputer(object):
         self.x_in = x_in
         self.x_out = x_out
         self.x_mask = x_mask
-        self.batch_reps = T.lscalar()
+        self.zi_zmuv = T.tensor3()
+        
 
         # setup switching variable for changing between sampling/training
         zero_ary = to_fX( np.zeros((1,)) )
@@ -105,77 +104,80 @@ class GPSImputer(object):
         self.set_train_switch(1.0)
 
         if self.shared_param_dicts is None:
-            # initialize misc. parameters
-            b_init = to_fX( np.zeros((self.obs_dim,)) )
-            self.b_obs = theano.shared(value=b_init, name='msm_b_obs')
+            # initialize parameters "owned" by this model
+            s0_init = to_fX( np.zeros((self.obs_dim,)) )
+            self.s0 = theano.shared(value=s0_init, name='msm_s0')
             self.obs_logvar = theano.shared(value=zero_ary, name='msm_obs_logvar')
             self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar[0])
             self.shared_param_dicts = {}
+            self.shared_param_dicts['s0'] = self.s0
             self.shared_param_dicts['obs_logvar'] = self.obs_logvar
         else:
+            # grab the parameters required by this model from a given dict
+            self.s0 = self.shared_param_dicts['s0']
             self.obs_logvar = self.shared_param_dicts['obs_logvar']
             self.bounded_logvar = 8.0 * T.tanh((1.0/8.0) * self.obs_logvar[0])
 
-        ##########################################
-        # Setup the multi-stage imputation loop. #
-        ##########################################
-        self.xi = []            # holds xi for each i
-        self.zi = []            # holds z samples for each i
-        self.kldi_p2q = []      # KL(p || q) for each i
-        self.kldi_q2p = []      # KL(q || p) for each i
-
-        for i in range(self.imp_steps):
-            print("Building imputation step {0:d}...".format(i+1))
-            # get variables used throughout this refinement step
-            if (i == 0):
-                xi_recon = self.x_in
-            else:
-                xi_recon = self.obs_transform(self.xi[i-1])
-            xi_masked = (self.x_mask * self.x_in) + \
-                        ((1.0 - self.x_mask) * xi_recon)
-            grad_ll = xi_masked - self.x_out
-
+        ###################################################
+        # Setup the iterative immputation loop using scan #
+        ###################################################
+        def imp_step_func(zi_zmuv, si):
+            si_as_x = self.obs_transform(si)
+            xi_masked = (self.x_mask * self.x_out) + \
+                        ((1.0 - self.x_mask) * si_as_x)
+            #grad_ll = self.x_out - xi_masked
             # get samples of next zi, according to the global policy
-            zi_p_mean, zi_p_logvar, zi_p = self.p_zi_given_xi.apply( \
-                    xi_masked, do_samples=True)
+            zi_p_mean, zi_p_logvar = self.p_zi_given_xi.apply( \
+                    xi_masked, do_samples=False)
+            zi_p = zi_p_mean + (T.exp(0.5 * zi_p_logvar) * zi_zmuv)
             # get samples of next zi, according to the guide policy
-            zi_q_mean, zi_q_logvar, zi_q = self.q_zi_given_x_xi.apply( \
-                    T.horizontal_stack(self.x_out, xi_masked), \
-                    do_samples=True)
+            zi_q_mean, zi_q_logvar = self.q_zi_given_x_xi.apply( \
+                    T.horizontal_stack(xi_masked, self.x_out), \
+                    do_samples=False)
+            zi_q = zi_q_mean + (T.exp(0.5 * zi_q_logvar) * zi_zmuv)
 
             if self.use_osm_mode:
-                self.zi.append(zi_p)
+                zi = zi_p
                 # compute relevant KLds for this step
-                self.kldi_q2p.append(gaussian_kld( \
-                    zi_p_mean, zi_p_logvar, 0.0, 0.0))
-                self.kldi_p2q.append(gaussian_kld( \
-                    zi_p_mean, zi_p_logvar, 0.0, 0.0))
+                kldi_q2p = gaussian_kld(zi_p_mean, zi_p_logvar, 0.0, 0.0)
+                kldi_p2q = gaussian_kld(zi_p_mean, zi_p_logvar, 0.0, 0.0)
             else:
                 # make zi samples that can be switched between zi_p and zi_q
-                self.zi.append( ((self.train_switch[0] * zi_q) + \
-                        ((1.0 - self.train_switch[0]) * zi_p)) )
+                zi = ((self.train_switch[0] * zi_q) + \
+                     ((1.0 - self.train_switch[0]) * zi_p))
                 # compute relevant KLds for this step
-                self.kldi_q2p.append(gaussian_kld( \
-                    zi_q_mean, zi_q_logvar, zi_p_mean, zi_p_logvar))
-                self.kldi_p2q.append(gaussian_kld( \
-                    zi_p_mean, zi_p_logvar, zi_q_mean, zi_q_logvar))
+                kldi_q2p = gaussian_kld(zi_q_mean, zi_q_logvar, \
+                                        zi_p_mean, zi_p_logvar)
+                kldi_p2q = gaussian_kld(zi_p_mean, zi_p_logvar, \
+                                        zi_q_mean, zi_q_logvar)
 
-            # compute the next xi, given the sampled zi
-            hydra_out = self.p_xip1_given_zi.apply(self.zi[i])
-            xi_step = hydra_out[-1]
-
-            if (self.step_type == 'swap'):
-                # swap steps always do a full swap (like standard VAE)
-                xip1 = xi_step
+            # compute the next si, given the sampled zi
+            hydra_out = self.p_xip1_given_zi.apply(zi)
+            si_step = hydra_out[-1]
+            if (self.step_type == 'jump'):
+                # jump steps always do a full swap (like standard VAE)
+                sip1 = si_step
             else:
-                # we're here because we're using additive steps...
-                if (i == 0):
-                    # first additive step will also receive a bias
-                    xip1 = xi_step + self.b_obs
-                else:
-                    # subsequent additive steps just add
-                    xip1 = self.xi[i-1] + xi_step
-            self.xi.append( xip1 )
+                # subsequent additive steps just add
+                sip1 = si + si_step
+            # compute NLL for the current imputation
+            nlli = self._construct_nll_costs(sip1, self.x_out, self.x_mask)
+            return sip1, nlli, kldi_q2p, kldi_p2q
+
+        # apply scan op for the sequential imputation loop
+        self.s0_full = T.zeros_like(self.x_in) + self.s0
+        init_vals = [self.s0_full, None, None, None]
+        self.scan_results, self.scan_updates = theano.scan(imp_step_func, \
+                    outputs_info=init_vals, sequences=self.zi_zmuv)
+
+        self.si = self.scan_results[0]
+        self.nlli = self.scan_results[1]
+        self.kldi_q2p = self.scan_results[2]
+        self.kldi_p2q = self.scan_results[3]
+
+        # get the initial imputation state
+        self.x0 = (self.x_mask * self.x_in) + \
+                  ((1.0 - self.x_mask) * self.obs_transform(self.s0_full))
 
         ######################################################################
         # ALL SYMBOLIC VARS NEEDED FOR THE OBJECTIVE SHOULD NOW BE AVAILABLE #
@@ -201,7 +203,7 @@ class GPSImputer(object):
         self.set_lam_l2w(1e-5)
 
         # Grab all of the "optimizable" parameters in "group 1"
-        self.joint_params = [self.b_obs, self.obs_logvar]
+        self.joint_params = [self.s0, self.obs_logvar]
         self.joint_params.extend(self.p_zi_given_xi.mlp_params)
         self.joint_params.extend(self.p_xip1_given_zi.mlp_params)
         self.joint_params.extend(self.q_zi_given_x_xi.mlp_params)
@@ -213,32 +215,23 @@ class GPSImputer(object):
         self.kld_costs = (self.lam_kld_p[0] * self.kld_p) + \
                          (self.lam_kld_q[0] * self.kld_q)
         self.kld_cost = T.mean(self.kld_costs)
-        #####################################
-        # CONSTRUCT THE ENTROPY-BASED COSTS #
-        #####################################
-        self.ent_costs = 0.0 * self.kld_costs
-        self.ent_cost = T.mean(self.ent_costs)
         #################################
         # CONSTRUCT THE NLL-BASED COSTS #
         #################################
-        self.seq_nll_costs = []
-        for i in range(len(self.xi)):
-            nll_i = self._construct_nll_costs(self.x_out, self.x_mask, \
-                                              step_num=i)
-            self.seq_nll_costs.append(nll_i)
-        self.nll_costs = self.seq_nll_costs[-1]
+        self.nll_costs = self.nlli[-1]
         self.nll_cost = self.lam_nll[0] * T.mean(self.nll_costs)
+        self.nll_bounds = self.nll_costs.ravel() + self.kld_q.ravel()
+        self.nll_bound = T.mean(self.nll_bounds)
         ########################################
         # CONSTRUCT THE REST OF THE JOINT COST #
         ########################################
         param_reg_cost = self._construct_reg_costs()
         self.reg_cost = self.lam_l2w[0] * param_reg_cost
-        self.joint_cost = self.nll_cost + self.kld_cost + self.ent_cost + \
-                          self.reg_cost
+        self.joint_cost = self.nll_cost + self.kld_cost + self.reg_cost
         ##############################
         # CONSTRUCT A PER-TRIAL COST #
         ##############################
-        self.obs_costs = self.nll_costs + self.kld_costs + self.ent_costs
+        self.obs_costs = self.nll_costs + self.kld_costs
 
         # Get the gradient of the joint cost for all optimizable parameters
         print("Computing gradients of self.joint_cost...")
@@ -251,13 +244,19 @@ class GPSImputer(object):
         self.joint_updates = get_adam_updates(params=self.joint_params, \
                 grads=self.joint_grads, alpha=self.lr, \
                 beta1=self.mom_1, beta2=self.mom_2, \
-                mom2_init=1e-3, smoothing=1e-4, max_grad_norm=10.0)
+                mom2_init=1e-3, smoothing=1e-5, max_grad_norm=10.0)
+        for k, v in self.scan_updates.items():
+            self.joint_updates[k] = v
 
         # Construct a function for jointly training the generator/inferencer
         print("Compiling cost computer...")
         self.compute_raw_costs = self._construct_raw_costs()
         print("Compiling training function...")
         self.train_joint = self._construct_train_joint()
+        print("Compiling free-energy sampler...")
+        self.compute_fe_terms = self._construct_compute_fe_terms()
+        print("Compiling best step cost computer...")
+        self.compute_per_step_cost = self._construct_compute_per_step_cost()
         print("Compiling data-guided imputer sampler...")
         self.sample_imputer = self._construct_sample_imputer()
         # make easy access points for some interesting parameters
@@ -322,19 +321,29 @@ class GPSImputer(object):
         self.train_switch.set_value(to_fX(new_val))
         return
 
-    def _construct_nll_costs(self, xo, xm, step_num=-1):
+    def _construct_zi_zmuv(self, xi, br):
+        """
+        Construct the necessary (symbolic) samples for computing through this
+        GPSImputer for input (sybolic) matrix xi.
+        """
+        zi_zmuv = self.rng.normal( \
+                size=(self.imp_steps, xi.shape[0]*br, self.z_dim), \
+                avg=0.0, std=1.0, dtype=theano.config.floatX)
+        return zi_zmuv
+
+    def _construct_nll_costs(self, si, xo, xm):
         """
         Construct the negative log-likelihood part of free energy.
         """
         # average log-likelihood over the refinement sequence
-        xh = self.obs_transform( self.xi[step_num] )
+        xh = self.obs_transform( si )
         xm_inv = 1.0 - xm # we will measure nll only where xm_inv is 1
         if self.x_type == 'bernoulli':
             ll_costs = log_prob_bernoulli(xo, xh, mask=xm_inv)
         else:
             ll_costs = log_prob_gaussian2(xo, xh, \
                     log_vars=self.bounded_logvar, mask=xm_inv)
-        nll_costs = -ll_costs
+        nll_costs = -ll_costs.flatten()
         return nll_costs
 
     def _construct_kld_costs(self, p=1.0):
@@ -344,10 +353,8 @@ class GPSImputer(object):
         kld_pis = []
         kld_qis = []
         for i in range(self.imp_steps):
-            kldpi = self.kldi_p2q[i]
-            kldqi = self.kldi_q2p[i]
-            kld_pis.append(T.sum(kldpi**p, axis=1, keepdims=True))
-            kld_qis.append(T.sum(kldqi**p, axis=1, keepdims=True))
+            kld_pis.append(T.sum(self.kldi_p2q[i]**p, axis=1))
+            kld_qis.append(T.sum(self.kldi_q2p[i]**p, axis=1))
         # compute the batch-wise costs
         kld_pi = sum(kld_pis)
         kld_qi = sum(kld_qis)
@@ -361,25 +368,61 @@ class GPSImputer(object):
         param_reg_cost = sum([T.sum(p**2.0) for p in self.joint_params])
         return param_reg_cost
 
+    def _construct_compute_fe_terms(self):
+        """
+        Construct a function for computing terms in variational free energy.
+        """
+        # setup some symbolic variables for theano to deal with
+        xi = T.matrix()
+        xo = T.matrix()
+        xm = T.matrix()
+        zizmuv = self._construct_zi_zmuv(xi, 1)
+        # construct values to output
+        nll = self.nll_costs.flatten()
+        kld = self.kld_q.flatten()
+        # compile theano function for a one-sample free-energy estimate
+        fe_term_sample = theano.function(inputs=[ xi, xo, xm ], \
+                outputs=[nll, kld], \
+                givens={self.x_in: xi, \
+                        self.x_out: xo, \
+                        self.x_mask: xm, \
+                        self.zi_zmuv: zizmuv}, \
+                updates=self.scan_updates, \
+                on_unused_input='ignore')
+        # construct a wrapper function for multi-sample free-energy estimate
+        def fe_term_estimator(XI, XO, XM, sample_count=20):
+            # compute a multi-sample estimate of variational free-energy
+            nll_sum = np.zeros((XI.shape[0],))
+            kld_sum = np.zeros((XI.shape[0],))
+            for i in range(sample_count):
+                result = fe_term_sample(XI, XO, XM)
+                nll_sum += result[0].ravel()
+                kld_sum += result[1].ravel()
+            mean_nll = nll_sum / float(sample_count)
+            mean_kld = kld_sum / float(sample_count)
+            return [mean_nll, mean_kld]
+        return fe_term_estimator
+
     def _construct_raw_costs(self):
         """
         Construct all the raw, i.e. not weighted by any lambdas, costs.
         """
-        # get NLL for all steps (per-obs, per-step, but pre-summed over dims)
-        step_nlls = []
-        for i in range(self.imp_steps):
-            step_nlls.append(self._construct_nll_costs(self.x_out, \
-                             self.x_mask, step_num=i))
-        nlli = T.stack(*step_nlls)
-        # get KLd for all steps (per-obs, per-step, and per-dim)
-        kldi_q2p = T.stack(*self.kldi_q2p)
-        kldi_p2q = T.stack(*self.kldi_p2q)
-        # gather step-wise costs into a single list
-        all_step_costs = [nlli, kldi_q2p, kldi_p2q]
+        # setup some symbolic variables for theano to deal with
+        xi = T.matrix()
+        xo = T.matrix()
+        xm = T.matrix()
+        zizmuv = self._construct_zi_zmuv(xi, 1)
         # compile theano function for computing the costs
-        inputs = [self.x_in, self.x_out, self.x_mask]
-        cost_func = theano.function(inputs=inputs, outputs=all_step_costs, \
-                                    on_unused_input='ignore')
+        all_step_costs = [self.nlli, self.kldi_q2p, self.kldi_p2q]
+        cost_func = theano.function(inputs=[xi, xo, xm], \
+                    outputs=all_step_costs, \
+                    givens={ self.x_in: xi, \
+                             self.x_out: xo, \
+                             self.x_mask: xm, \
+                             self.zi_zmuv: zizmuv }, \
+                    updates=self.scan_updates, \
+                    on_unused_input='ignore')
+        # make a function for computing multi-sample estimates of cost
         def raw_cost_computer(XI, XO, XM):
             _all_costs = cost_func(to_fX(XI), to_fX(XO), to_fX(XM))
             _kld_q2p = np.sum(np.mean(_all_costs[1], axis=1, keepdims=True), axis=0)
@@ -392,6 +435,45 @@ class GPSImputer(object):
             return results
         return raw_cost_computer
 
+    def _construct_compute_per_step_cost(self):
+        """
+        Construct a theano function for computing the best possible cost
+        achieved by sequential imputation.
+        """
+        # setup some symbolic variables for theano to deal with
+        xi = T.matrix()
+        xo = T.matrix()
+        xm = T.matrix()
+        zizmuv = self._construct_zi_zmuv(xi, 1)
+        # construct symbolic variables for the step-wise cost
+        step_mean_nll = T.mean(self.nlli, axis=1).flatten()
+        step_lone_kld = T.sum(self.kldi_q2p, axis=2)
+        step_cumu_kld = T.extra_ops.cumsum(step_lone_kld, axis=0)
+        step_mean_kld = T.mean(step_cumu_kld, axis=1).flatten()
+        # compile theano function for computing the step-wise cost
+        step_cost_func = theano.function(inputs=[xi, xo, xm], \
+                    outputs=[step_mean_nll, step_mean_kld], \
+                    givens={ self.x_in: xi, \
+                             self.x_out: xo, \
+                             self.x_mask: xm, \
+                             self.zi_zmuv: zizmuv }, \
+                    updates=self.scan_updates, \
+                    on_unused_input='ignore')
+        def best_cost_computer(XI, XO, XM, sample_count=20):
+            # compute a multi-sample estimate of variational free-energy
+            step_nll_sum = np.zeros((self.imp_steps,))
+            step_kld_sum = np.zeros((self.imp_steps,))
+            for i in range(sample_count):
+                result = step_cost_func(XI, XO, XM)
+                step_nll_sum += result[0].ravel()
+                step_kld_sum += result[1].ravel()
+            mean_step_nll = step_nll_sum / float(sample_count)
+            mean_step_kld = step_kld_sum / float(sample_count)
+            return [mean_step_nll, mean_step_kld]
+        return best_cost_computer
+
+
+
     def _construct_train_joint(self):
         """
         Construct theano function to train all networks jointly.
@@ -400,15 +482,18 @@ class GPSImputer(object):
         xi = T.matrix()
         xo = T.matrix()
         xm = T.matrix()
+        br = T.lscalar()
+        zizmuv = self._construct_zi_zmuv(xi, br)
         # collect the outputs to return from this function
-        outputs = [self.joint_cost, self.nll_cost, self.kld_cost, \
-                   self.ent_cost, self.reg_cost, self.obs_costs]
+        outputs = [self.joint_cost, self.nll_bound, self.nll_cost, \
+                   self.kld_cost, self.reg_cost, self.obs_costs]
         # compile the theano function
-        func = theano.function(inputs=[ xi, xo, xm, self.batch_reps ], \
+        func = theano.function(inputs=[ xi, xo, xm, br ], \
                 outputs=outputs, \
-                givens={ self.x_in: xi.repeat(self.batch_reps, axis=0), \
-                         self.x_out: xo.repeat(self.batch_reps, axis=0), \
-                         self.x_mask: xm.repeat(self.batch_reps, axis=0) }, \
+                givens={ self.x_in: xi.repeat(br, axis=0), \
+                         self.x_out: xo.repeat(br, axis=0), \
+                         self.x_mask: xm.repeat(br, axis=0), \
+                         self.zi_zmuv: zizmuv }, \
                 updates=self.joint_updates, \
                 on_unused_input='ignore')
         return func
@@ -421,17 +506,20 @@ class GPSImputer(object):
         xi = T.matrix()
         xo = T.matrix()
         xm = T.matrix()
-        oputs = [self.x_in] + [self.obs_transform(_xi_) for _xi_ in self.xi]
+        zizmuv = self._construct_zi_zmuv(xi, 1)
+        oputs = [self.x0] + [self.obs_transform(self.si[i]) for i in range(self.imp_steps)]
         sample_func = theano.function(inputs=[xi, xo, xm], outputs=oputs, \
                 givens={self.x_in: xi, \
                         self.x_out: xo, \
-                        self.x_mask: xm}, \
+                        self.x_mask: xm, \
+                        self.zi_zmuv: zizmuv}, \
+                updates=self.scan_updates, \
                 on_unused_input='ignore')
         def imputer_sampler(XI, XO, XM, use_guide_policy=False):
             XI = to_fX( XI )
             XO = to_fX( XO )
             XM = to_fX( XM )
-            # set model to desired generation mode   
+            # set model to desired generation mode
             old_switch = self.train_switch.get_value(borrow=False)
             if use_guide_policy:
                 # take samples from guide policies (i.e. variational q)
@@ -521,6 +609,96 @@ def load_gpsimputer_from_file(f_name=None, rng=None):
         print("    {0:s}: {1:s}".format(str(k), str(self_dot_params[k])))
     print("==================================================")
     return clone_net
+
+class TemplateMatchImputer(object):
+    """
+    Simple class for performing imputation via template matching.
+
+    I.e. -- we fill in missing values in a partial observation by taking
+            the corresponding values from the "training" observation which
+            best matches the known values.
+
+    Parameters:
+            x_train: the available examples to match against
+            x_type: whether to use 'gaussian' or 'bernoulli' log prob
+    """
+    def __init__(self, x_train=None, x_type=None):
+        self.x_train = x_train
+        self.x_type = x_type
+        self.logvar = 0.0
+        return
+
+    def _log_bernoulli(p_true, p_approx, mask=None):
+        """
+        Compute log probability of some binary variables with probabilities
+        given by p_true, for probability estimates given by p_approx. We'll
+        compute joint log probabilities over row-wise groups.
+        """
+        if mask is None:
+            mask = np.ones((1, p_approx.shape[1]))
+        log_prob_1 = p_true * np.log(p_approx+1e-6)
+        log_prob_0 = (1.0 - p_true) * np.log((1.0 - p_approx)+1e-6)
+        log_prob_01 = log_prob_1 + log_prob_0
+        row_log_probs = np.sum((log_prob_01 * mask), axis=1)
+        return row_log_probs
+
+    def _log_gaussian(mu_true, mu_approx, log_vars=1.0, mask=None):
+        """
+        Compute log probability of some continuous variables with values given
+        by mu_true, w.r.t. gaussian distributions with means given by mu_approx
+        and log variances given by les_logvars.
+        """
+        if mask is None:
+            mask = np.ones((1, mu_approx.shape[1]))
+        ind_log_probs = C - (0.5 * log_vars)  - \
+                ((mu_true - mu_approx)**2.0 / (2.0 * np.exp(log_vars)))
+        row_log_probs = np.sum((ind_log_probs * mask), axis=1)
+        return row_log_probs
+
+    def _compute_log_prob(x_true, x_approx, mask=None):
+        """
+        helper function for switching between bernoulli/gaussian.
+        """
+        if self.x_type == 'bernoulli':
+            ll = self._log_bernoulli(x_true, x_approx, mask=mask)
+        else:
+            ll = self._log_gaussian(x_true, x_approx, \
+                         log_vars=self.logvar, mask=mask)
+        return ll
+
+    def best_match_log_prob(self, x_test, m_test):
+        """
+        compute log-likelihood of the imputations for values in x_test
+        for which m_test is 0. imputation is performed by template matching
+        against a fixed set of "training" examples.
+        """
+        # we'll just brute force the search.
+        test_count = x_test.shape[0]
+        x_match_on_known = np.zeros(x_test.shape)
+        x_match_on_unknown = np.zeros(x_test.shape)
+        for i in range(test_count):
+            # get repeated copies of test example and its mask
+            xt = np.zeros(self.x_train.shape) + x_test[i]
+            mt = np.zeros(self.x_train.shape) + m_test[i]
+            # find best match on the known values
+            ll_1 = self._compute_log_prob(xt, self.x_train, mask=mt)
+            match_idx = np.argmax(ll_1)
+            x_match_on_known[i] = self.x_train[match_idx]
+            # find best match on the unknown values
+            mt_inv = 1.0 - mt
+            ll_2 = self._compute_log_prob(xt, self.x_train, mask=mt_inv)
+            match_idx = np.argmax(ll_2)
+            x_match_on_unknown[i] = self.x_train[match_idx]
+        # compute log probs for "match on known" setting
+        m_test_inv = 1.0 - m_test
+        ll_match_on_known = self._compute_log_prob( \
+                                    x_test, x_match_on_known, m_test_inv)
+        # compute log probs for "match on unknown" setting
+        ll_match_on_unknown = self._compute_log_prob( \
+                                    x_test, x_match_on_unknown, m_test_inv)
+        return [-ll_match_on_known, -ll_match_on_unknown]
+
+
 
 if __name__=="__main__":
     print("Hello world!")

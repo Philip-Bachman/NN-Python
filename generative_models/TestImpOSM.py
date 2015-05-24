@@ -13,54 +13,15 @@ import theano.tensor as T
 
 # phil's sweetness
 import utils
-from LogPDFs import log_prob_bernoulli, log_prob_gaussian2, gaussian_kld
-from NetLayers import relu_actfun, softplus_actfun, tanh_actfun, \
-                      apply_mask, binarize_data, row_shuffle, to_fX
+from NetLayers import relu_actfun, softplus_actfun, tanh_actfun
 from InfNet import InfNet
 from HydraNet import HydraNet
 from GPSImputer import GPSImputer
 from OneStageModel import OneStageModel
 from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist, \
                       load_tfd, load_svhn_gray
-from HelperFuncs import sample_masks, sample_patch_masks, posterior_klds, \
-                        collect_obs_costs
-
-
-
-def construct_masked_data(xi, \
-                          drop_prob=0.0, \
-                          occ_dim=None, \
-                          data_mean=None):
-    """
-    Construct randomly masked data from xi.
-    """
-    if data_mean is None:
-        data_mean = np.zeros((xi.shape[1],))
-    im_dim = int(xi.shape[1]**0.5) # images should be square
-    xo = xi.copy()
-    if drop_prob > 0.0:
-        # apply fully-random occlusion
-        xm_rand = sample_masks(xi, drop_prob=drop_prob)
-    else:
-        # don't apply fully-random occlusion
-        xm_rand = np.ones(xi.shape)
-    if occ_dim is None:
-        # don't apply rectangular occlusion
-        xm_patch = np.ones(xi.shape)
-    else:
-        # apply rectangular occlusion
-        xm_patch = sample_patch_masks(xi, (im_dim,im_dim), (occ_dim,occ_dim))
-    xm = xm_rand * xm_patch
-    xi = (xm * xi) + ((1.0 - xm) * data_mean)
-    xi = to_fX(xi)
-    xo = to_fX(xo)
-    xm = to_fX(xm)
-    return xi, xo, xm
-
-def shift_and_scale_into_01(X):
-    X = X - np.min(X, axis=1, keepdims=True)
-    X = X / np.max(X, axis=1, keepdims=True)
-    return X
+from HelperFuncs import construct_masked_data, shift_and_scale_into_01, \
+                        row_shuffle, to_fX
 
 ###############################
 ###############################
@@ -68,15 +29,12 @@ def shift_and_scale_into_01(X):
 ###############################
 ###############################
 
-def test_mnist(lam_q2p=0.5, \
-               lam_p2q=0.5, \
-               prob_type='bernoulli', \
-               result_tag='gpsi_mnist'):
+def test_mnist(occ_dim=15, drop_prob=0.0):
     #########################################
     # Format the result tag more thoroughly #
     #########################################
-    result_tag = "{0:s}_osm_q2p{1:02d}_p2q{2:02d}_{3:s}".format(result_tag, \
-            int(10 * lam_q2p), int(10 * lam_p2q), prob_type[0:4])
+    dp_int = int(100.0 * drop_prob)
+    result_tag = "OSM_OD{}_DP{}".format(occ_dim, dp_int)
 
     ##########################
     # Get some training data #
@@ -90,19 +48,18 @@ def test_mnist(lam_q2p=0.5, \
     Xva = to_fX(shift_and_scale_into_01(Xva))
     tr_samples = Xtr.shape[0]
     va_samples = Xva.shape[0]
-    batch_size = 500
+    batch_size = 200
     batch_reps = 1
     all_pix_mean = np.mean(np.mean(Xtr, axis=1))
-    data_mean = to_fX( all_pix_mean * np.ones((Xtr.shape[1],)) )
+    data_mean = to_fX(all_pix_mean * np.ones((Xtr.shape[1],)))
 
     ############################################################
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
     obs_dim = Xtr.shape[1]
     z_dim = 100
-    imp_steps = 5
+    imp_steps = 15 # we'll check for the best step count (found oracularly)
     init_scale = 1.0
-    x_type = prob_type
 
     x_in_sym = T.matrix('x_in_sym')
     x_out_sym = T.matrix('x_out_sym')
@@ -133,7 +90,7 @@ def test_mnist(lam_q2p=0.5, \
     ###################
     params = {}
     shared_config = [z_dim, 1000, 1000]
-    output_config = [obs_dim, obs_dim, obs_dim]
+    output_config = [obs_dim, obs_dim]
     params['shared_config'] = shared_config
     params['output_config'] = output_config
     params['activation'] = relu_actfun
@@ -177,8 +134,8 @@ def test_mnist(lam_q2p=0.5, \
     gpsi_params['obs_dim'] = obs_dim
     gpsi_params['z_dim'] = z_dim
     gpsi_params['imp_steps'] = imp_steps
-    gpsi_params['step_type'] = 'swap'
-    gpsi_params['x_type'] = x_type
+    gpsi_params['step_type'] = 'jump'
+    gpsi_params['x_type'] = 'bernoulli'
     gpsi_params['obs_transform'] = 'sigmoid'
     gpsi_params['use_osm_mode'] = True
     GPSI = GPSImputer(rng=rng, 
@@ -193,10 +150,12 @@ def test_mnist(lam_q2p=0.5, \
     #########################################################################
     print("Building the OneStageModel...")
     osm_params = {}
-    osm_params['x_type'] = x_type
+    osm_params['x_type'] = 'bernoulli'
+    osm_params['xt_transform'] = 'sigmoid'
     OSM = OneStageModel(rng=rng, \
-            Xd=x_in_sym, Xc=x_out_sym, Xm=x_mask_sym, \
-            p_x_given_z=p_xip1_given_zi, q_z_given_x=p_zi_given_xi, \
+            x_in=x_in_sym, \
+            p_x_given_z=p_xip1_given_zi, \
+            q_z_given_x=p_zi_given_xi, \
             x_dim=obs_dim, z_dim=z_dim, \
             params=osm_params)
 
@@ -206,13 +165,9 @@ def test_mnist(lam_q2p=0.5, \
     log_name = "{}_train_log.txt".format(result_tag)
     out_file = open(log_name, 'wb')
     costs = [0. for i in range(10)]
-    learn_rate = 0.0003
+    learn_rate = 0.0002
     momentum = 0.5
     batch_idx = np.arange(batch_size) + tr_samples
-    train_result_dict = {'step_nll': [], 'step_kld': [], \
-                         'step_kld_q2p': [], 'step_kld_p2q': []}
-    valid_result_dict = {'step_nll': [], 'step_kld': [], \
-                         'step_kld_q2p': [], 'step_kld_p2q': []}
     for i in range(200000):
         scale = min(1.0, ((i+1) / 5000.0))
         if (((i + 1) % 15000) == 0):
@@ -235,7 +190,7 @@ def test_mnist(lam_q2p=0.5, \
         OSM.set_lam_l2w(1e-4)
         # perform a minibatch update and record the cost for this batch
         xb = to_fX( Xtr.take(batch_idx, axis=0) )
-        result = OSM.train_joint(xb, 0.0*xb, 0.0*xb, batch_reps)
+        result = OSM.train_joint(xb, batch_reps)
         costs = [(costs[j] + result[j]) for j in range(len(result)-1)]
         if ((i % 250) == 0):
             costs = [(v / 250.0) for v in costs]
@@ -249,40 +204,34 @@ def test_mnist(lam_q2p=0.5, \
             out_file.write(joint_str+"\n")
             out_file.flush()
             costs = [0.0 for v in costs]
-            # record some scores for the test set
-            xi, xo, xm = construct_masked_data(Xtr[0:2000], drop_prob=0.0, \
-                                               occ_dim=15, data_mean=data_mean)
-            raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
-            step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
-            train_result_dict['step_nll'].append((i, step_nll))
-            train_result_dict['step_kld'].append((i, step_kld))
-            train_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
-            train_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-            # record some scores for the validation set
-            xi, xo, xm = construct_masked_data(Xva[0:2000], drop_prob=0.0, \
-                                               occ_dim=15, data_mean=data_mean)
-            raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
-            step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
-            valid_result_dict['step_nll'].append((i, step_nll))
-            valid_result_dict['step_kld'].append((i, step_kld))
-            valid_result_dict['step_kld_q2p'].append((i, step_kld_q2p))
-            valid_result_dict['step_kld_p2q'].append((i, step_kld_p2q))
-        # save results to a pickle file
-        result_dicts = {'train_results': train_result_dict, \
-                'valid_results': valid_result_dict}
-        f_handle = file("{0:s}_result_dicts.pkl".format(result_tag), 'wb')
-        cPickle.dump(result_dicts, f_handle, protocol=-1)
-        f_handle.close()
+        if ((i % 1000) == 0):
+            Xva = row_shuffle(Xva)
+            # record an estimate of performance on the test set
+            xi, xo, xm = construct_masked_data(Xva[0:5000], drop_prob=drop_prob, \
+                                               occ_dim=occ_dim, data_mean=data_mean)
+            step_nll, step_kld = GPSI.compute_per_step_cost(xi, xo, xm, sample_count=10)
+            step_vfe = step_nll + step_kld
+            min_step = np.argmin(step_vfe)
+            min_vfe = step_vfe[min_step]
+            min_nll = step_nll[min_step]
+            min_kld = step_kld[min_step]
+            str1 = "    va_nll_bound : {}".format(min_vfe)
+            str2 = "    va_nll_term  : {}".format(min_nll)
+            str3 = "    va_kld_q2p   : {}".format(min_kld)
+            str4 = "    va_nll_final : {}".format(step_nll[-1])
+            joint_str = "\n".join([str1, str2, str3, str4])
+            print(joint_str)
+            out_file.write(joint_str+"\n")
+            out_file.flush()
         if ((i % 5000) == 0):
             # Get some validation samples for evaluating model performance
-            Xva = row_shuffle(Xva)
             xb = to_fX( Xva[0:100] )
-            xi, xo, xm = construct_masked_data(xb, drop_prob=0.0, occ_dim=15, \
-                                               data_mean=data_mean)
+            xi, xo, xm = construct_masked_data(xb, drop_prob=drop_prob, \
+                                    occ_dim=occ_dim, data_mean=data_mean)
             xi = np.repeat(xi, 2, axis=0)
             xo = np.repeat(xo, 2, axis=0)
             xm = np.repeat(xm, 2, axis=0)
-            # draw some independent random samples from the model
+            # draw some sample imputations from the model
             samp_count = xi.shape[0]
             _, model_samps = GPSI.sample_imputer(xi, xo, xm, use_guide_policy=False)
             seq_len = len(model_samps)
@@ -294,18 +243,6 @@ def test_mnist(lam_q2p=0.5, \
                     idx += 1
             file_name = "{0:s}_samples_ng_b{1:d}.png".format(result_tag, i)
             utils.visualize_samples(seq_samps, file_name, num_rows=20)
-            # draw some conditional random samples from the model
-            samp_count = xi.shape[0]
-            _, model_samps = GPSI.sample_imputer(xi, xo, xm, use_guide_policy=True)
-            seq_len = len(model_samps)
-            seq_samps = np.zeros((seq_len*samp_count, model_samps[0].shape[1]))
-            idx = 0
-            for s1 in range(samp_count):
-                for s2 in range(seq_len):
-                    seq_samps[idx] = model_samps[s2][s1]
-                    idx += 1
-            file_name = "{0:s}_samples_yg_b{1:d}.png".format(result_tag, i)
-            utils.visualize_samples(seq_samps, file_name, num_rows=20)
             # get visualizations of policy parameters
             file_name = "{0:s}_gen_gen_weights_b{1:d}.png".format(result_tag, i)
             W = GPSI.gen_gen_weights.get_value(borrow=False)
@@ -313,26 +250,6 @@ def test_mnist(lam_q2p=0.5, \
             file_name = "{0:s}_gen_inf_weights_b{1:d}.png".format(result_tag, i)
             W = GPSI.gen_inf_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
-            # check some useful information about usage of model capacity
-            xi, xo, xm = construct_masked_data(Xva[0:2500], drop_prob=0.0, 
-                                               occ_dim=15, data_mean=data_mean)
-            raw_costs = GPSI.compute_raw_costs(xi, xo, xm)
-            step_nll, step_kld, step_kld_q2p, step_kld_p2q = raw_costs
-            file_name = "{0:s}_klds_q2p_b{1:d}.png".format(result_tag, i)
-            utils.plot_stem(np.arange(step_kld_q2p.shape[1]), \
-                    np.mean(step_kld_q2p, axis=0), file_name)
-            file_name = "{0:s}_klds_p2q_b{1:d}.png".format(result_tag, i)
-            utils.plot_stem(np.arange(step_kld_p2q.shape[1]), \
-                    np.mean(step_kld_p2q, axis=0), file_name)
-            file_name = "{0:s}_step_nlls_b{1:d}.png".format(result_tag, i)
-            utils.plot_stem(np.arange(step_nll.shape[0]), \
-                    step_nll, file_name)
-            file_name = "{0:s}_step_klds_b{1:d}.png".format(result_tag, i)
-            utils.plot_stem(np.arange(step_kld.shape[0]), \
-                    step_kld, file_name)
-            file_name = "{0:s}_step_vfes_b{1:d}.png".format(result_tag, i)
-            utils.plot_stem(np.arange(step_kld.shape[0]).ravel(), \
-                    (np.cumsum(step_kld.ravel())+step_nll.ravel()), file_name)
 
 #############################
 #############################
@@ -888,12 +805,12 @@ if __name__=="__main__":
     #########
     # MNIST #
     #########
-    # test_mnist(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_mnist')
+    test_mnist(occ_dim=0, drop_prob=0.6)
 
     #######
     # TFD #
     #######
-    test_tfd(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
+    # test_tfd(lam_q2p=1.0, lam_p2q=0.0, prob_type='bernoulli', result_tag='gpsi_tfd')
 
     ########
     # SVHN #
