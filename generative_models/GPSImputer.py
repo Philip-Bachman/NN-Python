@@ -7,6 +7,7 @@ import cPickle
 import numpy as np
 import numpy.random as npr
 from collections import OrderedDict
+import numexpr as ne
 
 # theano business
 import theano
@@ -616,46 +617,50 @@ class TemplateMatchImputer(object):
 
     I.e. -- we fill in missing values in a partial observation by taking
             the corresponding values from the "training" observation which
-            best matches the known values.
+            best matches the known values. we'll compute scores for matching
+            on either the known values or the unknown values.
 
     Parameters:
             x_train: the available examples to match against
             x_type: whether to use 'gaussian' or 'bernoulli' log prob
     """
     def __init__(self, x_train=None, x_type=None):
-        self.x_train = x_train
+        self.x_train = theano.shared(value=to_fX(x_train), name='x_train')
         self.x_type = x_type
         self.logvar = 0.0
+        self.best_match_nll, self.best_match_img = self._construct_funcs()
         return
 
-    def _log_bernoulli(p_true, p_approx, mask=None):
+    def _log_bernoulli(self, p_true, p_approx, mask=None):
         """
         Compute log probability of some binary variables with probabilities
         given by p_true, for probability estimates given by p_approx. We'll
         compute joint log probabilities over row-wise groups.
         """
         if mask is None:
-            mask = np.ones((1, p_approx.shape[1]))
-        log_prob_1 = p_true * np.log(p_approx+1e-6)
-        log_prob_0 = (1.0 - p_true) * np.log((1.0 - p_approx)+1e-6)
+            mask = T.ones((1, p_approx.shape[1]))
+        log_prob_1 = p_true * T.log(p_approx+1e-6)
+        log_prob_0 = (1.0 - p_true) * T.log((1.0 - p_approx)+1e-6)
         log_prob_01 = log_prob_1 + log_prob_0
-        row_log_probs = np.sum((log_prob_01 * mask), axis=1)
-        return row_log_probs
+        row_log_probs_m_is_1 = T.sum((log_prob_01 * mask), axis=1)
+        row_log_probs_m_is_0 = T.sum((log_prob_01 * (1.0-mask)), axis=1)
+        return row_log_probs_m_is_1, row_log_probs_m_is_0
 
-    def _log_gaussian(mu_true, mu_approx, log_vars=1.0, mask=None):
+    def _log_gaussian(self, mu_true, mu_approx, log_vars=1.0, mask=None):
         """
         Compute log probability of some continuous variables with values given
         by mu_true, w.r.t. gaussian distributions with means given by mu_approx
         and log variances given by les_logvars.
         """
         if mask is None:
-            mask = np.ones((1, mu_approx.shape[1]))
+            mask = T.ones((1, mu_approx.shape[1]))
         ind_log_probs = C - (0.5 * log_vars)  - \
-                ((mu_true - mu_approx)**2.0 / (2.0 * np.exp(log_vars)))
-        row_log_probs = np.sum((ind_log_probs * mask), axis=1)
+                ((mu_true - mu_approx)**2.0 / (2.0 * T.exp(log_vars)))
+        row_log_probs = T.sum((ind_log_probs * mask), axis=1)
+        row_log_probs = T.cast(row_log_probs, 'floatX')
         return row_log_probs
 
-    def _compute_log_prob(x_true, x_approx, mask=None):
+    def _compute_log_prob(self, x_true, x_approx, mask=None):
         """
         helper function for switching between bernoulli/gaussian.
         """
@@ -666,37 +671,53 @@ class TemplateMatchImputer(object):
                          log_vars=self.logvar, mask=mask)
         return ll
 
-    def best_match_log_prob(self, x_test, m_test):
+    def _construct_wrapper_funcs(self):
         """
         compute log-likelihood of the imputations for values in x_test
         for which m_test is 0. imputation is performed by template matching
         against a fixed set of "training" examples.
         """
         # we'll just brute force the search.
-        test_count = x_test.shape[0]
-        x_match_on_known = np.zeros(x_test.shape)
-        x_match_on_unknown = np.zeros(x_test.shape)
-        for i in range(test_count):
-            # get repeated copies of test example and its mask
-            xt = np.zeros(self.x_train.shape) + x_test[i]
-            mt = np.zeros(self.x_train.shape) + m_test[i]
-            # find best match on the known values
-            ll_1 = self._compute_log_prob(xt, self.x_train, mask=mt)
-            match_idx = np.argmax(ll_1)
-            x_match_on_known[i] = self.x_train[match_idx]
-            # find best match on the unknown values
-            mt_inv = 1.0 - mt
-            ll_2 = self._compute_log_prob(xt, self.x_train, mask=mt_inv)
-            match_idx = np.argmax(ll_2)
-            x_match_on_unknown[i] = self.x_train[match_idx]
-        # compute log probs for "match on known" setting
-        m_test_inv = 1.0 - m_test
-        ll_match_on_known = self._compute_log_prob( \
-                                    x_test, x_match_on_known, m_test_inv)
-        # compute log probs for "match on unknown" setting
-        ll_match_on_unknown = self._compute_log_prob( \
-                                    x_test, x_match_on_unknown, m_test_inv)
-        return [-ll_match_on_known, -ll_match_on_unknown]
+        x_t = T.vector()
+        m_t = T.vector()
+        ll_m_is_1, ll_m_is_0 = self._compute_log_prob(x_t, self.x_train, \
+                                                      mask=m_t)
+        outputs = [ll_m_is_1, ll_m_is_0]
+        theano_func = theano.function(inputs=[x_t, m_t], outputs=outputs)
+        def nll_func(x_test, m_test):
+            test_count = x_test.shape[0]
+            nll_match_on_known = np.zeros((x_test.shape[0],))
+            nll_match_on_unknown = np.zeros((x_test.shape[0],))
+            print("Template matching for {} test examples:".format(test_count))
+            for i in range(test_count):
+                ll_m_is_1, ll_m_is_0 = theano_func(x_test[i], m_test[i])
+                match_idx = np.argmax(ll_m_is_1)
+                nll_match_on_known[i] = -1.0 * ll_m_is_0[match_idx]
+                match_idx = np.argmax(ll_m_is_0)
+                nll_match_on_unknown[i] = -1.0 * ll_m_is_0[match_idx]
+                if ((i % (test_count/50)) == 0):
+                    print("-- processed {} examples, nll_mok: {}, nll_mou: {}".format(i, \
+                            np.mean(nll_match_on_known[:(i+1)]), \
+                            np.mean(nll_match_on_unknown[:(i+1)])))
+            return [nll_match_on_known, nll_match_on_unknown]
+        def img_func(x_test, m_test):
+            x_tr = self.x_train.get_value(borrow=False)
+            test_count = x_test.shape[0]
+            img_match_on_known = np.zeros(x_test.shape)
+            img_match_on_unknown = np.zeros(x_test.shape)
+            print("Template matching for {} test examples:".format(test_count))
+            for i in range(test_count):
+                xt_i = x_test[i]
+                mt_i = m_test[i]
+                ll_m_is_1, ll_m_is_0 = theano_func(xt_i, mt_i)
+                match_idx = np.argmax(ll_m_is_1)
+                img_match_on_known[i] = (mt_i * xt_i) + \
+                                        ((1.0 - mt_i) * x_tr[match_idx])
+                match_idx = np.argmax(ll_m_is_0)
+                img_match_on_unknown[i] = (mt_i * xt_i) + \
+                                          ((1.0 - mt_i) * x_tr[match_idx])
+            return [img_match_on_known, img_match_on_unknown]
+        return nll_func
 
 
 

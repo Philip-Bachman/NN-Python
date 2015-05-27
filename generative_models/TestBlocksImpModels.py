@@ -187,7 +187,6 @@ def test_imocld_imputation(step_type='add', occ_dim=14, drop_prob=0.0, attention
     ################################################################
     print("Beginning to train the model...")
     out_file = open("TBCLM_IMP_RESULTS_OD{}_DP{}_{}_{}.txt".format(occ_dim, dp_int, step_type, att_tag), 'wb')
-    out_file.write("Testing IMoCLDrawModels with dec LSTM update including h_enc.\n")
     out_file.flush()
     costs = [0. for i in range(10)]
     learn_rate = 0.0002

@@ -349,7 +349,9 @@ class TanhMLPwFFBP(Initializable, Feedforward):
                 ff_acts.append(line_act)
         output = ff_acts[-1]
         # compute grad on output, assuming a bernoulli generative model
-        grad_nll = target - tensor.nnet.sigmoid(output)
+        sigm_act = tensor.nnet.sigmoid(output)
+        grad_nll = target - sigm_act # grad on post-sigmoid activation
+        sigm_grad = grad_nll * ((1.0 - sigm_act) * sigm_act) # bp through sigmoid
         # backpropagate through the network
         bp_grads = [grad_nll]
         for i in range(len(self.W_list)):

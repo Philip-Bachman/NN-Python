@@ -101,11 +101,11 @@ def test_ddm_generation():
     # Setup some parameters for the Iterative Refinement Model #
     ############################################################
     x_dim = Xtr.shape[1]
-    enc_dim = 200
-    dec_dim = 200
+    enc_dim = 250
+    dec_dim = 250
     mix_dim = 20
     z_dim = 100
-    n_iter = 16
+    n_iter = 8
     
     rnninits = {
         'weights_init': IsotropicGaussian(0.01),
@@ -190,8 +190,8 @@ def test_ddm_generation():
         costs = [(costs[j] + result[j]) for j in range(len(result))]
 
         # diagnostics
-        if ((i % 200) == 0):
-            costs = [(v / 200.0) for v in costs]
+        if ((i % 250) == 0):
+            costs = [(v / 250.0) for v in costs]
             str1 = "-- batch {0:d} --".format(i)
             str2 = "    total_cost: {0:.4f}".format(costs[0])
             str3 = "    nll_bound : {0:.4f}".format(costs[1])
@@ -204,7 +204,7 @@ def test_ddm_generation():
             out_file.write(joint_str+"\n")
             out_file.flush()
             costs = [0.0 for v in costs]
-        if ((i % 1000) == 0):
+        if ((i % 500) == 0):
             draw.save_model_params("TBDDM_GEN_PARAMS.pkl")
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
