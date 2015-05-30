@@ -391,8 +391,16 @@ class GPSImputer(object):
                 updates=self.scan_updates, \
                 on_unused_input='ignore')
         # construct a wrapper function for multi-sample free-energy estimate
-        def fe_term_estimator(XI, XO, XM, sample_count=20):
-            # compute a multi-sample estimate of variational free-energy
+        def fe_term_estimator(XI, XO, XM, sample_count=20, use_guide_policy=True):
+            # set model to desired generation mode
+            old_switch = self.train_switch.get_value(borrow=False)
+            if use_guide_policy:
+                # take samples from guide policies (i.e. variational q)
+                self.set_train_switch(switch_val=1.0)
+            else:
+                # take samples from model's imputation policy
+                self.set_train_switch(switch_val=0.0)
+            # compute a multi-sample estimate of variational free-energy                
             nll_sum = np.zeros((XI.shape[0],))
             kld_sum = np.zeros((XI.shape[0],))
             for i in range(sample_count):
@@ -401,6 +409,11 @@ class GPSImputer(object):
                 kld_sum += result[1].ravel()
             mean_nll = nll_sum / float(sample_count)
             mean_kld = kld_sum / float(sample_count)
+            # set model back to either training or generation mode
+            self.set_train_switch(switch_val=old_switch)
+            if not use_guide_policy:
+                # no KLd if samples are from the primary policy...
+                mean_kld = 0.0 * mean_kld
             return [mean_nll, mean_kld]
         return fe_term_estimator
 
@@ -671,7 +684,7 @@ class TemplateMatchImputer(object):
                          log_vars=self.logvar, mask=mask)
         return ll
 
-    def _construct_wrapper_funcs(self):
+    def _construct_funcs(self):
         """
         compute log-likelihood of the imputations for values in x_test
         for which m_test is 0. imputation is performed by template matching
@@ -717,7 +730,7 @@ class TemplateMatchImputer(object):
                 img_match_on_unknown[i] = (mt_i * xt_i) + \
                                           ((1.0 - mt_i) * x_tr[match_idx])
             return [img_match_on_known, img_match_on_unknown]
-        return nll_func
+        return nll_func, img_func
 
 
 

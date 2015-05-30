@@ -244,11 +244,109 @@ def test_mnist(step_type='add',
             W = GPSI.gen_inf_weights.get_value(borrow=False).T
             utils.visualize_samples(W[:,:obs_dim], file_name, num_rows=20)
 
+#################################
+#################################
+## CHECK MNIST IMPUTER RESULTS ##
+#################################
+#################################
+
+def test_mnist_results(step_type='add',
+                       occ_dim=15,
+                       drop_prob=0.0):
+    #########################################
+    # Format the result tag more thoroughly #
+    #########################################
+    dp_int = int(100.0 * drop_prob)
+    result_tag = "{}GPSI_OD{}_DP{}_{}_NA".format(RESULT_PATH, occ_dim, dp_int, step_type)
+
+    ##########################
+    # Get some training data #
+    ##########################
+    rng = np.random.RandomState(1234)
+    dataset = 'data/mnist.pkl.gz'
+    datasets = load_udm(dataset, as_shared=False, zero_mean=False)
+    Xtr = datasets[0][0]
+    Xva = datasets[1][0]
+    Xtr = to_fX(shift_and_scale_into_01(Xtr))
+    Xva = to_fX(shift_and_scale_into_01(Xva))
+    tr_samples = Xtr.shape[0]
+    va_samples = Xva.shape[0]
+    batch_size = 250
+    batch_reps = 1
+    all_pix_mean = np.mean(np.mean(Xtr, axis=1))
+    data_mean = to_fX( all_pix_mean * np.ones((Xtr.shape[1],)) )
+
+    ############################################################
+    # Setup some parameters for the Iterative Refinement Model #
+    ############################################################
+    obs_dim = Xtr.shape[1]
+    z_dim = 100
+    imp_steps = 5
+    init_scale = 1.0
+
+    x_in_sym = T.matrix('x_in_sym')
+    x_out_sym = T.matrix('x_out_sym')
+    x_mask_sym = T.matrix('x_mask_sym')
+
+    # Load parameters from a previously trained model
+    print("Testing model load from file...")
+    GPSI = load_gpsimputer_from_file(f_name="{}_PARAMS.pkl".format(result_tag), \
+                                     rng=rng)
+
+    ################################################################
+    # Apply some updates, to check that they aren't totally broken #
+    ################################################################
+    log_name = "{}_FINAL_RESULTS.txt".format(result_tag)
+    out_file = open(log_name, 'wb')
+
+    Xva = row_shuffle(Xva)
+    # record an estimate of performance on the test set
+    str0 = "GUIDED SAMPLE BOUND:"
+    print(str0)
+    xi, xo, xm = construct_masked_data(Xva[:5000], drop_prob=drop_prob, \
+                                       occ_dim=occ_dim, data_mean=data_mean)
+    nll_0, kld_0 = GPSI.compute_fe_terms(xi, xo, xm, sample_count=10, \
+                                         use_guide_policy=True)
+    xi, xo, xm = construct_masked_data(Xva[5000:], drop_prob=drop_prob, \
+                                       occ_dim=occ_dim, data_mean=data_mean)
+    nll_1, kld_1 = GPSI.compute_fe_terms(xi, xo, xm, sample_count=10, \
+                                         use_guide_policy=True)
+    nll = np.concatenate((nll_0, nll_1))
+    kld = np.concatenate((kld_0, kld_1))
+    vfe = np.mean(nll) + np.mean(kld)
+    str1 = "    va_nll_bound : {}".format(vfe)
+    str2 = "    va_nll_term  : {}".format(np.mean(nll))
+    str3 = "    va_kld_q2p   : {}".format(np.mean(kld))
+    joint_str = "\n".join([str0, str1, str2, str3])
+    print(joint_str)
+    out_file.write(joint_str+"\n")
+    out_file.flush()
+    # record an estimate of performance on the test set
+    str0 = "UNGUIDED SAMPLE BOUND:"
+    print(str0)
+    xi, xo, xm = construct_masked_data(Xva[:5000], drop_prob=drop_prob, \
+                                       occ_dim=occ_dim, data_mean=data_mean)
+    nll_0, kld_0 = GPSI.compute_fe_terms(xi, xo, xm, sample_count=10, \
+                                         use_guide_policy=False)
+    xi, xo, xm = construct_masked_data(Xva[5000:], drop_prob=drop_prob, \
+                                       occ_dim=occ_dim, data_mean=data_mean)
+    nll_1, kld_1 = GPSI.compute_fe_terms(xi, xo, xm, sample_count=10, \
+                                         use_guide_policy=False)
+    nll = np.concatenate((nll_0, nll_1))
+    kld = np.concatenate((kld_0, kld_1))
+    str1 = "    va_nll_bound : {}".format(np.mean(nll))
+    str2 = "    va_nll_term  : {}".format(np.mean(nll))
+    str3 = "    va_kld_q2p   : {}".format(np.mean(kld))
+    joint_str = "\n".join([str0, str1, str2, str3])
+    print(joint_str)
+    out_file.write(joint_str+"\n")
+    out_file.flush()
 
 if __name__=="__main__":
     #########
     # MNIST #
     #########
+    # TRAINING
     #test_mnist(step_type='jump', occ_dim=14, drop_prob=0.0)
     #test_mnist(step_type='jump', occ_dim=16, drop_prob=0.0)
     #test_mnist(step_type='jump', occ_dim=0, drop_prob=0.6)
@@ -257,3 +355,17 @@ if __name__=="__main__":
     #test_mnist(step_type='add', occ_dim=16, drop_prob=0.0)
     #test_mnist(step_type='add', occ_dim=0, drop_prob=0.6)
     #test_mnist(step_type='add', occ_dim=0, drop_prob=0.8)
+
+    # RESULTS
+    test_mnist_results(step_type='jump', occ_dim=14, drop_prob=0.0)
+    test_mnist_results(step_type='jump', occ_dim=16, drop_prob=0.0)
+    test_mnist_results(step_type='jump', occ_dim=0, drop_prob=0.6)
+    test_mnist_results(step_type='jump', occ_dim=0, drop_prob=0.7)
+    test_mnist_results(step_type='jump', occ_dim=0, drop_prob=0.8)
+    test_mnist_results(step_type='jump', occ_dim=0, drop_prob=0.9)
+    test_mnist_results(step_type='add', occ_dim=14, drop_prob=0.0)
+    test_mnist_results(step_type='add', occ_dim=16, drop_prob=0.0)
+    test_mnist_results(step_type='add', occ_dim=0, drop_prob=0.6)
+    test_mnist_results(step_type='add', occ_dim=0, drop_prob=0.7)
+    test_mnist_results(step_type='add', occ_dim=0, drop_prob=0.8)
+    test_mnist_results(step_type='add', occ_dim=0, drop_prob=0.9)

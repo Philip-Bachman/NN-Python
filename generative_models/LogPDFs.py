@@ -39,7 +39,7 @@ def log_prob_bernoulli(p_true, p_approx, mask=None):
     """
     Compute log probability of some binary variables with probabilities
     given by p_true, for probability estimates given by p_approx. We'll
-    compute joint log probabilities over row-wise groups.
+    compute joint log probabilities over row-wise groups. (Theano version).
     """
     if mask is None:
         mask = T.ones((1, p_approx.shape[1]))
@@ -49,7 +49,19 @@ def log_prob_bernoulli(p_true, p_approx, mask=None):
     row_log_probs = T.sum((log_prob_01 * mask), axis=1, keepdims=True)
     return row_log_probs
 
-#logpxz = -0.5*np.log(2 * np.pi) - log_sigma_decoder - (0.5 * ((x - mu_decoder) / T.exp(log_sigma_decoder))**2)
+def log_prob_bernoulli_np(p_true, p_approx, mask=None):
+    """
+    Compute log probability of some binary variables with probabilities
+    given by p_true, for probability estimates given by p_approx. We'll
+    compute joint log probabilities over row-wise groups. (Numpy version).
+    """
+    if mask is None:
+        mask = np.ones((1, p_approx.shape[1]))
+    log_prob_1 = p_true * np.log(p_approx+1e-6)
+    log_prob_0 = (1.0 - p_true) * np.log((1.0 - p_approx)+1e-6)
+    log_prob_01 = log_prob_1 + log_prob_0
+    row_log_probs = np.sum((log_prob_01 * mask), axis=1)
+    return row_log_probs
 
 def log_prob_gaussian(mu_true, mu_approx, les_sigmas=1.0, mask=None):
     """

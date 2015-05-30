@@ -26,7 +26,7 @@ RESULT_PATH = "IMP_MNIST_TM/"
 ###############################
 ###############################
 
-def test_mnist(occ_dim=15, drop_prob=0.0):
+def test_mnist_nll(occ_dim=15, drop_prob=0.0):
     #########################################
     # Format the result tag more thoroughly #
     #########################################
@@ -72,14 +72,69 @@ def test_mnist(occ_dim=15, drop_prob=0.0):
     out_file.close()
     return
 
+def test_mnist_img(occ_dim=15, drop_prob=0.0):
+    #########################################
+    # Format the result tag more thoroughly #
+    #########################################
+    dp_int = int(100.0 * drop_prob)
+    result_tag = RESULT_PATH + "TM_OD{}_DP{}".format(occ_dim, dp_int)
+
+    ##########################
+    # Get some training data #
+    ##########################
+    rng = np.random.RandomState(1234)
+    dataset = 'data/mnist.pkl.gz'
+    datasets = load_udm(dataset, as_shared=False, zero_mean=False)
+    Xtr = datasets[0][0]
+    Xva = datasets[1][0]
+    Xtr = to_fX(shift_and_scale_into_01(Xtr))
+    Xva = to_fX(shift_and_scale_into_01(Xva))
+    tr_samples = Xtr.shape[0]
+    va_samples = Xva.shape[0]
+    batch_size = 200
+    batch_reps = 1
+    all_pix_mean = np.mean(np.mean(Xtr, axis=1))
+    data_mean = to_fX(all_pix_mean * np.ones((Xtr.shape[1],)))
+
+    TM = TemplateMatchImputer(x_train=Xtr, x_type='bernoulli')
+
+    Xva = row_shuffle(Xva)
+    # record an estimate of performance on the test set
+    xi, xo, xm = construct_masked_data(Xva[:500], drop_prob=drop_prob, \
+                                       occ_dim=occ_dim, data_mean=data_mean)
+    img_match_on_known, img_match_on_unknown = TM.best_match_img(xo, xm)
+
+    display_count = 100
+    # visualize matches on known elements
+    Xs = np.zeros((2*display_count, Xva.shape[1]))
+    for idx in range(display_count):
+        Xs[2*idx] = xi[idx]
+        Xs[(2*idx)+1] = img_match_on_known[idx]
+    file_name = "{0:s}_SAMPLES_MOK.png".format(result_tag)
+    utils.visualize_samples(Xs, file_name, num_rows=20)
+    # visualize matches on unknown elements
+    Xs = np.zeros((2*display_count, Xva.shape[1]))
+    for idx in range(display_count):
+        Xs[2*idx] = xi[idx]
+        Xs[(2*idx)+1] = img_match_on_unknown[idx]
+    file_name = "{0:s}_SAMPLES_MOU.png".format(result_tag)
+    utils.visualize_samples(Xs, file_name, num_rows=20)
+    return
+
 
 if __name__=="__main__":
     #########
     # MNIST #
     #########
-    test_mnist(occ_dim=0, drop_prob=0.6)
-    test_mnist(occ_dim=0, drop_prob=0.7)
-    test_mnist(occ_dim=0, drop_prob=0.8)
-    test_mnist(occ_dim=0, drop_prob=0.9)
-    test_mnist(occ_dim=14, drop_prob=0.0)
-    test_mnist(occ_dim=16, drop_prob=0.0)
+    # test_mnist_nll(occ_dim=0, drop_prob=0.6)
+    # test_mnist_nll(occ_dim=0, drop_prob=0.7)
+    # test_mnist_nll(occ_dim=0, drop_prob=0.8)
+    # test_mnist_nll(occ_dim=0, drop_prob=0.9)
+    # test_mnist_nll(occ_dim=14, drop_prob=0.0)
+    # test_mnist_nll(occ_dim=16, drop_prob=0.0)
+    test_mnist_img(occ_dim=0, drop_prob=0.6)
+    test_mnist_img(occ_dim=0, drop_prob=0.7)
+    test_mnist_img(occ_dim=0, drop_prob=0.8)
+    test_mnist_img(occ_dim=0, drop_prob=0.9)
+    test_mnist_img(occ_dim=14, drop_prob=0.0)
+    test_mnist_img(occ_dim=16, drop_prob=0.0)

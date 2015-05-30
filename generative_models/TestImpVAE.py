@@ -23,7 +23,7 @@ from load_data import load_udm, load_udm_ss, load_mnist, load_binarized_mnist, \
 from HelperFuncs import construct_masked_data, shift_and_scale_into_01, \
                         row_shuffle, to_fX
 
-RESULT_PATH = "IMP_MNIST_VAE/"
+RESULT_PATH = "IMP_MNIST_VAE_500/"
 
 ###############################
 ###############################
@@ -71,7 +71,7 @@ def test_mnist(occ_dim=15, drop_prob=0.0):
     # p_zi_given_xi #
     #################
     params = {}
-    shared_config = [obs_dim, 1000, 1000]
+    shared_config = [obs_dim, 500, 500]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
@@ -91,7 +91,7 @@ def test_mnist(occ_dim=15, drop_prob=0.0):
     # p_xip1_given_zi #
     ###################
     params = {}
-    shared_config = [z_dim, 1000, 1000]
+    shared_config = [z_dim, 500, 500]
     output_config = [obs_dim, obs_dim]
     params['shared_config'] = shared_config
     params['output_config'] = output_config
@@ -110,7 +110,7 @@ def test_mnist(occ_dim=15, drop_prob=0.0):
     # q_zi_given_x_xi #
     ###################
     params = {}
-    shared_config = [(obs_dim + obs_dim), 1000, 1000]
+    shared_config = [(obs_dim + obs_dim), 500, 500]
     top_config = [shared_config[-1], z_dim]
     params['shared_config'] = shared_config
     params['mu_config'] = top_config
