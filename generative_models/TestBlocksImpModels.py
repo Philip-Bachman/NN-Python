@@ -435,7 +435,7 @@ def test_imocld_imp_svhn(step_type='add', occ_dim=14, drop_prob=0.0, attention=F
                                     occ_dim=occ_dim, data_mean=None)
             samples = draw.do_sample(Xb, Mb)
             n_iter, N, D = samples.shape
-            samples = samples.reshape( (n_iter, N, 28, 28) )
+            samples = samples.reshape( (n_iter, N, 32, 32) )
             for j in xrange(n_iter):
                 img = img_grid(samples[j,:,:,:])
                 img.save("TBCLM-IMP-SVHN-samples-%03d.png" % (j,))
@@ -619,7 +619,7 @@ def test_imocld_imp_tfd(step_type='add', occ_dim=14, drop_prob=0.0, attention=Fa
                                     occ_dim=occ_dim, data_mean=None)
             samples = draw.do_sample(Xb, Mb)
             n_iter, N, D = samples.shape
-            samples = samples.reshape( (n_iter, N, 28, 28) )
+            samples = samples.reshape( (n_iter, N, 48, 48) )
             for j in xrange(n_iter):
                 img = img_grid(samples[j,:,:,:])
                 img.save("TBCLM-IMP-TFD-samples-%03d.png" % (j,))
@@ -633,7 +633,7 @@ if __name__=="__main__":
     #test_imocld_imp_mnist(step_type='jump', occ_dim=0, drop_prob=0.6)
     #test_imocld_imp_mnist(step_type='add', occ_dim=0, drop_prob=0.8)
     #test_imocld_imp_mnist(step_type='jump', occ_dim=0, drop_prob=0.8)
-    #test_imocld_imp_tfd(step_type='add', occ_dim=0, drop_prob=0.8)
+    test_imocld_imp_tfd(step_type='add', occ_dim=0, drop_prob=0.8)
     #test_imocld_imp_tfd(step_type='add', occ_dim=25, drop_prob=0.0)
-    test_imocld_imp_svhn(step_type='add', occ_dim=0, drop_prob=0.8)
+    #test_imocld_imp_svhn(step_type='add', occ_dim=0, drop_prob=0.8)
     #test_imocld_imp_svhn(step_type='add', occ_dim=17, drop_prob=0.0)
