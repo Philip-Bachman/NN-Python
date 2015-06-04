@@ -145,8 +145,6 @@ def test_imocld_imp_mnist(step_type='add', occ_dim=14, drop_prob=0.0, attention=
                      name="enc_mlp_in", **inits)
     dec_mlp_in = MLP([Identity()], [               z_dim, 4*dec_dim], \
                      name="dec_mlp_in", **inits)
-    #dec_mlp_in = MLP([Identity()], [   (enc_dim + z_dim), 4*dec_dim], \
-    #                 name="dec_mlp_in", **inits)
     # mlps for turning LSTM outputs into conditionals over z_gen
     var_mlp_out = CondNet([], [enc_dim, z_dim], name="var_mlp_out", **inits)
     enc_mlp_out = CondNet([], [enc_dim, z_dim], name="enc_mlp_out", **inits)
@@ -272,8 +270,6 @@ def test_imocld_imp_svhn(step_type='add', occ_dim=14, drop_prob=0.0, attention=F
     te_file = 'data/svhn_test_gray.pkl'
     ex_file = 'data/svhn_extra_gray.pkl'
     data = load_svhn_gray(tr_file, te_file, ex_file=ex_file, ex_count=200000)
-    #all_file = 'data/svhn_all_gray_zca.pkl'
-    #data = load_svhn_all_gray_zca(all_file)
     Xtr = to_fX( shift_and_scale_into_01(np.vstack([data['Xtr'], data['Xex']])) )
     Xva = to_fX( shift_and_scale_into_01(data['Xte']) )
     tr_samples = Xtr.shape[0]
@@ -291,7 +287,7 @@ def test_imocld_imp_svhn(step_type='add', occ_dim=14, drop_prob=0.0, attention=F
     dec_dim = 600
     mix_dim = 20
     z_dim = 200
-    n_iter = 16
+    n_iter = 25
     dp_int = int(100.0 * drop_prob)
     
     rnninits = {
@@ -361,7 +357,7 @@ def test_imocld_imp_svhn(step_type='add', occ_dim=14, drop_prob=0.0, attention=F
     # build the cost gradients, training function, samplers, etc.
     draw.build_model_funcs()
 
-    #draw.load_model_params(f_name="TBCLM_IMP_PARAMS_OD{}_DP{}_{}_{}.pkl".format(occ_dim, dp_int, step_type, att_tag))
+    draw.load_model_params(f_name="TBCLM_IMP_SVHN_PARAMS_OD{}_DP{}_{}_{}.pkl".format(occ_dim, dp_int, step_type, att_tag))
 
     ################################################################
     # Apply some updates, to check that they aren't totally broken #
@@ -415,7 +411,7 @@ def test_imocld_imp_svhn(step_type='add', occ_dim=14, drop_prob=0.0, attention=F
             out_file.flush()
             costs = [0.0 for v in costs]
         if ((i % 1000) == 0):
-            draw.save_model_params("TBCLM_IMP_SVHN_PARAMS_OD{}_DP{}_{}_{}.pkl".format(occ_dim, dp_int, step_type, att_tag))
+            #draw.save_model_params("TBCLM_IMP_SVHN_PARAMS_OD{}_DP{}_{}_{}.pkl".format(occ_dim, dp_int, step_type, att_tag))
             # compute a small-sample estimate of NLL bound on validation set
             Xva = row_shuffle(Xva)
             Xb = to_fX(Xva[:5000])
@@ -430,7 +426,7 @@ def test_imocld_imp_svhn(step_type='add', occ_dim=14, drop_prob=0.0, attention=F
             out_file.write(joint_str+"\n")
             out_file.flush()
             # draw some independent samples from the model
-            Xb = to_fX(Xva[:256])
+            Xb = to_fX(Xva[:100])
             _, Xb, Mb = construct_masked_data(Xb, drop_prob=drop_prob, \
                                     occ_dim=occ_dim, data_mean=None)
             samples = draw.do_sample(Xb, Mb)
@@ -438,7 +434,7 @@ def test_imocld_imp_svhn(step_type='add', occ_dim=14, drop_prob=0.0, attention=F
             samples = samples.reshape( (n_iter, N, 32, 32) )
             for j in xrange(n_iter):
                 img = img_grid(samples[j,:,:,:])
-                img.save("TBCLM-IMP-SVHN-samples-%03d.png" % (j,))
+                img.save("TBCLM-IMP-SVHN-OD{0:d}-DP{1:d}-{2:s}-samples-{3:03d}.png".format(occ_dim, dp_int, step_type, j))
 
 #########################
 #########################
@@ -633,7 +629,7 @@ if __name__=="__main__":
     #test_imocld_imp_mnist(step_type='jump', occ_dim=0, drop_prob=0.6)
     #test_imocld_imp_mnist(step_type='add', occ_dim=0, drop_prob=0.8)
     #test_imocld_imp_mnist(step_type='jump', occ_dim=0, drop_prob=0.8)
-    test_imocld_imp_tfd(step_type='add', occ_dim=0, drop_prob=0.8)
+    #test_imocld_imp_tfd(step_type='add', occ_dim=0, drop_prob=0.8)
     #test_imocld_imp_tfd(step_type='add', occ_dim=25, drop_prob=0.0)
-    #test_imocld_imp_svhn(step_type='add', occ_dim=0, drop_prob=0.8)
+    test_imocld_imp_svhn(step_type='add', occ_dim=0, drop_prob=0.8)
     #test_imocld_imp_svhn(step_type='add', occ_dim=17, drop_prob=0.0)
